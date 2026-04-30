@@ -1,0 +1,48 @@
+# --- Backup files (Git provides version history) ---
+*.bak_*
+*.bak
+*.orig
+
+# --- Python ---
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Node ---
+node_modules/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# --- Editor / IDE ---
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- Claude Code (PC固有 / ランタイム) ---
+settings.local*.json
+launch.json
+*.lock
+scheduled_tasks.lock
+
+# --- Tmp ---
+*.tmp
+*.log
+
+# --- Migration staging (万一残ったとき) ---
+*.migrate-pending-*
+*.bootstrap-bak-*
+*.rollback-bak-*
