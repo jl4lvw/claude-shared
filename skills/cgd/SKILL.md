@@ -133,6 +133,12 @@ python "C:/Users/jl4lv/OneDrive/デスクトップ/0.フジ/900.ClaudeCode/.clau
 
 DS は `ROLE_PROMPTS["advisor"]` の構造（別案 / 見落とし / 採否コメント）で返す。
 
+**DS 呼び出し後の使用量表示（必須・転記）**:
+- スクリプトが stderr に `[DS Usage] 今回: ... / 累計: ...` を 2 行出力する（今回トークン・累計・¥/$ 換算）
+- Claude は実行結果に含まれるこの 2 行を **そのまま Step 2F-D の手前でユーザー向けに表示** すること（料金可視化目的・省略禁止）
+- セッション累計は `.claude/tools/.deepseek_usage_session.json` に atomic write で保存。最終呼び出しから 4 時間で自動リセット。手動リセットは `--reset-session`
+- 円換算レートは既定 1USD=150JPY。環境変数 `DEEPSEEK_USD_TO_JPY` で上書き可能
+
 ### Step 2F-D: Claude が再検討
 
 Gemini 案 + DS 別案を統合し、**ユーザー向けに表示**:
