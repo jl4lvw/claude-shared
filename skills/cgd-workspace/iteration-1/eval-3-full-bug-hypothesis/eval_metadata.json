@@ -1,0 +1,13 @@
+{
+  "eval_id": 3,
+  "eval_name": "full-bug-hypothesis",
+  "prompt": "/cgd フルモードで Tkinter Treeview ヘッダークリック稀無視バグの原因仮説を複数出す",
+  "assertions": [
+    {"text": "AskUserQuestion でモード=2(フル)を確認している", "category": "skill-flow"},
+    {"text": "6段すべて（Gemini→Claude→DS→Claude→Codex→Claude）が走っている", "category": "skill-flow"},
+    {"text": "6列統合表で出力している", "category": "output-format"},
+    {"text": "原因仮説が3つ以上提示されている（イベント取りこぼし/コールバック再入/widget破棄/OS遅延 等）", "category": "review-quality"},
+    {"text": "各仮説に検証手順（再現方法・ログ追加箇所等）が添えられている", "category": "review-quality"},
+    {"text": "Gemini と DS で異なる視点の仮説が出ている", "category": "review-quality"}
+  ]
+}

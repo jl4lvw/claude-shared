@@ -1,0 +1,26 @@
+{
+  "skill_name": "cgd",
+  "evals": [
+    {
+      "id": 1,
+      "name": "lightweight-diff-review",
+      "prompt": "/cgd を使って、以下のコード変更案をレビューしてほしい。軽量モードで頼む。\n\n変更案: Python の `def fetch_user(id: int) -> dict | None:` を `def fetch_user(id: int) -> dict:` に変更し、見つからない場合は空辞書 `{}` を返すように修正したい。理由は呼び出し側の None チェック忘れバグが頻発したため。",
+      "expected_output": "軽量モード（C+G並列）が起動し、5列統合表でレビューが返ってくる。「空辞書化はNoneチェック忘れを別の沈黙バグに置き換えるだけ」「呼び出し側の修正かOptional明示の方が良い」といった指摘が出ること。",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "full-design-decision",
+      "prompt": "/cgd でフルモードを使ってほしい。テーマは「PWA でオフライン時のデータ更新キューイング設計」。\n\n要件: Service Worker で fetch を捕捉、オフラインなら IndexedDB に貯めて、オンライン復帰時に順次再送する。再送順序の保証、競合解決、リトライ上限、UI への進捗反映 が論点。複数の設計案と Codex の最終レビューが欲しい。",
+      "expected_output": "フルモード6段が走り、Gemini の案出し→Claude 検討→DS の別案→Claude 統合→Codex レビュー→6列統合表での最終まとめ、が出力される。Background Sync API/手動リトライ/Workbox/独自Queue など複数案が出て、それぞれの採否が論じられること。",
+      "files": []
+    },
+    {
+      "id": 3,
+      "name": "full-bug-hypothesis",
+      "prompt": "/cgd フルモードで相談したい。難しいバグの原因仮説を複数出してほしい。\n\n症状: Tkinter アプリで Treeview のヘッダークリックソートが、稀に（10回に1回程度）クリックを無視する。常に同じ列で起きるわけではない。アプリの他の部分は正常。再現手順は不明確。複数の原因仮説とそれぞれの検証方法を出してほしい。",
+      "expected_output": "フルモード6段が走り、原因仮説が複数（イベントの取りこぼし／コールバックの再入／widget 破棄タイミング／OS イベント遅延 等）出る。Gemini と DS で異なる視点の仮説が出て、Codex が「再現性検証の手順」を厳密にレビューすること。",
+      "files": []
+    }
+  ]
+}

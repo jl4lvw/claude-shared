@@ -1,0 +1,35 @@
+{
+  "expectations": [
+    {
+      "text": "AskUserQuestion でモード（1=軽量/2=フル）を確認している",
+      "passed": true,
+      "evidence": "モード=1事前指定の設計。レポートに「モード: 1（軽量・C+G 並列）」明記、Step 2L準拠"
+    },
+    {
+      "text": "軽量モードを正しく選択し、Codex+Gemini を並列起動している",
+      "passed": true,
+      "evidence": "「`codex exec` + `gemini -p` を C:/tmp-ai から並列起動、両者とも正常終了」"
+    },
+    {
+      "text": "5列統合表（指摘/Codex/Gemini/Claude採用/対応）で出力している",
+      "passed": true,
+      "evidence": "10行の5列統合表を出力、列構成も SKILL.md 仕様通り"
+    },
+    {
+      "text": "「空辞書化はNoneチェックを別の沈黙バグに置き換える」相当の本質的指摘がある",
+      "passed": true,
+      "evidence": "「KeyError やサイレント失敗に置き換えるだけで、根本原因の解決にならない」と明記"
+    },
+    {
+      "text": "Optional[dict] 明示や呼び出し側修正など代替案に言及している",
+      "passed": true,
+      "evidence": "推奨代替「Optional 維持＋型チェック厳格化」「get_user/require_user 二系統 API」「例外送出 (UserNotFound)」を提示"
+    }
+  ],
+  "summary": {
+    "pass_rate": 1.0,
+    "passed": 5,
+    "failed": 0,
+    "total": 5
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "expectations": [
+    {
+      "text": "AskUserQuestion でモード=2(フル)を確認している",
+      "passed": true,
+      "evidence": "モード=2事前指定。レポートに「モード: 2 (full / 6段直列パイプライン)」明記"
+    },
+    {
+      "text": "6段すべて（Gemini→Claude→DS→Claude→Codex→Claude）が走っている",
+      "passed": true,
+      "evidence": "「パイプライン実行結果」表で2F-A〜2F-Fまですべて OK 状態確認"
+    },
+    {
+      "text": "6列統合表で出力している",
+      "passed": true,
+      "evidence": "8行の6列統合表（#/仮説/Gemini/DS/Codex/Claude最終判断）"
+    },
+    {
+      "text": "原因仮説が3つ以上提示されている（イベント取りこぼし/コールバック再入/widget破棄/OS遅延 等）",
+      "passed": true,
+      "evidence": "8仮説（H1ダブルクリック/H2スレッドブロック/H3フォーカス/H4 bind競合/H5データロック/H6 ttkヒットテスト境界/H7 Win32取りこぼし/H8 再描画競合）"
+    },
+    {
+      "text": "各仮説に検証手順（再現方法・ログ追加箇所等）が添えられている",
+      "passed": true,
+      "evidence": "Phase 0(共通計測の先入れ) + Phase 1/2/3 と各仮説の具体的検証方法（bindtags grep, perf_counter, focus_get等）"
+    },
+    {
+      "text": "Gemini と DS で異なる視点の仮説が出ている",
+      "passed": true,
+      "evidence": "Gemini=アプリ層仮説(H1-H5)、DS=低レイヤ仮説(H6 ttkヒットテスト/H7 Win32/H8 再描画)で明確に視点が分離"
+    }
+  ],
+  "summary": {
+    "pass_rate": 1.0,
+    "passed": 6,
+    "failed": 0,
+    "total": 6
+  }
+}

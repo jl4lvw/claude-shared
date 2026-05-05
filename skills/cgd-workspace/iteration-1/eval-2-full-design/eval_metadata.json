@@ -1,0 +1,14 @@
+{
+  "eval_id": 2,
+  "eval_name": "full-design-decision",
+  "prompt": "/cgd フルモードで PWA オフラインデータ更新キューイング設計を相談",
+  "assertions": [
+    {"text": "AskUserQuestion でモード=2(フル)を確認している", "category": "skill-flow"},
+    {"text": "Step 2F-A: Gemini に案出しを依頼している", "category": "skill-flow"},
+    {"text": "Step 2F-C: DS を --role advisor で呼び出し別案を取得している", "category": "skill-flow"},
+    {"text": "Step 2F-E: Codex に最終レビューを依頼している", "category": "skill-flow"},
+    {"text": "6列統合表（#/指摘/Gemini/DS/Codex/Claude最終判断）で出力している", "category": "output-format"},
+    {"text": "Background Sync API / Workbox / 独自Queue / 手動リトライ など複数案が出ている", "category": "review-quality"},
+    {"text": "再送順序保証・競合解決・リトライ上限について論じている", "category": "review-quality"}
+  ]
+}

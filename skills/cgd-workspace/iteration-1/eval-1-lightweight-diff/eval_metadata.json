@@ -1,0 +1,12 @@
+{
+  "eval_id": 1,
+  "eval_name": "lightweight-diff-review",
+  "prompt": "/cgd を使って軽量モードでコード変更案をレビュー（fetch_user の None→{} 化）",
+  "assertions": [
+    {"text": "AskUserQuestion でモード（1=軽量/2=フル）を確認している", "category": "skill-flow"},
+    {"text": "軽量モードを正しく選択し、Codex+Gemini を並列起動している", "category": "skill-flow"},
+    {"text": "5列統合表（指摘/Codex/Gemini/Claude採用/対応）で出力している", "category": "output-format"},
+    {"text": "「空辞書化はNoneチェックを別の沈黙バグに置き換える」相当の本質的指摘がある", "category": "review-quality"},
+    {"text": "Optional[dict] 明示や呼び出し側修正など代替案に言及している", "category": "review-quality"}
+  ]
+}

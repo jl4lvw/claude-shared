@@ -1,0 +1,45 @@
+{
+  "expectations": [
+    {
+      "text": "AskUserQuestion でモード=2(フル)を確認している",
+      "passed": false,
+      "evidence": "N/A: baseline はスキル未使用"
+    },
+    {
+      "text": "Step 2F-A: Gemini に案出しを依頼している",
+      "passed": false,
+      "evidence": "N/A: baseline は外部CLI不使用"
+    },
+    {
+      "text": "Step 2F-C: DS を --role advisor で呼び出し別案を取得している",
+      "passed": false,
+      "evidence": "N/A: baseline は外部CLI不使用"
+    },
+    {
+      "text": "Step 2F-E: Codex に最終レビューを依頼している",
+      "passed": false,
+      "evidence": "N/A: baseline は外部CLI不使用"
+    },
+    {
+      "text": "6列統合表（#/指摘/Gemini/DS/Codex/Claude最終判断）で出力している",
+      "passed": false,
+      "evidence": "独自の3列比較表（観点/案A/案B/案C）のみ、エージェント別列なし"
+    },
+    {
+      "text": "Background Sync API / Workbox / 独自Queue / 手動リトライ など複数案が出ている",
+      "passed": true,
+      "evidence": "案A=Background Sync(+Workbox言及)、案B=エンティティ別サブキュー、案C=イベントソーシング/CQRSの3案を提示"
+    },
+    {
+      "text": "再送順序保証・競合解決・リトライ上限について論じている",
+      "passed": true,
+      "evidence": "順序保証(FIFO/エンティティ別/完全)、競合解決(LWW/楽観ロック/rebase)、リトライ上限(7回+24h+dead-letter)すべて言及"
+    }
+  ],
+  "summary": {
+    "pass_rate": 0.2857142857142857,
+    "passed": 2,
+    "failed": 5,
+    "total": 7
+  }
+}

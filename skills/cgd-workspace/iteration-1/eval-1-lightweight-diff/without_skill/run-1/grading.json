@@ -1,0 +1,35 @@
+{
+  "expectations": [
+    {
+      "text": "AskUserQuestion でモード（1=軽量/2=フル）を確認している",
+      "passed": false,
+      "evidence": "N/A: baseline はスキル未使用のため該当機能なし"
+    },
+    {
+      "text": "軽量モードを正しく選択し、Codex+Gemini を並列起動している",
+      "passed": false,
+      "evidence": "N/A: baseline は外部CLI不使用"
+    },
+    {
+      "text": "5列統合表（指摘/Codex/Gemini/Claude採用/対応）で出力している",
+      "passed": false,
+      "evidence": "Codex/Gemini列がない独自フォーマット（4列代替案表のみ）"
+    },
+    {
+      "text": "「空辞書化はNoneチェックを別の沈黙バグに置き換える」相当の本質的指摘がある",
+      "passed": true,
+      "evidence": "「より検出困難なサイレントバグ」「キー存在チェック忘れに置き換わるだけで本質的に未解決」と明記"
+    },
+    {
+      "text": "Optional[dict] 明示や呼び出し側修正など代替案に言及している",
+      "passed": true,
+      "evidence": "案A: Optional[dict] + mypy strict / 案B: UserNotFound 例外 / 案C: get_user/require_user 分離 / 案D: dataclass Result"
+    }
+  ],
+  "summary": {
+    "pass_rate": 0.4,
+    "passed": 2,
+    "failed": 3,
+    "total": 5
+  }
+}

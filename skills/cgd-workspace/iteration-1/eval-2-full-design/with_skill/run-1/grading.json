@@ -1,0 +1,45 @@
+{
+  "expectations": [
+    {
+      "text": "AskUserQuestion でモード=2(フル)を確認している",
+      "passed": true,
+      "evidence": "モード=2事前指定の設計。レポートに「モード: 2 (フル, 6段直列)」明記"
+    },
+    {
+      "text": "Step 2F-A: Gemini に案出しを依頼している",
+      "passed": true,
+      "evidence": "Step 2F-A セクションあり、Gemini 4案を取得"
+    },
+    {
+      "text": "Step 2F-C: DS を --role advisor で呼び出し別案を取得している",
+      "passed": true,
+      "evidence": "Step 2F-C セクションあり、DS別案3個+見落とし5点を取得"
+    },
+    {
+      "text": "Step 2F-E: Codex に最終レビューを依頼している",
+      "passed": true,
+      "evidence": "Step 2F-E セクションあり、Codex 14指摘+推奨追加3項目"
+    },
+    {
+      "text": "6列統合表（#/指摘/Gemini/DS/Codex/Claude最終判断）で出力している",
+      "passed": true,
+      "evidence": "18行の6列統合表、列構成も仕様通り"
+    },
+    {
+      "text": "Background Sync API / Workbox / 独自Queue / 手動リトライ など複数案が出ている",
+      "passed": true,
+      "evidence": "Workbox BackgroundSync(案4)、CQRS操作ログ(DS別案1)、CRDT(DS別案2)、ローカルファースト(DS別案3)、セマンティックアクション(案2)など7案以上"
+    },
+    {
+      "text": "再送順序保証・競合解決・リトライ上限について論じている",
+      "passed": true,
+      "evidence": "順序保証(seq_no per device + depends_on_op_id)、競合解決(409/412/422分離)、リトライ上限(指数バックオフ+full jitter+6回上限+DLQ)すべて言及"
+    }
+  ],
+  "summary": {
+    "pass_rate": 1.0,
+    "passed": 7,
+    "failed": 0,
+    "total": 7
+  }
+}

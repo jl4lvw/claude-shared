@@ -1,0 +1,40 @@
+{
+  "expectations": [
+    {
+      "text": "AskUserQuestion でモード=2(フル)を確認している",
+      "passed": false,
+      "evidence": "N/A: baseline はスキル未使用"
+    },
+    {
+      "text": "6段すべて（Gemini→Claude→DS→Claude→Codex→Claude）が走っている",
+      "passed": false,
+      "evidence": "N/A: baseline は外部CLI不使用"
+    },
+    {
+      "text": "6列統合表で出力している",
+      "passed": false,
+      "evidence": "独自フォーマット（仮説H1-H8リスト＋検証順序＋共通診断ハーネス）、エージェント別列なし"
+    },
+    {
+      "text": "原因仮説が3つ以上提示されている（イベント取りこぼし/コールバック再入/widget破棄/OS遅延 等）",
+      "passed": true,
+      "evidence": "8仮説提示（H1 separator領域誤クリック/H2 UIブロック/H3 ダブルクリック競合/H4 サイレント例外/H5 lambda競合/H6 Button-1 break/H7 grab競合/H8 OS取りこぼし）"
+    },
+    {
+      "text": "各仮説に検証手順（再現方法・ログ追加箇所等）が添えられている",
+      "passed": true,
+      "evidence": "各 H に「検証:」セクションあり、共通診断ハーネス（コード付き）も提示"
+    },
+    {
+      "text": "Gemini と DS で異なる視点の仮説が出ている",
+      "passed": false,
+      "evidence": "N/A: baseline は単一エージェント（Claudeのみ）の出力"
+    }
+  ],
+  "summary": {
+    "pass_rate": 0.3333333333333333,
+    "passed": 2,
+    "failed": 4,
+    "total": 6
+  }
+}
