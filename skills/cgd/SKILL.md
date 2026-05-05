@@ -1,6 +1,6 @@
 ---
 name: cgd
-description: Codex+Gemini+DeepSeek の3者を使った設計・コード相談スキル。差分レビュー、設計判断、別案出し、難しい実装方針の検討に使う。`/cgd` 起動時に **1=軽量モード（C+G 並列、所要1〜2分・現行 /codex と同等）** か **2=フルモード（Gemini案出し→Claude検討→DS別案→Claude再検討→Codexレビュー→Claude最終まとめ の6段直列パイプライン、所要5〜8分）** を必ず選ばせる。「3者に相談」「DSにも別案」「フルパイプ」「cgd」「フル相談」などのキーワードで起動。重要な設計判断・難しいバグ・大きめのリファクタの検討時には積極的にこのスキルを提案すること（軽量で済むなら本スキルの軽量モードか既存 /codex を使う）。既存 /generate-by-deepseek（DSコード生成→Claudeレビュー）とは目的が異なる（cgd は「相談・別案」、後者は「実装代行」）。
+description: Codex+Gemini+DeepSeek の3者を使った設計・コード相談スキル。差分レビュー、設計判断、別案出し、難しい実装方針の検討に使う。`/cgd` 起動時に **1=軽量モード（C+G 並列、所要1〜2分・現行 /codex と同等）** か **2=フルモード（Gemini案出し→Claude検討→DS別案→Claude再検討→Codexレビュー→Claude最終まとめ の6段直列パイプライン、所要5〜8分）** を必ず選ばせる。**相談結果が出た後は共通フロー（実装→検証→C+G 再レビュー、最大2周の自動修正ループ付き）まで一気通貫で実行可能**。「3者に相談」「DSにも別案」「フルパイプ」「cgd」「フル相談」などのキーワードで起動。重要な設計判断・難しいバグ・大きめのリファクタの検討時には積極的にこのスキルを提案すること（軽量で済むなら本スキルの軽量モードか既存 /codex を使う）。既存 /generate-by-deepseek（DSコード生成→Claudeレビュー）とは目的が異なる（cgd は「相談・別案＋実装・検証・再レビュー」、後者は「実装代行」）。
 ---
 
 # cgd — Codex + Gemini + DeepSeek 統合相談スキル
@@ -75,6 +75,8 @@ mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && gemini --skip-trust -p "<Gemini プロ
 - 「指摘」列に **根拠1行を内包**（横長を避ける）
 - Claude採用: ✅採用 / ⏭️スキップ / 🔄部分採用
 - 表の前後に **総評（1〜3行）** と **次アクション（箇条書き）** を必ず添える
+
+**完了後、共通フロー Step 3 へ進む**（実装→検証→C+G 再レビュー）。
 
 ---
 
@@ -188,16 +190,122 @@ mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="
 cp <最終まとめ.md> "C:/tmp-ai/cgd_$(date +%Y%m%d_%H%M%S).md"
 ```
 
+**完了後、共通フロー Step 3 へ進む**（実装→検証→C+G 再レビュー）。
+
+---
+
+## Step 3〜7: 共通実装フロー（実装→検証→C+G 再レビュー）
+
+軽量モードの Step 2L-C / フルモードの Step 2F-F で「次アクション」が確定したら、以下の共通フローへ進む。
+**このフローは軽量・フル両モード共通**。
+
+### Step 3: 実装許可確認（条件付きスキップ）
+
+**直前のユーザー指示に「実装まで一気に」「実装まで」「そのまま実装」「impl まで」など、実装まで連続実行する旨が含まれていれば、Step 3 をスキップして Step 4 へ即進む。**
+
+それ以外は `AskUserQuestion` で実装可否を 1 回聞く（数字 1 文字で答えさせる運用に合わせる）:
+
+```
+Q: 実装に進む？
+1. 実装する（→ Step 4 へ）
+2. 実装せず終了（相談のみ）
+3. 修正して実装（次アクションをユーザー指示で差し替えてから実装）
+```
+
+選択 `2` の場合は Step 7（簡易まとめ）だけ出して終了。
+
+### Step 4: 実装フェーズ
+
+AGENTS.md / CLAUDE.md ルールを **強制適用** する:
+
+- **既存ファイル編集前に必ず `cp <file> <file>.bak_$(date +%Y%m%d_%H%M%S)` でバックアップ**（バックアップなしの編集禁止）
+- シバン行（`#!/usr/bin/env python3`）禁止（Windows で `py.exe` が即終了する）
+- ファイル読み書きは常に `encoding="utf-8"` 明示
+- CP932 コンソール対策: Python ワンライナー先頭に `sys.stdout.reconfigure(encoding="utf-8")`
+- 日本語パスへの Edit / Write が失敗する場合は **Python スクリプトを `C:/Users/jl4lv/` に書いて実行**（`open(..., encoding='utf-8')`）
+- バッチファイル（.bat）は **CP932** で書く（Write ツールは UTF-8 で書くため文字化けする）
+- API キー / シークレットを書き込まない・コミットしない
+
+実装は Step 2L-C / 2F-F で出した「次アクション」の項目順に進める。
+TodoWrite で進捗を管理する（項目数が 3 個以上の場合は必須）。
+
+### Step 5: 検証フェーズ（CLAUDE.md「コーディング後の必須検証」を強制）
+
+実装ファイルごとに以下 4 項目を確認し、**結果を表形式で必ず報告**:
+
+| # | 検証項目 | 結果 |
+|---|---|---|
+| 1 | 対象ファイルの import 一覧（先頭 20 行）を確認 | ✅/⚠️ |
+| 2 | 実 import で動作確認（`python -c "import sys; sys.path.insert(0, r'PATH'); from <mod> import <fn>; print('OK')"`） | ✅/❌ |
+| 3 | パス定数が実在するか（`python -c "from pathlib import Path; p=Path(r'...'); print(p, p.exists())"`） | ✅/❌ |
+| 4 | `ast.parse` だけで済ませていない（実 import まで実行した） | ✅ |
+
+**`ast.parse` だけの確認は NG**（NameError / ImportError を検出できないため）。必ず実 import まで実行する。
+
+検証 NG（❌）が 1 つでも出たら、**Step 4 に戻って修正**してから Step 5 をやり直す（このループは Step 6.5 とは別系統で、検証通過まで回す）。
+
+Python 以外（JS / TS / シェル等）の場合は、その言語の実行可能な最小確認（`node --check`、`tsc --noEmit`、`bash -n` 等）に置き換える。
+
+### Step 6: C+G 再レビュー（実装パッチを 3 者でレビュー）
+
+実装した差分を、軽量モード（C+G 並列）と同じ手順でレビューする。
+
+- 対象: 直近の `git diff`（または変更ファイル一覧の絶対パス）
+- Codex reasoning: 原則 **medium**（設計判断が重い／セキュリティに関わる場合は **high**）
+- Gemini 観点: 既存仕様との整合性・副作用・命名/構造の一貫性を中心に
+
+**1 メッセージで Bash 2 個を並列起動**（軽量モード Step 2L-B と同じ運用）:
+
+```bash
+# Bash #1（Codex）
+mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="medium" --sandbox read-only --skip-git-repo-check "<差分レビュープロンプト>" < /dev/null
+
+# Bash #2（Gemini）
+mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && gemini --skip-trust -p "<差分レビュープロンプト>" < /dev/null
+```
+
+差分が大きい場合は `git diff > C:/tmp-ai/impl_diff.patch` してから絶対パスでプロンプトに貼る。
+
+結果は Step 2L-C と同じ **5 列統合表** で出力する（重大度 🔴/🟠/🟡＋根拠 1 行を内包）。
+
+### Step 6.5: 重大指摘の自動修正ループ（最大 2 周）
+
+Step 6 の表で **🔴 重大指摘** が 1 つ以上 ✅採用 になった場合:
+
+1. 該当箇所を Step 4 と同じ要領で修正（**バックアップ必須**）
+2. Step 5（検証）を再実行
+3. Step 6（再レビュー）を再実行
+
+**自動で回す上限は 2 周まで**。3 周目に入る前に必ず一旦止め、ユーザーに状況報告して手動判断を仰ぐ（無限ループ防止）。
+
+🟠 重要 / 🟡 注意 のみの場合は自動ループせず、Step 7 のまとめに「未対応指摘」として記載する（対応するかはユーザー判断）。
+
+### Step 7: 最終まとめ
+
+以下を 1 つの報告にまとめる:
+
+1. **実装した内容** — 変更ファイル（絶対パス）と主要な変更点を箇条書き
+2. **検証結果** — Step 5 の表
+3. **再レビュー指摘と対応状況** — Step 6 の 5 列統合表 + 修正ループ周回数（0 / 1 / 2 / 中断）
+4. **未対応指摘**（あれば） — 🟠 / 🟡 で残ったもの
+5. **残課題・申し送り事項**（あれば）
+
+**最終報告をログ保存**:
+```bash
+cp <最終報告.md> "C:/tmp-ai/cgd_impl_$(date +%Y%m%d_%H%M%S).md"
+```
+
 ---
 
 ## Bash タイムアウト
 
 | ステップ | コマンド | timeout |
 |---|---|---|
-| 2L-B / 2F-A | gemini | 180000 (3分) |
+| 2L-B / 2F-A / 6 | gemini | 180000 (3分) |
 | 2F-C | deepseek (advisor) | 120000 (2分) |
-| 2L-B / 2F-E | codex medium | 300000 (5分) |
-| 2L-B / 2F-E | codex high | 600000 (10分) |
+| 2L-B / 2F-E / 6 | codex medium | 300000 (5分) |
+| 2L-B / 2F-E / 6 | codex high | 600000 (10分) |
+| 5 | python -c "from <mod> ..." | 60000 (1分) |
 
 ## 認証エラー検出時の挙動（必須）
 
@@ -222,12 +330,16 @@ Codex CLI / Gemini CLI / DeepSeek API の **いずれか一つでも認証エラ
 
 - **直列実行**: フルモードは順序が重要（前段の出力を後段に渡す）。並列起動はしない
 - **軽量モードは並列**: モード 1 では Codex / Gemini を 1 メッセージ内 Bash 2 個で並列起動
-- **スキル連鎖禁止**: 本スキル内から `/codex` や別スキルを自動呼び出ししない
-- **read-only**: Codex は `--sandbox read-only`、Gemini は `-p` 非対話、DS は API 単発呼び出し
+- **再レビュー（Step 6）も並列**: 軽量モードと同じ要領で C+G を 1 メッセージ内 Bash 2 個並列
+- **スキル連鎖禁止**: 本スキル内から `/codex` や別スキルを自動呼び出ししない（Step 6 は本スキル内に直接埋め込んだ C+G 並列。`/codex` を Skill 経由で呼ばない）
+- **相談段階は read-only**: Step 2L-B / 2F-A / 2F-C / 2F-E / 6 では Codex `--sandbox read-only`、Gemini `-p` 非対話、DS は API 単発呼び出し
+- **書き込みフェーズは Step 4 のみ**: ファイル編集・新規作成は **Step 4 に集約**。Codex / Gemini / DS には絶対に書き込ませない
 - **API キー**: DS は `DEEPSEEK_API_KEY` を読む。Codex/Gemini はサブスク認証
 - **機密情報**: 顧客データ・社内 DB 接続情報を不必要に外部 API（DS）に渡さない
 - **DS パスは絶対パス**: 相対 `.claude/tools/...` は CWD=`C:/tmp-ai` で解決失敗するので必ず絶対パス
-- **実装フェーズ**: 本スキルで方針が決まった後に実装に入る場合、AGENTS.md / CLAUDE.md ルール（`.bak_YYYYMMDD_HHMMSS` バックアップ・shebang禁止・`encoding="utf-8"`）を必ず守る
+- **実装フェーズの規約強制**: Step 4 では AGENTS.md / CLAUDE.md ルール（`.bak_YYYYMMDD_HHMMSS` バックアップ・shebang 禁止・`encoding="utf-8"` 明示・日本語パスは Python スクリプト経由・.bat は CP932）を必ず守る
+- **検証フェーズの省略禁止**: Step 5 で `ast.parse` だけで済ませず、必ず実 import まで実行する
+- **修正ループ上限**: Step 6.5 の自動修正は **最大 2 周**。3 周目に入る前に必ずユーザーに状況報告
 
 ## トラブルシュート
 
