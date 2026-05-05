@@ -199,6 +199,25 @@ cp <最終まとめ.md> "C:/tmp-ai/cgd_$(date +%Y%m%d_%H%M%S).md"
 | 2L-B / 2F-E | codex medium | 300000 (5分) |
 | 2L-B / 2F-E | codex high | 600000 (10分) |
 
+## 認証エラー検出時の挙動（必須）
+
+Codex CLI / Gemini CLI / DeepSeek API の **いずれか一つでも認証エラーを返したら、そこで即中断**する。残り段を片肺で続行しない・自動で別ツールに切り替えない。
+
+**検出シグナル（例）**:
+- Codex: `Not logged in` / `401` / `unauthorized`
+- Gemini: `/auth` 要求 / `401` / `permission denied`
+- DeepSeek: `openai.AuthenticationError` / `401 Unauthorized` / `invalid api key` / `DEEPSEEK_API_KEY が設定されていません`
+
+**中断時にユーザーへ報告する内容**（1〜3 行）:
+1. どの API で何のエラーが出たか
+2. 復旧手順（`codex login` / `gemini` 対話起動の `/auth` / `DEEPSEEK_API_KEY` の設定確認）
+3. 復旧後に `/cgd` を再実行する旨
+
+**特にやってはいけないこと**:
+- 軽量モード（C+G 並列）で片方が認証エラーのまま、もう片方の出力だけで 5 列統合表を作る
+- フルモード（6段直列）で途中段の認証エラーを無視して中間結果を「結論」として扱う
+- 別の API（例: 認証成功している側）で代用して続行する
+
 ## 注意事項
 
 - **直列実行**: フルモードは順序が重要（前段の出力を後段に渡す）。並列起動はしない
