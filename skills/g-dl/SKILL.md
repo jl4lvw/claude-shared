@@ -141,7 +141,7 @@ foreach ($t in $targets) {
     Write-Host "  mirror $t ..."
     & robocopy $src $dst /MIR /NFL /NDL /NP /R:2 /W:1 `
         /XD __pycache__ '.bootstrap-bak-*' '.migrate-pending-*' `
-        /XF '*.bak_*' '*.pyc' | Out-Null
+        /XF '*.bak_*' '*.pyc' '.deepseek_usage_session.json' | Out-Null
     if ($LASTEXITCODE -ge 8) {
         Write-Host "    robocopy ERROR (exit=$LASTEXITCODE) for $t" -ForegroundColor Red
         $mirrorOk = $false
