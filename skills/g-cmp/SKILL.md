@@ -76,9 +76,10 @@ foreach ($t in $targets) {
         continue
     }
     # /L /MIR で「もし MIR したら何が起きるか」を取得
+    # /g-ul / /g-dl と同じ除外パターンに揃える（差分検出と同期で挙動を一致させる）
     $rcOut = & robocopy $src $dst /L /MIR /NJH /NJS /NS /NC /NDL /FP /R:0 /W:0 `
         /XD __pycache__ '.bootstrap-bak-*' '.migrate-pending-*' `
-        /XF '*.bak_*' '*.pyc' 2>&1
+        /XF '*.bak_*' '*.pyc' '.deepseek_usage_session.json' 2>&1
     $diffLines = @($rcOut | Where-Object { $_ -match '\S' -and $_ -notmatch '^\s+ROBOCOPY' -and $_ -notmatch '^---' })
     if ($diffLines.Count -gt 0) {
         $mirrorDiffs += "  $t : $($diffLines.Count) entries differ"
