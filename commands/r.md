@@ -1,5 +1,5 @@
 ---
-description: TeamTasks PWA (`/tasks/r/`) の DB に書き溜めた遠隔指示を、現在のセッションへの追加指示として読み取り・解釈・実行する。`/r` または `r` 単体起動で未取り込み一覧と概要を表示し、ボタンで 1 件選択して実行。`/r NNN` で番号指定単発取り込み。Discord 双方向対応（ボタン/`r: ok` テキスト/PC フォールバック）。Google Tasks 経路は廃止済み。
+description: TeamTasks PWA (`/tasks/r/`) の DB に書き溜めた遠隔指示を、現在のセッションへの追加指示として読み取り・解釈・実行する。`/r` または `r` 単体起動で未取り込み一覧と概要を表示し、ボタンで 1 件選択して実行。`/r NNN` で番号指定単発取り込み。**画像添付対応** — PWA で貼り付けた画像があれば Read ツールで視覚的に解釈する。Discord 双方向対応（ボタン/`r: ok` テキスト/PC フォールバック）。Google Tasks 経路は廃止済み。
 ---
 
 # /r — 遠隔指示取り込みスキル（DB 版）
@@ -126,12 +126,27 @@ def _summarize(body: str, n: int = 60) -> str:
     s = (body or "").replace("\r\n", "\n").replace("\n", "↵").strip()
     return s[:n] + ("…" if len(s) > n else "")
 
+def _image_local_path(code: str, fname: str) -> Path:
+    """添付画像のローカル絶対パス（uploads/r/{code}/{fname}）。
+
+    /r とサーバが同一 PC で動作する前提。HTTP DL 不要、Read ツールで直接開ける。
+    """
+    return _ROOT / "014.TeamTasks" / "server" / "uploads" / "r" / code / fname
+
 for i, t in enumerate(items, 1):
+    imgs = t.get("images") or []
     if TARGET_CODE:
         print(f"--- {i} (#{t['code']}) ---")
         print(f"BODY: {t['body']}")
+        if imgs:
+            print(f"📎 添付 {len(imgs)} 枚:")
+            for fn in imgs:
+                p = _image_local_path(t['code'], fn)
+                marker = "" if p.exists() else " [⚠️ ファイルなし]"
+                print(f"  - {p}{marker}")
     else:
-        print(f"  {i}. (#{t['code']}) {_summarize(t['body'])}")
+        tag = f" 📎×{len(imgs)}" if imgs else ""
+        print(f"  {i}. (#{t['code']}){tag} {_summarize(t['body'])}")
 ```
 
 ### Step 2: 0 件 / API 落ちのハンドリング
@@ -213,9 +228,11 @@ items = [CHOSEN]   # 以降は 1 件モードと同じ扱い
 `items` は常に長さ 1（単発モード or Step 3 で選択された 1 件）。
 解釈表 1 行で内容と危険度を提示し、Y/N の承認を得る。
 
-| code | 作成時刻 | 指示文（要約） | Claude の解釈 | 想定アクション | 対象ファイル/影響範囲 | 現セッションとの関連 | 危険度 |
-|---|---|---|---|---|---|---|---|
-| 042 | 04-25 09:12 | ... | ... | ... | ... | あり/なし | 低/中/高 |
+**添付画像の事前読み込み**: `items[0]["images"]` が空でなければ、各画像のローカル絶対パスを **Read ツールで開いて視覚情報を取得** してから解釈表を埋めること。画像から読み取った内容は「Claude の解釈」欄に反映する（例: 「画面の右上にエラー赤帯が出ている」「テーブルの 3 行目が崩れている」など）。
+
+| code | 作成時刻 | 指示文（要約） | 添付画像 | Claude の解釈 | 想定アクション | 対象ファイル/影響範囲 | 現セッションとの関連 | 危険度 |
+|---|---|---|---|---|---|---|---|---|
+| 042 | 04-25 09:12 | ... | 📎×2 / なし | ...（画像所見込み） | ... | ... | あり/なし | 低/中/高 |
 
 **危険度の目安**:
 - **高**: rm/Remove-Item/git branch -D、force push、reset --hard、DB 直接操作、外部送信、シークレット操作、本番影響
@@ -252,6 +269,7 @@ notify(f"▶ 取り込み開始: #{items[0]['code']}")
 - 1 回の `/r` で実行する指示は **常に 1 件**（単発モードも一括メニュー選択モードも同じ）
 - 残件は実行完了後に再度 `/r` を実行すれば再表示される
 - 指示の意図が曖昧なときは推測実行せず確認する
+- **添付画像がある場合**: 実装中も適宜 Read ツールで画像を再参照し、視覚情報を反映した実装を行う（例: 「赤帯のエラーメッセージ」「右肩のボタン位置」など、文章だけでは伝わらない情報源として活用）
 
 既存規約（AGENTS.md / CLAUDE.md）を遵守:
 - スクリプト編集前に `.bak_YYYYMMDD_HHMMSS` バックアップ
@@ -316,6 +334,7 @@ else:
 8. **Discord 通知**: `.handoff/discord_webhook.txt` に Webhook URL があれば自動通知（未設定時は黙ってスキップ）
 9. **Discord 双方向**: ボタン (Bot) + テキスト (`r: ok`) + PC 入力の三本立て。タイムアウト時は PC 入力にフォールバック
 10. **同時取り込み（複数 PC）**: consume API は CAS 風 UPDATE で先着 1 名のみ成功（200）、後続は 409 `already_consumed`
+11. **添付画像**: `014.TeamTasks/server/uploads/r/{code}/{filename}` に保存、Caddy 経由で `https://sfuji.f5.si/tasksapi/uploads/r/{code}/{filename}` で配信。consume / archive しても画像ファイルは削除しない（履歴として残す。掃除は手動 or 別スキル）。/r 実行 PC のローカル FS にファイルが無い場合（別 PC で添付されたが同期前など）は警告ログ出して body のみで実行
 
 ---
 
@@ -332,6 +351,10 @@ else:
 | POST | `/{code}/consume` | 取り込み確定（先着 200 / 409 already_consumed） |
 | POST | `/{code}/restore` | consumed_at を NULL に戻す |
 | POST | `/{code}/archive` | archived フラグをトグル |
+| POST | `/{code}/images` | 画像 1 枚を添付（multipart/form-data, 4 枚 / 1MB / jpeg-png-webp-gif） |
+| DELETE | `/{code}/images/{filename}` | 添付画像 1 枚を削除（パス traversal 防御） |
+
+**画像配信**: `https://sfuji.f5.si/tasksapi/uploads/r/{code}/{filename}` で直接取得可。/r スキルはローカル FS から `Read` ツールで読み込む。
 
 ---
 
