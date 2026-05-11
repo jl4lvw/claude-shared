@@ -7,7 +7,7 @@ description: claude-shared をリモート Git から pull した後、`%USERPRO
 
 `%USERPROFILE%\claude-shared\` をリモートから fast-forward pull → プロジェクトの `.claude/` にミラーコピー。
 
-**Option C ミラー方式**: ジャンクション不使用。pull 後 robocopy /MIR で `.claude/` を更新する。
+**Option C ミラー方式**: ジャンクション不使用。pull 後 `robocopy //MIR` で `.claude/` を更新する。
 
 ## 使い方
 
@@ -19,142 +19,147 @@ description: claude-shared をリモート Git から pull した後、`%USERPRO
 
 ## 手順
 
-### Step 1: PowerShell で実行
+### Step 1: Bash で実行
 
-**Bash ではなく PowerShell ツール**を使うこと。
+**Bash ツール**を使うこと（git-bash 経由）。
 
-```powershell
-#requires -Version 7
-$ErrorActionPreference = 'Stop'
-$env:GIT_TERMINAL_PROMPT = '0'
+過去に PowerShell ツール経由で exit code 1 / 出力なしで失敗する環境が確認されたため、本スキルは Bash 単独運用に統一している。
 
-# プロジェクトルート（CWD = .claude の親想定）
-$cwd = (Get-Location).Path
-$claudeDir = Join-Path $cwd '.claude'
-if (-not (Test-Path -LiteralPath $claudeDir)) {
-    Write-Error "CWD に .claude/ が見つかりません: $cwd"
-    return
-}
-$shared  = Join-Path $env:USERPROFILE 'claude-shared'
-$targets = @('skills','commands','tools','rules','memory')
+```bash
+# 注意: set -e は使わない。robocopy は「成功」でも非ゼロ終了する（0-7=ok, 8+=error）ため、
+# set -e があると正常コピー直後に中断する。各ステップで明示的に終了コードを判定する。
 
-if (-not (Test-Path -LiteralPath $shared)) {
-    Write-Error "claude-shared not found: $shared (新PC は git clone が必要)"
-    return
-}
+CLAUDE_DIR="$(pwd)/.claude"
+if [ ! -d "$CLAUDE_DIR" ]; then
+    echo "CWD に .claude/ が見つかりません: $(pwd)" >&2
+    exit 1
+fi
 
-Write-Host "ClaudeDir: $claudeDir"
-Write-Host "Shared:    $shared"
+SHARED_WIN_RAW="$USERPROFILE/claude-shared"
+SHARED_BASH=$(cygpath -u "$SHARED_WIN_RAW" 2>/dev/null || echo "${SHARED_WIN_RAW//\\//}" | sed 's|^C:|/c|')
+if [ ! -d "$SHARED_BASH" ]; then
+    echo "claude-shared not found: $SHARED_BASH (新PC は git clone が必要)" >&2
+    exit 1
+fi
+TARGETS="skills commands tools rules memory"
+
+echo "ClaudeDir: $CLAUDE_DIR"
+echo "Shared:    $SHARED_BASH"
 
 # Step A: claude-shared を Git から pull
-Push-Location -LiteralPath $shared
-try {
-    $remoteUrl = git remote get-url origin 2>$null
-    if (-not $remoteUrl) {
-        Write-Host "origin remote 未設定" -ForegroundColor Red
-        return
-    }
-    Write-Host "remote: $remoteUrl"
+cd "$SHARED_BASH" || exit 1
 
-    # ローカル dirty チェック
-    $status = git status --porcelain
-    if (-not [string]::IsNullOrWhiteSpace($status)) {
-        Write-Host "ローカル(claude-shared) に未コミット変更があります:" -ForegroundColor Yellow
-        git status --short
-        Write-Host ""
-        Write-Host "先に /g-ul で push してから /g-dl を実行してください。" -ForegroundColor Yellow
-        return
-    }
+REMOTE_URL=$(git remote get-url origin 2>/dev/null)
+if [ -z "$REMOTE_URL" ]; then
+    echo "origin remote 未設定" >&2
+    exit 1
+fi
+echo "remote: $REMOTE_URL"
 
-    Write-Host ""
-    Write-Host "=== fetch ==="
-    git fetch --prune
-    if ($LASTEXITCODE -ne 0) { throw "git fetch failed" }
+# ローカル dirty チェック
+DIRTY=$(git status --porcelain)
+if [ -n "$DIRTY" ]; then
+    echo "ローカル(claude-shared) に未コミット変更があります:"
+    git status --short
+    echo ""
+    echo "先に /g-ul で push してから /g-dl を実行してください。"
+    exit 1
+fi
 
-    # デフォルトブランチ動的取得
-    $defaultBranch = $null
-    $headRef = git symbolic-ref --short refs/remotes/origin/HEAD 2>$null
-    if ($headRef) { $defaultBranch = ($headRef -replace '^origin/','') }
-    if (-not $defaultBranch) {
-        $headRef = git rev-parse --abbrev-ref origin/HEAD 2>$null
-        if ($headRef -and $headRef -ne 'origin/HEAD') {
-            $defaultBranch = ($headRef -replace '^origin/','')
-        }
-    }
-    if (-not $defaultBranch) {
-        $remotes = git branch -r 2>$null
-        foreach ($candidate in @('main','master')) {
-            if ($remotes -match "origin/$candidate(\s|$)") {
-                $defaultBranch = $candidate
-                break
-            }
-        }
-    }
-    if (-not $defaultBranch) { $defaultBranch = git branch --show-current }
-    if (-not $defaultBranch) { $defaultBranch = 'main' }
-    Write-Host "default branch: $defaultBranch"
+echo ""
+echo "=== fetch ==="
+git fetch --prune
 
-    $upstream = git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>$null
-    if (-not $upstream) {
-        Write-Host "upstream 未設定です。次を実行してから再試行: git branch --set-upstream-to=origin/$defaultBranch" -ForegroundColor Yellow
-        return
-    }
+# デフォルトブランチ動的取得
+DEFAULT_BRANCH=""
+HEAD_REF=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)
+if [ -n "$HEAD_REF" ]; then
+    DEFAULT_BRANCH="${HEAD_REF#origin/}"
+fi
+if [ -z "$DEFAULT_BRANCH" ]; then
+    HEAD_REF=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null)
+    if [ -n "$HEAD_REF" ] && [ "$HEAD_REF" != "origin/HEAD" ]; then
+        DEFAULT_BRANCH="${HEAD_REF#origin/}"
+    fi
+fi
+if [ -z "$DEFAULT_BRANCH" ]; then
+    REMOTES=$(git branch -r 2>/dev/null)
+    for candidate in main master; do
+        if echo "$REMOTES" | grep -qE "origin/$candidate(\s|$)"; then
+            DEFAULT_BRANCH="$candidate"
+            break
+        fi
+    done
+fi
+if [ -z "$DEFAULT_BRANCH" ]; then
+    DEFAULT_BRANCH=$(git branch --show-current)
+fi
+[ -z "$DEFAULT_BRANCH" ] && DEFAULT_BRANCH="main"
+echo "default branch: $DEFAULT_BRANCH"
 
-    Write-Host ""
-    Write-Host "=== upcoming changes ($upstream vs HEAD) ==="
-    $upcoming = git log --oneline "HEAD..$upstream" 2>$null
-    $hasUpdate = (-not [string]::IsNullOrWhiteSpace($upcoming))
-    if ($hasUpdate) {
-        Write-Host $upcoming
-        Write-Host ""
-        git diff --stat "HEAD..$upstream"
-        Write-Host ""
-        Write-Host "=== pull --ff-only ==="
-        git pull --ff-only
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host ""
-            Write-Host "ff-only pull 失敗。履歴分岐。" -ForegroundColor Red
-            Write-Host "  1. stash 退避: git stash push -m 'pre-gdl' ; git pull --ff-only ; git stash pop"
-            Write-Host "  2. ブランチ退避+rebase: git branch backup-$(Get-Date -Format yyyyMMddHHmmss) ; git pull --rebase"
-            Write-Host "  3. 最終手段 ローカル破棄: git reset --hard $upstream"
-            throw "ff-only pull failed"
-        }
-        Write-Host "OK: claude-shared pulled." -ForegroundColor Green
-    } else {
-        Write-Host "claude-shared 側更新なし（ミラーは続行）。" -ForegroundColor Green
-    }
-} finally {
-    Pop-Location
-}
+UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)
+if [ -z "$UPSTREAM" ]; then
+    echo "upstream 未設定です。次を実行してから再試行: git branch --set-upstream-to=origin/$DEFAULT_BRANCH"
+    exit 1
+fi
+
+echo ""
+echo "=== upcoming changes ($UPSTREAM vs HEAD) ==="
+UPCOMING=$(git log --oneline "HEAD..$UPSTREAM" 2>/dev/null)
+if [ -n "$UPCOMING" ]; then
+    echo "$UPCOMING"
+    echo ""
+    git diff --stat "HEAD..$UPSTREAM"
+    echo ""
+    echo "=== pull --ff-only ==="
+    if ! git pull --ff-only; then
+        echo ""
+        echo "ff-only pull 失敗。履歴分岐。" >&2
+        STAMP=$(date +"%Y%m%d%H%M%S")
+        echo "  1. stash 退避: git stash push -m 'pre-gdl' ; git pull --ff-only ; git stash pop"
+        echo "  2. ブランチ退避+rebase: git branch backup-$STAMP ; git pull --rebase"
+        echo "  3. 最終手段 ローカル破棄: git reset --hard $UPSTREAM"
+        exit 1
+    fi
+    echo "OK: claude-shared pulled."
+else
+    echo "claude-shared 側更新なし（ミラーは続行）。"
+fi
 
 # Step B: claude-shared/* -> .claude/* ミラー
-Write-Host ""
-Write-Host "=== Mirror claude-shared/ -> .claude/ ==="
-$mirrorOk = $true
-foreach ($t in $targets) {
-    $src = Join-Path $shared $t
-    $dst = Join-Path $claudeDir $t
-    if (-not (Test-Path -LiteralPath $src)) {
-        Write-Host "  $t : claude-shared 側になし、skip"
+cd /
+echo ""
+echo "=== Mirror claude-shared/ -> .claude/ ==="
+MIRROR_OK=1
+for t in $TARGETS; do
+    SRC_BASH="$SHARED_BASH/$t"
+    DST_BASH="$CLAUDE_DIR/$t"
+    if [ ! -d "$SRC_BASH" ]; then
+        echo "  $t : claude-shared 側になし、skip"
         continue
-    }
-    Write-Host "  mirror $t ..."
-    & robocopy $src $dst /MIR /NFL /NDL /NP /R:2 /W:1 `
-        /XD __pycache__ '.bootstrap-bak-*' '.migrate-pending-*' `
-        /XF '*.bak_*' '*.pyc' '.deepseek_usage_session.json' | Out-Null
-    if ($LASTEXITCODE -ge 8) {
-        Write-Host "    robocopy ERROR (exit=$LASTEXITCODE) for $t" -ForegroundColor Red
-        $mirrorOk = $false
-    }
-}
+    fi
+    # robocopy に渡すパスは Windows 形式 (C:\...) に変換する
+    SRC_W=$(cygpath -w "$SRC_BASH")
+    DST_W=$(cygpath -w "$DST_BASH")
+    echo "  mirror $t ..."
+    # git-bash では robocopy のスラッシュオプションが MSYS パス変換に巻き込まれるため //OPT で escape
+    robocopy "$SRC_W" "$DST_W" //MIR //NFL //NDL //NP //R:2 //W:1 \
+        //XD __pycache__ ".bootstrap-bak-*" ".migrate-pending-*" \
+        //XF "*.bak_*" "*.pyc" ".deepseek_usage_session.json" > /dev/null 2>&1
+    EXIT=$?
+    if [ $EXIT -ge 8 ]; then
+        echo "    robocopy ERROR (exit=$EXIT) for $t" >&2
+        MIRROR_OK=0
+    fi
+done
 
-if ($mirrorOk) {
-    Write-Host ""
-    Write-Host "OK: .claude/ updated from claude-shared." -ForegroundColor Green
-} else {
-    Write-Host ""
-    Write-Host "ミラー中にエラーあり。.claude/ 状態を確認してください。" -ForegroundColor Red
-}
+echo ""
+if [ $MIRROR_OK -eq 1 ]; then
+    echo "OK: .claude/ updated from claude-shared."
+else
+    echo "ミラー中にエラーあり。.claude/ 状態を確認してください。" >&2
+    exit 1
+fi
 ```
 
 ### Step 2: 完了報告
@@ -164,7 +169,14 @@ if ($mirrorOk) {
 ## エラー時
 
 - `CWD に .claude/ が見つかりません` → プロジェクトルートで実行
-- `claude-shared not found` → 新PC は `git clone https://github.com/jl4lvw/claude-shared.git C:\Users\<user>\claude-shared`
+- `claude-shared not found` → 新PC は `git clone https://github.com/jl4lvw/claude-shared.git "$USERPROFILE/claude-shared"`
 - ローカル(claude-shared) に未コミット変更 → 先に `/g-ul`
 - ff-only pull 失敗 → ガイダンスで対処
 - `robocopy ERROR (exit>=8)` → ファイルロック・権限。Claude Code 終了して再試行
+
+## 実装メモ
+
+- git-bash 環境では `robocopy /MIR` を呼ぶと MSYS パス変換で `/MIR` → `C:/Program Files/Git/MIR` に化けて exit 16 で失敗する
+- 対策: すべてのスラッシュオプションを `//MIR //NFL //XD ...` のダブルスラッシュで escape する
+- パスは `cygpath -w` で Windows 形式（`C:\path\to`）に変換してから robocopy に渡す
+- 過去に PowerShell ツールが exit code 1 で出力ゼロになる環境が確認されたため、本スキルは Bash 単独運用に統一

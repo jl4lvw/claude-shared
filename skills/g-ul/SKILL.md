@@ -5,7 +5,7 @@ description: プロジェクトの `.claude/{skills,commands,tools,rules,memory}
 
 # /g-ul — claude-shared upload (mirror approach)
 
-プロジェクトの `.claude/{skills,commands,tools,rules,memory}` を `%USERPROFILE%\claude-shared\` にミラーコピー (`robocopy /MIR`) してから Git に push する。
+プロジェクトの `.claude/{skills,commands,tools,rules,memory}` を `%USERPROFILE%\claude-shared\` にミラーコピー (`robocopy //MIR`) してから Git に push する。
 
 **Option C ミラー方式**: ジャンクションを使わない。OneDrive が `.claude/` をジャンクション越しに破壊する事故を構造的に回避。
 
@@ -20,128 +20,140 @@ description: プロジェクトの `.claude/{skills,commands,tools,rules,memory}
 
 ### Step 1: 引数からコミットメッセージを取り出す
 
-ユーザー引数があればそれをメッセージに使う。未指定なら `sync: <ComputerName> <yyyy-MM-dd HH:mm>` を自動生成。
+ユーザー引数があればそれをメッセージに使う。未指定なら `sync: <hostname> <yyyy-MM-dd HH:mm>` を自動生成。
 
-### Step 2: PowerShell で実行
+### Step 2: Bash で実行
 
-**Bash ではなく PowerShell ツール**を使うこと。`<USER_ARGS_OR_EMPTY>` プレースホルダは、Claude が引数の有無で置換:
-- 引数あり → そのテキストを埋め込む
+**Bash ツール**を使うこと（git-bash 経由）。
+
+過去に PowerShell ツール経由で exit code 1 / 出力なしで失敗する環境が確認されたため、本スキルは Bash 単独運用に統一している。
+
+`<USER_ARGS_OR_EMPTY>` プレースホルダは、Claude が引数の有無で置換:
+- 引数あり → そのテキストを埋め込む（シングルクォート内で `'` は `'\''` にエスケープ）
 - 引数なし → **必ず空文字列 `''` に置換**
 
-```powershell
-#requires -Version 7
-$ErrorActionPreference = 'Stop'
-$env:GIT_TERMINAL_PROMPT = '0'
+```bash
+# 注意: set -e は使わない。robocopy は「成功」でも非ゼロ終了する（0-7=ok, 8+=error）ため、
+# set -e があると正常コピー直後に中断する。各ステップで明示的に終了コードを判定する。
 
 # プロジェクトルート（CWD = .claude の親想定）
-$cwd = (Get-Location).Path
-$claudeDir = Join-Path $cwd '.claude'
-if (-not (Test-Path -LiteralPath $claudeDir)) {
-    Write-Error "CWD に .claude/ が見つかりません: $cwd"
-    return
-}
-$shared  = Join-Path $env:USERPROFILE 'claude-shared'
-$targets = @('skills','commands','tools','rules','memory')
+CLAUDE_DIR="$(pwd)/.claude"
+if [ ! -d "$CLAUDE_DIR" ]; then
+    echo "CWD に .claude/ が見つかりません: $(pwd)" >&2
+    exit 1
+fi
 
-if (-not (Test-Path -LiteralPath $shared)) {
-    Write-Error "claude-shared not found: $shared (新PC は git clone が必要)"
-    return
-}
+# claude-shared 位置（Bash 形式と Windows 形式の両方持つ）
+SHARED_WIN_RAW="$USERPROFILE/claude-shared"
+SHARED_BASH=$(cygpath -u "$SHARED_WIN_RAW" 2>/dev/null || echo "${SHARED_WIN_RAW//\\//}" | sed 's|^C:|/c|')
+if [ ! -d "$SHARED_BASH" ]; then
+    echo "claude-shared not found: $SHARED_BASH (新PC は git clone が必要)" >&2
+    exit 1
+fi
+TARGETS="skills commands tools rules memory"
 
-Write-Host "ClaudeDir: $claudeDir"
-Write-Host "Shared:    $shared"
+echo "ClaudeDir: $CLAUDE_DIR"
+echo "Shared:    $SHARED_BASH"
 
 # Sanity: .claude/skills と claude-shared/skills のファイル数を比較
 # .claude が極端に少ない場合は abort（OneDrive 同期途中などで全消し事故防止）
-$srcSkills = Join-Path $claudeDir 'skills'
-$dstSkills = Join-Path $shared 'skills'
-if ((Test-Path -LiteralPath $srcSkills) -and (Test-Path -LiteralPath $dstSkills)) {
-    $srcCount = @(Get-ChildItem -LiteralPath $srcSkills -Recurse -File -Force -ErrorAction SilentlyContinue).Count
-    $dstCount = @(Get-ChildItem -LiteralPath $dstSkills -Recurse -File -Force -ErrorAction SilentlyContinue).Count
-    if (($dstCount -gt 5) -and ($srcCount -lt ($dstCount * 0.5))) {
-        Write-Host ""
-        Write-Host "Sanity check FAIL: .claude/skills=$srcCount files but claude-shared/skills=$dstCount" -ForegroundColor Red
-        Write-Host "ミラーすると大量削除になります。OneDrive 同期途中？ 中断します。" -ForegroundColor Red
-        return
-    }
-}
+SRC_SKILLS="$CLAUDE_DIR/skills"
+DST_SKILLS="$SHARED_BASH/skills"
+if [ -d "$SRC_SKILLS" ] && [ -d "$DST_SKILLS" ]; then
+    SRC_COUNT=$(find "$SRC_SKILLS" -type f 2>/dev/null | wc -l)
+    DST_COUNT=$(find "$DST_SKILLS" -type f 2>/dev/null | wc -l)
+    if [ "$DST_COUNT" -gt 5 ] && [ "$SRC_COUNT" -lt $((DST_COUNT / 2)) ]; then
+        echo ""
+        echo "Sanity check FAIL: .claude/skills=$SRC_COUNT files but claude-shared/skills=$DST_COUNT" >&2
+        echo "ミラーすると大量削除になります。OneDrive 同期途中？ 中断します。" >&2
+        exit 1
+    fi
+fi
 
 # Step A: .claude/* -> claude-shared/* ミラー
-Write-Host ""
-Write-Host "=== Mirror .claude/ -> claude-shared/ ==="
-foreach ($t in $targets) {
-    $src = Join-Path $claudeDir $t
-    $dst = Join-Path $shared $t
-    if (-not (Test-Path -LiteralPath $src)) {
-        Write-Host "  $t : .claude/ 側になし、skip"
+echo ""
+echo "=== Mirror .claude/ -> claude-shared/ ==="
+for t in $TARGETS; do
+    SRC_BASH="$CLAUDE_DIR/$t"
+    DST_BASH="$SHARED_BASH/$t"
+    if [ ! -d "$SRC_BASH" ]; then
+        echo "  $t : .claude/ 側になし、skip"
         continue
-    }
-    Write-Host "  mirror $t ..."
-    & robocopy $src $dst /MIR /NFL /NDL /NP /R:2 /W:1 `
-        /XD __pycache__ '.bootstrap-bak-*' '.migrate-pending-*' `
-        /XF '*.bak_*' '*.pyc' '.deepseek_usage_session.json' | Out-Null
-    if ($LASTEXITCODE -ge 8) {
-        Write-Host "    robocopy ERROR (exit=$LASTEXITCODE) for $t" -ForegroundColor Red
-        return
-    }
-}
-Write-Host "  mirror done." -ForegroundColor Green
+    fi
+    # robocopy に渡すパスは Windows 形式 (C:\...) に変換する
+    SRC_W=$(cygpath -w "$SRC_BASH")
+    DST_W=$(cygpath -w "$DST_BASH")
+    echo "  mirror $t ..."
+    # git-bash では robocopy のスラッシュオプションが MSYS パス変換に巻き込まれるため //OPT で escape
+    robocopy "$SRC_W" "$DST_W" //MIR //NFL //NDL //NP //R:2 //W:1 \
+        //XD __pycache__ ".bootstrap-bak-*" ".migrate-pending-*" \
+        //XF "*.bak_*" "*.pyc" ".deepseek_usage_session.json" > /dev/null 2>&1
+    EXIT=$?
+    # robocopy 終了コード: 0-7 = 成功（差分の有無）、8+ = エラー
+    if [ $EXIT -ge 8 ]; then
+        echo "    robocopy ERROR (exit=$EXIT) for $t" >&2
+        exit 1
+    fi
+done
+echo "  mirror done."
 
-Push-Location -LiteralPath $shared
-try {
-    $remoteUrl = git remote get-url origin 2>$null
-    if (-not $remoteUrl) {
-        Write-Host "origin remote 未設定" -ForegroundColor Red
-        return
-    }
-    Write-Host ""
-    Write-Host "remote: $remoteUrl"
+# Step B: claude-shared 側で git add / commit / push
+cd "$SHARED_BASH" || exit 1
 
-    $status = git status --porcelain
-    if ([string]::IsNullOrWhiteSpace($status)) {
-        Write-Host "変更なし。push 不要。" -ForegroundColor Yellow
-        return
-    }
+REMOTE_URL=$(git remote get-url origin 2>/dev/null)
+if [ -z "$REMOTE_URL" ]; then
+    echo "origin remote 未設定" >&2
+    exit 1
+fi
+echo ""
+echo "remote: $REMOTE_URL"
 
-    Write-Host ""
-    Write-Host "=== 変更ファイル ==="
-    git status --short
+STATUS=$(git status --porcelain)
+if [ -z "$STATUS" ]; then
+    echo "変更なし。push 不要。"
+    exit 0
+fi
 
-    git add -A | Out-Null
+echo ""
+echo "=== 変更ファイル ==="
+git status --short
 
-    Write-Host ""
-    Write-Host "=== 差分サマリ ==="
-    git diff --cached --stat
+git add -A
 
-    $msg = '<USER_ARGS_OR_EMPTY>'
-    if ($msg -eq '<USER_ARGS_OR_EMPTY>') { $msg = '' }
-    if ([string]::IsNullOrWhiteSpace($msg)) {
-        $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm'
-        $msg = "sync: $env:COMPUTERNAME $stamp"
-    }
-    Write-Host ""
-    Write-Host "=== commit ==="
-    Write-Host "message: $msg"
-    git commit -m "$msg"
-    if ($LASTEXITCODE -ne 0) { throw "git commit failed" }
+echo ""
+echo "=== 差分サマリ ==="
+git diff --cached --stat
 
-    $upstream = git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>$null
-    Write-Host ""
-    Write-Host "=== push ==="
-    if (-not $upstream) {
-        $branch = git branch --show-current
-        Write-Host "upstream 未設定。--set-upstream で push ($branch)" -ForegroundColor Yellow
-        git push --set-upstream origin $branch
-    } else {
-        git push
-    }
-    if ($LASTEXITCODE -ne 0) { throw "git push failed" }
+# コミットメッセージ
+USER_MSG='<USER_ARGS_OR_EMPTY>'
+if [ "$USER_MSG" = '<USER_ARGS_OR_EMPTY>' ] || [ -z "$USER_MSG" ]; then
+    STAMP=$(date +"%Y-%m-%d %H:%M")
+    HOST=$(hostname)
+    MSG="sync: $HOST $STAMP"
+else
+    MSG="$USER_MSG"
+fi
+echo ""
+echo "=== commit ==="
+echo "message: $MSG"
+git commit -m "$MSG"
 
-    Write-Host ""
-    Write-Host "OK: pushed." -ForegroundColor Green
-} finally {
-    Pop-Location
-}
+UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)
+echo ""
+echo "=== push ==="
+if [ -z "$UPSTREAM" ]; then
+    BRANCH=$(git branch --show-current)
+    echo "upstream 未設定。--set-upstream で push ($BRANCH)"
+    git push --set-upstream origin "$BRANCH"
+else
+    git push
+fi
+
+echo ""
+echo "OK: pushed."
+echo ""
+echo "=== 最終 HEAD ==="
+git log -1 --format='%h %ad %s' --date=short HEAD
 ```
 
 ### Step 3: 完了報告
@@ -151,7 +163,14 @@ push の commit hash と short stat を 1〜2 行で報告。
 ## エラー時
 
 - `CWD に .claude/ が見つかりません` → プロジェクトルートで実行する
-- `claude-shared not found` → 新PC は `git clone https://github.com/jl4lvw/claude-shared.git C:\Users\<user>\claude-shared`
+- `claude-shared not found` → 新PC は `git clone https://github.com/jl4lvw/claude-shared.git "$USERPROFILE/claude-shared"`
 - `Sanity check FAIL` → .claude/ が極端に少ない（OneDrive 同期途中の可能性）。少し待って再試行
 - `robocopy ERROR (exit>=8)` → ファイルロック / 権限。Claude Code を完全終了して再試行
 - `git push failed` → 認証エラー。`git remote -v` で確認
+
+## 実装メモ
+
+- git-bash 環境では `robocopy /MIR` を呼ぶと MSYS パス変換で `/MIR` → `C:/Program Files/Git/MIR` に化けて exit 16 で失敗する
+- 対策: すべてのスラッシュオプションを `//MIR //NFL //XD ...` のダブルスラッシュで escape する
+- パスは `cygpath -w` で Windows 形式（`C:\path\to`）に変換してから robocopy に渡す
+- 過去に PowerShell ツールが exit code 1 で出力ゼロになる環境が確認されたため、本スキルは Bash 単独運用に統一
