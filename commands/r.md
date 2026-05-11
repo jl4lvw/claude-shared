@@ -106,8 +106,10 @@ if len(TARGET_CODES) > 10:
 ### Step 1: API から取得
 
 ```python
-import sys, json, urllib.request
+import os, sys, json, socket, ssl, tempfile, time
+import urllib.request, urllib.error
 from pathlib import Path
+from urllib.parse import urlparse, quote
 
 def _find_root() -> Path:
     for p in [Path.cwd(), *Path.cwd().parents]:
@@ -119,16 +121,115 @@ sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, str(_ROOT / "006.secretary" / "scripts"))
 from discord_notify import notify
 
-API_BASE = "http://127.0.0.1:8088/r"
+# ----------------------------------------------------------------------
+# マルチ PC 対応: env var 最優先 > localhost プローブ > Caddy フォールバック
+# ----------------------------------------------------------------------
+LOCAL_URL = "http://127.0.0.1:8088/r"
+PUBLIC_URL = "https://sfuji.f5.si/tasksapi/r"
+PUBLIC_UPLOADS = "https://sfuji.f5.si/tasksapi/uploads/r"
+# CSRF allowlist と整合する許可 host（env var 検証用）
+_ALLOWED_HOSTS = {"127.0.0.1", "localhost", "sfuji.f5.si", "192.168.1.166", "192.168.1.175"}
+_ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+_PROBE_TIMEOUT_SEC = 0.5
+_API_TIMEOUT_SEC = 10
+_IMG_TIMEOUT_SEC = 30
+
+
+def _validate_api_url(url: str, *, expect_path_suffix: str = "/r") -> str:
+    """env var 由来の URL を厳格に検証して返す。不正なら ValueError。"""
+    if not url:
+        raise ValueError("URL is empty")
+    p = urlparse(url)
+    if p.scheme not in ("http", "https"):
+        raise ValueError(f"scheme must be http/https: {url!r}")
+    if not p.hostname:
+        raise ValueError(f"hostname missing: {url!r}")
+    if p.hostname not in _ALLOWED_HOSTS:
+        raise ValueError(f"host not in allowlist {sorted(_ALLOWED_HOSTS)}: {p.hostname!r}")
+    if p.username or p.password:
+        raise ValueError(f"userinfo not allowed: {url!r}")
+    if p.fragment:
+        raise ValueError(f"fragment not allowed: {url!r}")
+    if expect_path_suffix and not p.path.rstrip("/").endswith(expect_path_suffix.rstrip("/")):
+        raise ValueError(f"path must end with {expect_path_suffix!r}: {url!r}")
+    return url.rstrip("/")
+
+
+def _detect_api_base() -> tuple[str, str | None]:
+    """env var > localhost プローブ > Caddy フォールバック の順で (api_base, uploads_url) を決定。
+    uploads_url が None なら本番 PC で FS 直アクセス可能。"""
+    forced = os.environ.get("R_API_BASE", "").strip()
+    if forced:
+        api = _validate_api_url(forced, expect_path_suffix="/r")
+        ups_env = os.environ.get("R_UPLOADS_BASE", "").strip()
+        ups = _validate_api_url(ups_env, expect_path_suffix="/uploads/r") if ups_env else None
+        return api, ups
+    # localhost プローブ（短時間、/health のレスポンスでアプリ識別子も確認）
+    try:
+        req = urllib.request.Request("http://127.0.0.1:8088/health")
+        with urllib.request.urlopen(req, timeout=_PROBE_TIMEOUT_SEC) as resp:
+            if resp.status == 200:
+                try:
+                    info = json.loads(resp.read().decode("utf-8"))
+                    if info.get("app") == "remote-instructions":
+                        return LOCAL_URL, None   # FS 直アクセス可
+                except Exception:
+                    pass
+    except (urllib.error.URLError, socket.timeout, ConnectionError, TimeoutError):
+        pass
+    return PUBLIC_URL, PUBLIC_UPLOADS
+
+
+try:
+    API_BASE, UPLOADS_BASE_URL = _detect_api_base()
+except ValueError as exc:
+    print(f"❌ R_API_BASE / R_UPLOADS_BASE 検証エラー: {exc}", file=sys.stderr)
+    sys.exit(2)
+
+LOCAL_UPLOAD_DIR = (_ROOT / "016.RemoteInstructions" / "server" / "uploads" / "r") if UPLOADS_BASE_URL is None else None
+
+# Origin ヘッダはサーバ CSRF allowlist と整合する形で決定:
+# - localhost / 127.0.0.1 → "http://localhost" (regex 経由で許可)
+# - それ以外（sfuji.f5.si / LAN IP）→ "{scheme}://{netloc}" でそのまま
+_p = urlparse(API_BASE)
+DEFAULT_ORIGIN = "http://localhost" if _p.hostname in ("127.0.0.1", "localhost") else f"{_p.scheme}://{_p.netloc}"
+
+print(f"[/r mode] host={socket.gethostname()} API_BASE={API_BASE} uploads={'FS (local)' if UPLOADS_BASE_URL is None else 'HTTP DL'} Origin={DEFAULT_ORIGIN}")
+
+
+def _read_http_error_body(e: urllib.error.HTTPError) -> str:
+    """HTTPError の body を安全に短く取得（先頭 400 chars）。"""
+    try:
+        raw = e.read() or b""
+        s = raw.decode("utf-8", errors="replace")
+        return s[:400] + ("…" if len(s) > 400 else "")
+    except Exception:
+        return ""
+
 
 def _http_get(path: str) -> dict | list:
-    with urllib.request.urlopen(API_BASE + path, timeout=5) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    req = urllib.request.Request(API_BASE + path, headers={"Origin": DEFAULT_ORIGIN})
+    try:
+        with urllib.request.urlopen(req, timeout=_API_TIMEOUT_SEC) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raise urllib.error.HTTPError(e.url, e.code, f"{e.reason} | body={_read_http_error_body(e)}", e.headers, None)
+    except ssl.SSLError as e:
+        raise RuntimeError(f"SSL 検証失敗 ({API_BASE+path}): {e}") from e
 
-def _http_post(path: str) -> dict:
-    req = urllib.request.Request(API_BASE + path, method="POST", headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=5) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+
+def _http_post(path: str, body: dict | None = None) -> dict:
+    headers = {"Content-Type": "application/json", "Origin": DEFAULT_ORIGIN}
+    # body is not None で空 dict {} を正しく送信する（Codex Lv5 指摘 #4）
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(API_BASE + path, method="POST", headers=headers, data=data)
+    try:
+        with urllib.request.urlopen(req, timeout=_API_TIMEOUT_SEC) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raise urllib.error.HTTPError(e.url, e.code, f"{e.reason} | body={_read_http_error_body(e)}", e.headers, None)
+    except ssl.SSLError as e:
+        raise RuntimeError(f"SSL 検証失敗 ({API_BASE+path}): {e}") from e
 
 # envelope 統一: 各 entry を {code, status, skip_reason, detail, result, error, cancel_result, danger}
 #   status: "ready" | "skip" | "done" | "failed"
@@ -193,12 +294,100 @@ def _summarize(body: str, n: int = 60) -> str:
     s = (body or "").replace("\r\n", "\n").replace("\n", "↵").strip()
     return s[:n] + ("…" if len(s) > n else "")
 
-def _image_local_path(code: str, fname: str) -> Path:
-    """添付画像のローカル絶対パス（uploads/r/{code}/{fname}）。
-
-    /r とサーバが同一 PC で動作する前提。HTTP DL 不要、Read ツールで直接開ける。
+def _safe_filename(fname: str) -> str:
+    """画像 fname を厳格検証して返す（Codex Lv5 指摘 #2: path traversal 防御）。
+    - パス区切り禁止、`../`/`..%2f` 排除、`Path(name).name == name` で正規化チェック
+    - 拡張子 allowlist
+    - 長さ制限 128 chars
     """
-    return _ROOT / "016.RemoteInstructions" / "server" / "uploads" / "r" / code / fname
+    if not fname or len(fname) > 128:
+        raise ValueError(f"invalid filename length: {fname!r}")
+    if Path(fname).name != fname:
+        raise ValueError(f"path components not allowed: {fname!r}")
+    if any(s in fname for s in ("/", "\\", "..", "%2f", "%2F", "%5c", "%5C", "\x00")):
+        raise ValueError(f"forbidden chars in filename: {fname!r}")
+    ext = Path(fname).suffix.lower()
+    if ext not in _ALLOWED_IMAGE_EXT:
+        raise ValueError(f"extension not allowed (allowed: {sorted(_ALLOWED_IMAGE_EXT)}): {fname!r}")
+    return fname
+
+
+def _safe_code(code: str) -> str:
+    """code 検証（数字 2-4 桁のみ、path 部品として安全）。"""
+    code = str(code)
+    if not (2 <= len(code) <= 4) or not code.isdigit():
+        raise ValueError(f"invalid code: {code!r}")
+    return code
+
+
+def _resolve_image_for_read(code: str, fname: str) -> Path:
+    """添付画像の Read 可能なローカルパスを返す。
+    - 本番 PC: LOCAL_UPLOAD_DIR から FS 直アクセス
+    - 別 PC: HTTP DL → `%TEMP%/r-images/{code}/{fname}` に atomic 保存
+    """
+    code = _safe_code(code)
+    fname = _safe_filename(fname)
+
+    if LOCAL_UPLOAD_DIR is not None:
+        return LOCAL_UPLOAD_DIR / code / fname
+
+    # 別 PC: HTTP DL
+    target_dir = Path(tempfile.gettempdir()) / "r-images" / code
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / fname
+
+    # 完成ファイルがあれば再利用（atomic 保証のため壊れた残骸の `.tmp` は再 DL）
+    if target.exists() and target.stat().st_size > 0:
+        return target
+
+    # `.tmp` に書いてから atomic replace（部分ファイル残骸を防ぐ）
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    url = f"{UPLOADS_BASE_URL}/{quote(code, safe='')}/{quote(fname, safe='')}"
+    req = urllib.request.Request(url, headers={"Origin": DEFAULT_ORIGIN})
+    try:
+        with urllib.request.urlopen(req, timeout=_IMG_TIMEOUT_SEC) as resp:
+            content = resp.read()
+            expected_len = resp.headers.get("Content-Length")
+            if expected_len and int(expected_len) != len(content):
+                raise IOError(f"size mismatch: header={expected_len} actual={len(content)}")
+        tmp.write_bytes(content)
+        os.replace(tmp, target)
+        return target
+    except Exception:
+        # 部分残骸を掃除
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _cleanup_old_temp_images(hours: int = 24) -> None:
+    """24h より古い temp 画像 (.tmp 含む) を起動時掃除。本番 PC は何もしない。"""
+    if LOCAL_UPLOAD_DIR is not None:
+        return
+    root = Path(tempfile.gettempdir()) / "r-images"
+    if not root.exists():
+        return
+    cutoff = time.time() - hours * 3600
+    for code_dir in root.iterdir():
+        if not code_dir.is_dir():
+            continue
+        for f in code_dir.iterdir():
+            try:
+                if f.is_file() and f.stat().st_mtime < cutoff:
+                    f.unlink()
+            except OSError:
+                pass
+
+
+_cleanup_old_temp_images()
+
+
+# 互換シム: 旧名 `_image_local_path` を残しておく（既存記述があれば動く）
+def _image_local_path(code: str, fname: str) -> Path:
+    return _resolve_image_for_read(code, fname)
 
 # items[] 表示（multi/single のみ。menu は Step 3 で別途）
 if MODE in ("single", "multi"):
@@ -427,10 +616,24 @@ for it in items:
             continue
 
     # start-processing（multi は通知 silent、single/menu は notify 経由で通知）
+    # 409 / 423 (別 PC が既に processing 中) は **必ず skip** にして次へ。
+    # 続行すると他クライアントの実装結果・consume を上書きするデータ破壊リスク
+    # （Codex Lv5 指摘 #1）。Lease/takeover API が無い現状では排他失敗 = skip が安全。
     try:
         _http_post(f"/{code}/start-processing")
-    except Exception as exc:
-        print(f"⚠️ #{code} start-processing 失敗（処理は続行）: {exc}")
+    except urllib.error.HTTPError as exc:
+        if exc.code in (409, 423):
+            it["status"] = "skip"
+            it["skip_reason"] = f"別クライアント処理中 (HTTP {exc.code})"
+            msg = f"⏭️ #{code}: 別クライアントが処理中 (HTTP {exc.code}) のため skip"
+            print(msg)
+            notify(f"⚠️ /r: #{code} 別クライアント処理中で skip")
+            continue
+        else:
+            # 5xx / その他 4xx → ローカルログのみで処理続行（start-processing は補助機能）
+            print(f"⚠️ #{code} start-processing 失敗 HTTP {exc.code}（処理は続行）: {exc}")
+    except (urllib.error.URLError, socket.timeout, ConnectionError, TimeoutError) as exc:
+        print(f"⚠️ #{code} start-processing 通信失敗（処理は続行）: {exc}")
 
     # 実装フェーズ（既存規約を遵守）
     # - 編集前に .bak_YYYYMMDD_HHMMSS バックアップ
