@@ -127,57 +127,84 @@ from discord_notify import notify
 LOCAL_URL = "http://127.0.0.1:8088/r"
 PUBLIC_URL = "https://sfuji.f5.si/tasksapi/r"
 PUBLIC_UPLOADS = "https://sfuji.f5.si/tasksapi/uploads/r"
-# CSRF allowlist と整合する許可 host（env var 検証用）
-_ALLOWED_HOSTS = {"127.0.0.1", "localhost", "sfuji.f5.si", "192.168.1.166", "192.168.1.175"}
+# env var override は **完全一致の URL allowlist** のみ受け付ける（Codex 指摘 🟠#1 対策）。
+# 旧 host allowlist だけでは path/query/port を緩く許してしまい SSRF 余地があった。
+_ALLOWED_API_URLS = {LOCAL_URL, PUBLIC_URL}
+_ALLOWED_UPLOADS_URLS = {PUBLIC_UPLOADS}
 _ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 _PROBE_TIMEOUT_SEC = 0.5
 _API_TIMEOUT_SEC = 10
 _IMG_TIMEOUT_SEC = 30
+_HEALTH_LOCAL = "http://127.0.0.1:8088/health"
+_HEALTH_PUBLIC = "https://sfuji.f5.si/health"
 
 
-def _validate_api_url(url: str, *, expect_path_suffix: str = "/r") -> str:
-    """env var 由来の URL を厳格に検証して返す。不正なら ValueError。"""
+def _validate_api_url(url: str, *, allowlist: set[str]) -> str:
+    """env var 由来の URL を厳格に検証して返す。**完全一致 allowlist** のみ許可。
+
+    Codex 指摘 🟠#1: 旧実装は host + path suffix チェックだけで
+    `https://sfuji.f5.si/evil/r` のような URL も通った。
+    今回は URL set 完全一致に変更して攻撃面を最小化する。
+    """
     if not url:
         raise ValueError("URL is empty")
-    p = urlparse(url)
+    normalized = url.rstrip("/")
+    if normalized not in allowlist:
+        raise ValueError(f"URL not in allowlist {sorted(allowlist)}: {url!r}")
+    # 念のため二重チェック（scheme/userinfo/fragment）
+    p = urlparse(normalized)
     if p.scheme not in ("http", "https"):
         raise ValueError(f"scheme must be http/https: {url!r}")
-    if not p.hostname:
-        raise ValueError(f"hostname missing: {url!r}")
-    if p.hostname not in _ALLOWED_HOSTS:
-        raise ValueError(f"host not in allowlist {sorted(_ALLOWED_HOSTS)}: {p.hostname!r}")
     if p.username or p.password:
         raise ValueError(f"userinfo not allowed: {url!r}")
-    if p.fragment:
-        raise ValueError(f"fragment not allowed: {url!r}")
-    if expect_path_suffix and not p.path.rstrip("/").endswith(expect_path_suffix.rstrip("/")):
-        raise ValueError(f"path must end with {expect_path_suffix!r}: {url!r}")
-    return url.rstrip("/")
+    if p.fragment or p.query:
+        raise ValueError(f"fragment/query not allowed: {url!r}")
+    return normalized
+
+
+def _probe_health(url: str) -> bool:
+    """指定 URL の /health に短時間プローブして「remote-instructions」アプリか確認。"""
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=_PROBE_TIMEOUT_SEC) as resp:
+            if resp.status != 200:
+                return False
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if "application/json" not in ctype:
+                return False
+            info = json.loads(resp.read().decode("utf-8"))
+            return info.get("app") == "remote-instructions"
+    except (urllib.error.URLError, socket.timeout, ConnectionError, TimeoutError, ValueError):
+        return False
 
 
 def _detect_api_base() -> tuple[str, str | None]:
-    """env var > localhost プローブ > Caddy フォールバック の順で (api_base, uploads_url) を決定。
+    """env var > localhost プローブ > Caddy プローブ → 両不可なら 明示エラー で sys.exit。
     uploads_url が None なら本番 PC で FS 直アクセス可能。"""
     forced = os.environ.get("R_API_BASE", "").strip()
     if forced:
-        api = _validate_api_url(forced, expect_path_suffix="/r")
+        api = _validate_api_url(forced, allowlist=_ALLOWED_API_URLS)
         ups_env = os.environ.get("R_UPLOADS_BASE", "").strip()
-        ups = _validate_api_url(ups_env, expect_path_suffix="/uploads/r") if ups_env else None
+        ups = _validate_api_url(ups_env, allowlist=_ALLOWED_UPLOADS_URLS) if ups_env else None
+        # forced のときも忠告的にプローブ（失敗は警告のみ、続行）
+        if not _probe_health(_HEALTH_LOCAL if api == LOCAL_URL else _HEALTH_PUBLIC):
+            print(f"⚠️ env var 指定の API_BASE が /health に応答しません（続行）: {api}", file=sys.stderr)
         return api, ups
-    # localhost プローブ（短時間、/health のレスポンスでアプリ識別子も確認）
-    try:
-        req = urllib.request.Request("http://127.0.0.1:8088/health")
-        with urllib.request.urlopen(req, timeout=_PROBE_TIMEOUT_SEC) as resp:
-            if resp.status == 200:
-                try:
-                    info = json.loads(resp.read().decode("utf-8"))
-                    if info.get("app") == "remote-instructions":
-                        return LOCAL_URL, None   # FS 直アクセス可
-                except Exception:
-                    pass
-    except (urllib.error.URLError, socket.timeout, ConnectionError, TimeoutError):
-        pass
-    return PUBLIC_URL, PUBLIC_UPLOADS
+    # localhost プローブ
+    if _probe_health(_HEALTH_LOCAL):
+        return LOCAL_URL, None   # FS 直アクセス可
+    # Public プローブ（Codex 指摘 🟡#3: 両方確認しトラブルシュート楽に）
+    if _probe_health(_HEALTH_PUBLIC):
+        return PUBLIC_URL, PUBLIC_UPLOADS
+    # 両方不可 → 明示エラー
+    print(
+        "❌ RemoteInstructions API に到達できません。"
+        f"\n   - localhost: {_HEALTH_LOCAL} 応答なし"
+        f"\n   - public:    {_HEALTH_PUBLIC} 応答なし"
+        "\n   サーバ稼働状態とネットワーク (VPN/Caddy/firewall) を確認してください。",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 
 
 try:
@@ -207,29 +234,69 @@ def _read_http_error_body(e: urllib.error.HTTPError) -> str:
         return ""
 
 
+def _is_ssl_failure(exc: Exception) -> bool:
+    """`urlopen` の SSL 検証失敗は `ssl.SSLError` ではなく `URLError(reason=SSLError)` で来ることが多い。
+    Codex 指摘 🟠#4: bare ssl.SSLError だけ catch すると素通りするため reason も確認する。"""
+    if isinstance(exc, ssl.SSLError):
+        return True
+    if isinstance(exc, urllib.error.URLError) and isinstance(getattr(exc, "reason", None), ssl.SSLError):
+        return True
+    return False
+
+
+def _read_json_response(resp, url: str) -> dict | list:
+    """200 レスポンスを JSON として読む。Content-Type 検証 + JSON decode 失敗時の診断付き
+    （Codex 指摘 🟠#3: 200 with HTML/text を握りつぶさない）。"""
+    ctype = (resp.headers.get("Content-Type") or "").lower()
+    raw = resp.read()
+    # 厳密チェック: 主 MIME が application/json のみ許可（"text/plain; note=application/json" を弾く）
+    main_mime = ctype.split(";", 1)[0].strip()
+    if main_mime != "application/json":
+        head = raw[:300].decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"Unexpected Content-Type at {url}: got {ctype!r} expected application/json. "
+            f"body head: {head!r}"
+        )
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except json.JSONDecodeError as e:
+        head = raw[:300].decode("utf-8", errors="replace")
+        raise RuntimeError(f"JSON decode failed at {url}: {e}. body head: {head!r}") from e
+
+
 def _http_get(path: str) -> dict | list:
-    req = urllib.request.Request(API_BASE + path, headers={"Origin": DEFAULT_ORIGIN})
+    url = API_BASE + path
+    req = urllib.request.Request(url, headers={"Origin": DEFAULT_ORIGIN})
     try:
         with urllib.request.urlopen(req, timeout=_API_TIMEOUT_SEC) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            return _read_json_response(resp, url)
     except urllib.error.HTTPError as e:
         raise urllib.error.HTTPError(e.url, e.code, f"{e.reason} | body={_read_http_error_body(e)}", e.headers, None)
+    except urllib.error.URLError as e:
+        if _is_ssl_failure(e):
+            raise RuntimeError(f"SSL 検証失敗 ({url}): {e.reason}") from e
+        raise
     except ssl.SSLError as e:
-        raise RuntimeError(f"SSL 検証失敗 ({API_BASE+path}): {e}") from e
+        raise RuntimeError(f"SSL 検証失敗 ({url}): {e}") from e
 
 
 def _http_post(path: str, body: dict | None = None) -> dict:
+    url = API_BASE + path
     headers = {"Content-Type": "application/json", "Origin": DEFAULT_ORIGIN}
     # body is not None で空 dict {} を正しく送信する（Codex Lv5 指摘 #4）
     data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(API_BASE + path, method="POST", headers=headers, data=data)
+    req = urllib.request.Request(url, method="POST", headers=headers, data=data)
     try:
         with urllib.request.urlopen(req, timeout=_API_TIMEOUT_SEC) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            return _read_json_response(resp, url)
     except urllib.error.HTTPError as e:
         raise urllib.error.HTTPError(e.url, e.code, f"{e.reason} | body={_read_http_error_body(e)}", e.headers, None)
+    except urllib.error.URLError as e:
+        if _is_ssl_failure(e):
+            raise RuntimeError(f"SSL 検証失敗 ({url}): {e.reason}") from e
+        raise
     except ssl.SSLError as e:
-        raise RuntimeError(f"SSL 検証失敗 ({API_BASE+path}): {e}") from e
+        raise RuntimeError(f"SSL 検証失敗 ({url}): {e}") from e
 
 # envelope 統一: 各 entry を {code, status, skip_reason, detail, result, error, cancel_result, danger}
 #   status: "ready" | "skip" | "done" | "failed"
@@ -347,12 +414,26 @@ def _resolve_image_for_read(code: str, fname: str) -> Path:
     try:
         with urllib.request.urlopen(req, timeout=_IMG_TIMEOUT_SEC) as resp:
             content = resp.read()
+            # Content-Type 検証（Codex 指摘 🟠#2: 200 HTML エラーを画像として保存しない）
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if not ctype.startswith("image/"):
+                head = content[:200].decode("utf-8", errors="replace")
+                raise IOError(
+                    f"画像エンドポイントが image/* を返さない: ctype={ctype!r} url={url} head={head!r}"
+                )
             expected_len = resp.headers.get("Content-Length")
             if expected_len and int(expected_len) != len(content):
                 raise IOError(f"size mismatch: header={expected_len} actual={len(content)}")
         tmp.write_bytes(content)
         os.replace(tmp, target)
         return target
+    except urllib.error.URLError as e:
+        if _is_ssl_failure(e):
+            try:
+                if tmp.exists(): tmp.unlink()
+            except OSError: pass
+            raise RuntimeError(f"SSL 検証失敗 ({url}): {e.reason}") from e
+        raise
     except Exception:
         # 部分残骸を掃除
         try:
@@ -363,20 +444,35 @@ def _resolve_image_for_read(code: str, fname: str) -> Path:
         raise
 
 
-def _cleanup_old_temp_images(hours: int = 24) -> None:
-    """24h より古い temp 画像 (.tmp 含む) を起動時掃除。本番 PC は何もしない。"""
+def _cleanup_old_temp_images(
+    completed_hours: int = 168,   # 完成 cache は 7 日（Codex 指摘 🟠#5: race 軽減 + 再 DL コスト回避）
+    tmp_hours: int = 24,           # .tmp 残骸は 24h で削除
+) -> None:
+    """temp 画像を起動時に世代別掃除。本番 PC は何もしない。
+
+    Codex 指摘 🟠#5 対策:
+      - 完成 cache (拡張子そのまま) は **使われている可能性** があるため長め (168h=7日) に。
+        24h で削除すると、別プロセスがちょうど Read 中の画像が消える race がある。
+      - `.tmp` 残骸は短時間 (24h) で削除して構わない（atomic replace 失敗の遺骸）。
+    """
     if LOCAL_UPLOAD_DIR is not None:
         return
     root = Path(tempfile.gettempdir()) / "r-images"
     if not root.exists():
         return
-    cutoff = time.time() - hours * 3600
+    now = time.time()
+    completed_cutoff = now - completed_hours * 3600
+    tmp_cutoff = now - tmp_hours * 3600
     for code_dir in root.iterdir():
         if not code_dir.is_dir():
             continue
         for f in code_dir.iterdir():
             try:
-                if f.is_file() and f.stat().st_mtime < cutoff:
+                if not f.is_file():
+                    continue
+                is_tmp = f.suffix == ".tmp"
+                cutoff = tmp_cutoff if is_tmp else completed_cutoff
+                if f.stat().st_mtime < cutoff:
                     f.unlink()
             except OSError:
                 pass
