@@ -19,201 +19,184 @@ description: 三方比較スキル。`.claude/` (作業) ↔ `claude-shared/` (G
 
 ## 手順
 
-### Step 1: PowerShell で実行
+### Step 1: Bash で実行
 
-**Bash ではなく PowerShell ツール**を使うこと。
+**Bash ツール**を使うこと（git-bash 経由）。
 
-```powershell
-#requires -Version 7
-$ErrorActionPreference = 'Stop'
-$env:GIT_TERMINAL_PROMPT = '0'
+過去に PowerShell ツール経由で exit code 1 / 出力なしで失敗する環境が確認されたため、本スキルは Bash 単独運用に統一している。Windows ネイティブ実行が必要な場合のみ、後述の PowerShell 版（参考）を流用すること。
 
-# 状態変数
-$ahead = 0
-$behind = 0
-$hasHead = $false
-$fetchOk = $true
-$revListOk = $false
+```bash
+SHARED="$USERPROFILE/claude-shared"
+# git-bash で USERPROFILE は "C:\Users\name" 形式。/c/Users/name 形式に正規化
+SHARED_BASH=$(cygpath -u "$SHARED" 2>/dev/null || echo "${SHARED//\\//}" | sed 's|^C:|/c|')
+CLAUDE_DIR="$(pwd)/.claude"
 
-# パス解決
-$cwd = (Get-Location).Path
-$claudeDir = Join-Path $cwd '.claude'
-$shared    = Join-Path $env:USERPROFILE 'claude-shared'
-$targets   = @('skills','commands','tools','rules','memory')
+if [ ! -d "$CLAUDE_DIR" ]; then
+    echo "CWD に .claude/ が見つかりません: $(pwd)"
+    exit 1
+fi
+if [ ! -d "$SHARED_BASH" ]; then
+    echo "claude-shared not found: $SHARED_BASH"
+    echo "新PC は git clone https://github.com/jl4lvw/claude-shared.git \"\$USERPROFILE/claude-shared\""
+    exit 1
+fi
 
-if (-not (Test-Path -LiteralPath $claudeDir)) {
-    Write-Host "CWD に .claude/ が見つかりません: $cwd" -ForegroundColor Red
-    return
-}
-if (-not (Test-Path -LiteralPath $shared)) {
-    Write-Host "claude-shared not found: $shared" -ForegroundColor Red
-    Write-Host "新PC は git clone https://github.com/jl4lvw/claude-shared.git $shared"
-    return
-}
+echo "=== three-way compare ==="
+echo "PC:        $(hostname)"
+echo "ClaudeDir: $CLAUDE_DIR"
+echo "Shared:    $SHARED_BASH"
+echo ""
 
-Write-Host "=== three-way compare ===" -ForegroundColor Cyan
-Write-Host "PC:        $env:COMPUTERNAME"
-Write-Host "ClaudeDir: $claudeDir"
-Write-Host "Shared:    $shared"
-
-# ----- Section 1: .claude/ vs claude-shared/ (mirror gap) -----
-Write-Host ""
-Write-Host "--- [1/3] .claude/ vs claude-shared/ (ミラー差分) ---" -ForegroundColor Yellow
-
-$mirrorDiffs = @()
-foreach ($t in $targets) {
-    $src = Join-Path $claudeDir $t
-    $dst = Join-Path $shared $t
-    if (-not (Test-Path -LiteralPath $src) -and -not (Test-Path -LiteralPath $dst)) { continue }
-
-    # robocopy /L (list only, no copy) で差分を取得
-    if (-not (Test-Path -LiteralPath $src)) {
-        $mirrorDiffs += "  $t : .claude 側欠落 (claude-shared 側のみ存在)"
+# ----- [1/3] .claude/ vs claude-shared/ (mirror gap) -----
+echo "--- [1/3] .claude/ vs claude-shared/ (ミラー差分) ---"
+TARGETS="skills commands tools rules memory"
+DIFF_FOUND=0
+# /g-ul / /g-dl と同じ除外パターンに揃える
+# robocopy /XD __pycache__ .bootstrap-bak-* .migrate-pending-*
+# robocopy /XF *.bak_* *.pyc .deepseek_usage_session.json
+for t in $TARGETS; do
+    src="$CLAUDE_DIR/$t"
+    dst="$SHARED_BASH/$t"
+    if [ ! -d "$src" ] && [ ! -d "$dst" ]; then continue; fi
+    if [ ! -d "$src" ]; then
+        echo "  $t : .claude 側欠落 (claude-shared 側のみ存在)"
+        DIFF_FOUND=1
         continue
-    }
-    if (-not (Test-Path -LiteralPath $dst)) {
-        $mirrorDiffs += "  $t : claude-shared 側欠落 (.claude 側のみ存在)"
+    fi
+    if [ ! -d "$dst" ]; then
+        echo "  $t : claude-shared 側欠落 (.claude 側のみ存在)"
+        DIFF_FOUND=1
         continue
-    }
-    # /L /MIR で「もし MIR したら何が起きるか」を取得
-    # /g-ul / /g-dl と同じ除外パターンに揃える（差分検出と同期で挙動を一致させる）
-    $rcOut = & robocopy $src $dst /L /MIR /NJH /NJS /NS /NC /NDL /FP /R:0 /W:0 `
-        /XD __pycache__ '.bootstrap-bak-*' '.migrate-pending-*' `
-        /XF '*.bak_*' '*.pyc' '.deepseek_usage_session.json' 2>&1
-    $diffLines = @($rcOut | Where-Object { $_ -match '\S' -and $_ -notmatch '^\s+ROBOCOPY' -and $_ -notmatch '^---' })
-    if ($diffLines.Count -gt 0) {
-        $mirrorDiffs += "  $t : $($diffLines.Count) entries differ"
-        foreach ($l in ($diffLines | Select-Object -First 5)) {
-            $mirrorDiffs += "      $($l.Trim())"
-        }
-        if ($diffLines.Count -gt 5) { $mirrorDiffs += "      ... ($($diffLines.Count - 5) more)" }
-    }
-}
-if ($mirrorDiffs.Count -eq 0) {
-    Write-Host "  (差分なし: .claude/ と claude-shared/ は同期済み)" -ForegroundColor Green
-} else {
-    foreach ($l in $mirrorDiffs) { Write-Host $l }
-    Write-Host ""
-    Write-Host "  -> /g-ul で .claude -> claude-shared に反映できます。" -ForegroundColor Yellow
-}
+    fi
+    diff_out=$(diff -rq "$src" "$dst" 2>/dev/null \
+        | grep -v '__pycache__' \
+        | grep -v '\.bootstrap-bak-' \
+        | grep -v '\.migrate-pending-' \
+        | grep -v '\.bak_' \
+        | grep -v '\.pyc' \
+        | grep -v 'deepseek_usage_session\.json')
+    if [ -n "$diff_out" ]; then
+        count=$(echo "$diff_out" | wc -l)
+        echo "  $t : $count entries differ"
+        echo "$diff_out" | head -5 | sed 's/^/      /'
+        if [ "$count" -gt 5 ]; then
+            echo "      ... ($((count - 5)) more)"
+        fi
+        DIFF_FOUND=1
+    fi
+done
+if [ $DIFF_FOUND -eq 0 ]; then
+    echo "  (差分なし: .claude/ と claude-shared/ は同期済み)"
+else
+    echo ""
+    echo "  -> /g-ul で .claude -> claude-shared に反映できます。"
+fi
 
-# ----- Section 2 & 3: claude-shared vs origin (Git) -----
-Push-Location -LiteralPath $shared
-try {
-    Write-Host ""
-    Write-Host "--- [2/3] claude-shared (ローカル Git WD) 状態 ---" -ForegroundColor Yellow
+# ----- [2/3] & [3/3] claude-shared vs origin (Git) -----
+cd "$SHARED_BASH" || exit 1
+echo ""
+echo "--- [2/3] claude-shared (ローカル Git WD) 状態 ---"
 
-    $remoteUrl = git remote get-url origin 2>$null
-    if (-not $remoteUrl) {
-        Write-Host "  origin remote 未設定" -ForegroundColor Red
-        return
-    }
-    Write-Host "  remote: $remoteUrl"
+REMOTE_URL=$(git remote get-url origin 2>/dev/null)
+if [ -z "$REMOTE_URL" ]; then
+    echo "  origin remote 未設定"
+    exit 0
+fi
+echo "  remote: $REMOTE_URL"
 
-    git rev-parse --verify HEAD 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) { $hasHead = $true }
-    if (-not $hasHead) {
-        Write-Host "  ローカルに commit なし（空リポジトリ）" -ForegroundColor Yellow
-        return
-    }
+if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
+    echo "  ローカルに commit なし（空リポジトリ）"
+    exit 0
+fi
 
-    $branch = git branch --show-current 2>$null
-    if ([string]::IsNullOrWhiteSpace($branch)) {
-        Write-Host "  detached HEAD" -ForegroundColor Yellow
-        return
-    }
-    $upstream = git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>$null
-    if (-not $upstream) {
-        Write-Host "  upstream 未設定 (branch=$branch)" -ForegroundColor Yellow
-        return
-    }
-    Write-Host "  branch: $branch (upstream: $upstream)"
+BRANCH=$(git branch --show-current 2>/dev/null)
+if [ -z "$BRANCH" ]; then
+    echo "  detached HEAD"
+    exit 0
+fi
+UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)
+if [ -z "$UPSTREAM" ]; then
+    echo "  upstream 未設定 (branch=$BRANCH)"
+    exit 0
+fi
+echo "  branch: $BRANCH (upstream: $UPSTREAM)"
 
-    git fetch --prune 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        $fetchOk = $false
-        Write-Host "  fetch 失敗（キャッシュ参照で続行）" -ForegroundColor Yellow
-    }
+FETCH_OK=1
+if ! git fetch --prune >/dev/null 2>&1; then
+    FETCH_OK=0
+    echo "  fetch 失敗（キャッシュ参照で続行）"
+fi
 
-    # claude-shared dirty
-    $statusShort = git status --porcelain
-    $dirtyLines = @()
-    if (-not [string]::IsNullOrWhiteSpace($statusShort)) {
-        $dirtyLines = @($statusShort -split "`r?`n" | Where-Object { $_ })
-    }
-    if ($dirtyLines.Count -eq 0) {
-        Write-Host "  uncommitted: なし (clean)" -ForegroundColor Green
-    } else {
-        Write-Host "  uncommitted: $($dirtyLines.Count) entries" -ForegroundColor Red
-        foreach ($l in $dirtyLines) { Write-Host "    $l" }
-    }
+DIRTY=$(git status --porcelain)
+if [ -z "$DIRTY" ]; then
+    echo "  uncommitted: なし (clean)"
+else
+    DIRTY_COUNT=$(echo "$DIRTY" | wc -l)
+    echo "  uncommitted: $DIRTY_COUNT entries"
+    echo "$DIRTY" | sed 's/^/    /'
+fi
 
-    # ahead/behind
-    Write-Host ""
-    Write-Host "--- [3/3] claude-shared vs $upstream (Git 同期) ---" -ForegroundColor Yellow
-    $aheadBehindRaw = (git rev-list --left-right --count "$upstream...HEAD" 2>$null | Out-String).Trim()
-    $revListOk = ($LASTEXITCODE -eq 0)
-    if ($revListOk -and $aheadBehindRaw -match '(\d+)\s+(\d+)') {
-        $behind = [int]$Matches[1]
-        $ahead  = [int]$Matches[2]
-        $color = if (($ahead -eq 0) -and ($behind -eq 0)) { 'Green' } else { 'Yellow' }
-        Write-Host "  ahead: $ahead (push 待ち) / behind: $behind (pull 待ち)" -ForegroundColor $color
-    } else {
-        Write-Host "  rev-list 失敗" -ForegroundColor Red
-    }
+echo ""
+echo "--- [3/3] claude-shared vs $UPSTREAM (Git 同期) ---"
+COUNT=$(git rev-list --left-right --count "$UPSTREAM...HEAD" 2>/dev/null)
+REV_OK=$?
+if [ $REV_OK -eq 0 ] && [ -n "$COUNT" ]; then
+    BEHIND=$(echo "$COUNT" | awk '{print $1}')
+    AHEAD=$(echo "$COUNT" | awk '{print $2}')
+    echo "  ahead: $AHEAD (push 待ち) / behind: $BEHIND (pull 待ち)"
+else
+    BEHIND=0
+    AHEAD=0
+    echo "  rev-list 失敗"
+fi
 
-    if ($ahead -gt 0) {
-        Write-Host "  未push commits:"
-        $unpushed = git log --oneline "$upstream..HEAD" 2>$null
-        @($unpushed -split "`r?`n" | Where-Object { $_ }) | ForEach-Object { Write-Host "    $_" }
-    }
-    if ($behind -gt 0) {
-        Write-Host "  未取込 commits:"
-        $unfetched = git log --oneline "HEAD..$upstream" 2>$null
-        @($unfetched -split "`r?`n" | Where-Object { $_ }) | ForEach-Object { Write-Host "    $_" }
-    }
+if [ "${AHEAD:-0}" -gt 0 ]; then
+    echo "  未push commits:"
+    git log --oneline "$UPSTREAM..HEAD" 2>/dev/null | sed 's/^/    /'
+fi
+if [ "${BEHIND:-0}" -gt 0 ]; then
+    echo "  未取込 commits:"
+    git log --oneline "HEAD..$UPSTREAM" 2>/dev/null | sed 's/^/    /'
+fi
 
-    # 最終コミット
-    Write-Host ""
-    Write-Host "  最終コミット:"
-    $lastLocal = git log -1 --format='%h %ad %s' --date=short HEAD 2>$null
-    Write-Host "    ローカル HEAD     : $lastLocal"
-    $lastRemote = git log -1 --format='%h %ad %s' --date=short $upstream 2>$null
-    if ($lastRemote) { Write-Host "    リモート $upstream : $lastRemote" }
-} finally {
-    Pop-Location
-}
+echo ""
+echo "  最終コミット:"
+echo "    ローカル HEAD     : $(git log -1 --format='%h %ad %s' --date=short HEAD 2>/dev/null)"
+LAST_REMOTE=$(git log -1 --format='%h %ad %s' --date=short "$UPSTREAM" 2>/dev/null)
+if [ -n "$LAST_REMOTE" ]; then
+    echo "    リモート $UPSTREAM : $LAST_REMOTE"
+fi
 
 # ----- 推奨アクション -----
-Write-Host ""
-Write-Host "--- 推奨アクション ---" -ForegroundColor Cyan
-$hadAction = $false
-if ($mirrorDiffs.Count -gt 0) {
-    Write-Host "  - .claude/ と claude-shared/ がズレています: /g-ul で push (ミラー含む)" -ForegroundColor Yellow
-    $hadAction = $true
-}
-if ($dirtyLines.Count -gt 0) {
-    Write-Host "  - claude-shared 側 uncommitted 変更あり: /g-ul で push" -ForegroundColor Yellow
-    $hadAction = $true
-}
-if ($revListOk -and ($ahead -gt 0) -and ($behind -eq 0)) {
-    Write-Host "  - 未push commit $ahead 件: /g-ul" -ForegroundColor Yellow
-    $hadAction = $true
-} elseif ($revListOk -and ($ahead -eq 0) -and ($behind -gt 0)) {
-    Write-Host "  - 未取込 commit $behind 件: /g-dl" -ForegroundColor Yellow
-    $hadAction = $true
-} elseif ($revListOk -and ($ahead -gt 0) -and ($behind -gt 0)) {
-    Write-Host "  - state=diverged (ahead $ahead / behind $behind)" -ForegroundColor Red
-    Write-Host "    git stash 退避 → git pull --rebase か手動マージが必要"
-    $hadAction = $true
-}
-if (-not $fetchOk) {
-    Write-Host "  - fetch 失敗（最新リモート未反映）" -ForegroundColor Yellow
-    $hadAction = $true
-}
-if (-not $hadAction) {
-    Write-Host "  - 完全同期 (.claude == claude-shared == origin/main)" -ForegroundColor Green
-}
+echo ""
+echo "--- 推奨アクション ---"
+HAD=0
+if [ $DIFF_FOUND -eq 1 ]; then
+    echo "  - .claude/ と claude-shared/ がズレています: /g-ul で push (ミラー含む)"
+    HAD=1
+fi
+if [ -n "$DIRTY" ]; then
+    echo "  - claude-shared 側 uncommitted 変更あり: /g-ul で push"
+    HAD=1
+fi
+if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -eq 0 ]; then
+    echo "  - 未push commit $AHEAD 件: /g-ul"
+    HAD=1
+elif [ "${AHEAD:-0}" -eq 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
+    echo "  - 未取込 commit $BEHIND 件: /g-dl"
+    HAD=1
+elif [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
+    echo "  - state=diverged (ahead $AHEAD / behind $BEHIND)"
+    echo "    git stash 退避 → git pull --rebase か手動マージが必要"
+    HAD=1
+fi
+if [ $FETCH_OK -eq 0 ]; then
+    echo "  - fetch 失敗（最新リモート未反映）"
+    HAD=1
+fi
+if [ $HAD -eq 0 ]; then
+    echo "  - 完全同期 (.claude == claude-shared == origin/main)"
+fi
 ```
 
 ### Step 2: 結果の解釈
@@ -235,3 +218,9 @@ if (-not $hadAction) {
 - `claude-shared not found` → 新PC は git clone
 - `origin remote 未設定` / `upstream 未設定` → /g-ul で初回 push
 - `git fetch 失敗` → 認証 / ネットワーク確認
+
+## 実装メモ
+
+- 差分検出は `diff -rq` + grep 除外で行う。robocopy `/L /MIR` と機能的に等価（`__pycache__`, `.bootstrap-bak-*`, `.migrate-pending-*`, `*.bak_*`, `*.pyc`, `.deepseek_usage_session.json` を除外）
+- `cygpath -u` が利用できない環境向けに sed フォールバックを用意
+- PowerShell ツールが exit code 1 で出力を返さない環境（Claude Code の特定セッション）が報告されているため、本スキルは Bash 単独運用に統一
