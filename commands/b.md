@@ -5,18 +5,49 @@ description: AI秘書のショートカット（/secretary と同じ）
 /secretary と同じ動作をする。
 briefing.py を実行してブリーフィングを出力し、指示を待つ。
 
-実行コマンド:
+> 前提: 以下のコマンドはすべて **CWD = プロジェクトルート `900.ClaudeCode/`**（Claude Code 起動ディレクトリ）で実行する。複数 PC（OneDrive 同期環境）でユーザー名が異なっても動作するよう、絶対パス（`C:\Users\<name>\...`）は使わない。
+
+## ⚠️ 規約優先順位
+
+このコマンドにおいては、**本ファイルの指示が `AGENTS.md` / `CLAUDE.md` の「簡潔な回答」「冗長性回避」ルールよりも優先する**。「長いから要約する」「件数だけ報告する」等の判断は本コマンドでは禁止。
+
+---
+
+## 手順（順序厳守・各 Step を完了させてから次へ進む）
+
+### Step 1: ブリーフィング取得
 ```
-python "C:\Users\jl4lv\OneDrive\デスクトップ\0.フジ\900.ClaudeCode\006.secretary\scripts\briefing.py"
+python "006.secretary\scripts\briefing.py"
 ```
 
-ブリーフィング出力後、**必ず以下の PNG/PDF 出力も同時に実行すること**（省略禁止）:
-```
-python "C:\Users\jl4lv\OneDrive\デスクトップ\0.フジ\900.ClaudeCode\006.secretary\scripts\png_export.py" briefing
-```
-保存先: C:\Users\jl4lv\Downloads\briefing_日時.png / briefing_日時.pdf
-保存完了を以下の形式で1行添えて報告する:
-「📸 PNG/PDF保存: briefing_日時.png / briefing_日時.pdf」
+### Step 2: 🚨 ブリーフィング全文を画面に展開表示する（最重要・絶対省略禁止）
 
-出力後、「何かご指示はありますか？」と添えてユーザーの入力を待つ。
+**Step 2 を完了させる前に Step 3 に進むことを禁止する**。
+
+briefing.py の **stdout 出力**を、**Markdown としてそのままレンダリングされる形で**ユーザーに表示する（表は表として描画されるよう、コードブロックで囲まない）。末尾には「── ブリーフィングここまで ──」の区切りを 1 行入れる。
+
+**禁止事項**（破ったら本タスク失敗扱い）:
+- 要約・折りたたみ・「以下の内容で〇件ありました」等の置換
+- 「…（省略）…」「（中略）」等の省略記号の挿入
+- 一部セクションの抜粋表示（全セクションを必ず展開）
+- 「実行済み」「コマンド完了」のメタ報告だけで本文を出さない
+- 表の行を「上位 N 件のみ」等で間引く
+- ツールが既に出力したから表示不要、という判断（ユーザーは Claude が出した text しか見えない）
+- ` ```text … ``` ` のようなコードブロックで全体を囲む（表が表として表示されなくなる）
+
+**stderr の扱い**:
+- briefing.py の stderr に出る既知警告（`GSS 保存エラー` / `GDoc 保存エラー` / `gspread.exceptions.APIError` 等）は **stdout 表示の妨げにしない**（briefing.py は stdout 本文を先に出してから stderr に警告を出す設計）
+- ただし **stdout が空** または **未知の例外（Traceback、ImportError、SyntaxError 等）** が出ている場合は、ブリーフィング表示の代わりにそのエラー全文を報告し、Step 3 には進まずユーザー判断を仰ぐ
+
+### Step 3: 指示待ち
+最後に「何かご指示はありますか？」と添えてユーザーの入力を待つ。
+
 タスク・スケジュール操作は /secretary の手順に従う。
+
+---
+
+## ❌ してはいけないこと
+
+- **PNG/PDF 出力（`png_export.py briefing`）は実行しない**。本コマンドの責務はブリーフィング表示 → 指示待ちのみ。
+- **絶対パス（`C:\Users\<name>\...`）を書き込まない**。複数 PC（`jl4lv` / `user` など）でユーザー名が異なる環境を OneDrive 同期で共有しているため、相対パス（`006.secretary\scripts\briefing.py`）で統一する。
+- 本ファイルが OneDrive 同期で旧版（絶対パス・PNG/PDF あり）に戻ることがある。気付いたら本セクションのルールに従って再修正すること（メモリ `feedback_b_command_rules.md` 参照）。
