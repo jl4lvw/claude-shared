@@ -14,7 +14,7 @@ EC顧客（楽天市場等）からの問合せに対して、返信メール or
 - **スタイルガイド**: `mail-skill/mail_style_guide.md` — 文体ルール・好みの蓄積
 - **例文ペア**: `mail-skill/mail_examples/` — 修正前→修正後のペア保存
 
-（パスのベース: `C:\Users\jl4lv\OneDrive\デスクトップ\0.フジ\900.ClaudeCode\`）
+（パスのベース: `C:\ClaudeCode\`）
 
 ## 実行フロー
 
@@ -96,5 +96,5 @@ AskUserQuestion でフリーテキスト入力を受け取る:
 
 ## ファイル書き込み注意
 - 日本語パスを含むため、ファイル書き込みは **Python スクリプト経由** で行う
-  - `C:/Users/jl4lv/` に一時スクリプトを作成して `python` で実行
+  - `C:/ClaudeCode/` に一時スクリプトを作成して `python` で実行
   - `encoding="utf-8"` を必ず指定する

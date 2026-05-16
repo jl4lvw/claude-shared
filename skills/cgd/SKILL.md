@@ -214,7 +214,7 @@ cat > "C:/tmp-ai/ds_prompt.txt" <<'EOF'
 <要約>
 EOF
 
-python "C:/Users/jl4lv/OneDrive/デスクトップ/0.フジ/900.ClaudeCode/.claude/tools/deepseek_coder.py" --role advisor "C:/tmp-ai/ds_prompt.txt"
+python "C:/ClaudeCode/.claude/tools/deepseek_coder.py" --role advisor "C:/tmp-ai/ds_prompt.txt"
 ```
 
 DS は `ROLE_PROMPTS["advisor"]` の構造（別案 / 見落とし / 採否コメント）で返す。
@@ -313,7 +313,7 @@ AGENTS.md / CLAUDE.md ルールを **強制適用**:
 - シバン行（`#!/usr/bin/env python3`）禁止（Windows で `py.exe` が即終了する）
 - ファイル読み書きは常に `encoding="utf-8"` 明示
 - CP932 コンソール対策: Python ワンライナー先頭に `sys.stdout.reconfigure(encoding="utf-8")`
-- 日本語パスへの Edit / Write が失敗する場合は **Python スクリプトを `C:/Users/jl4lv/` に書いて実行**
+- 日本語パスへの Edit / Write が失敗する場合は **Python スクリプトを `C:/ClaudeCode/` に書いて実行**
 - バッチファイル（.bat）は **CP932** で書く（Write ツールは UTF-8 で書くため文字化け）
 - API キー / シークレットを書き込まない・コミットしない
 

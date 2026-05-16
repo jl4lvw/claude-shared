@@ -14,7 +14,7 @@ SGWの購入証憑（Amazon・プリントパック・その他EC）のスクリ
 ## データ仕様
 
 ### JSON格納先
-`C:/Users/jl4lv/OneDrive/デスクトップ/0.フジ/900.ClaudeCode/006.secretary/007.SGW精算/settlements.json`
+`C:/ClaudeCode/006.secretary/007.SGW精算/settlements.json`
 
 ### 1レコードのフィールド
 | フィールド | 型 | 説明 |
