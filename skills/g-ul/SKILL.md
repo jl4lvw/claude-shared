@@ -87,7 +87,7 @@ for t in $TARGETS; do
     # git-bash では robocopy のスラッシュオプションが MSYS パス変換に巻き込まれるため //OPT で escape
     robocopy "$SRC_W" "$DST_W" //MIR //NFL //NDL //NP //R:2 //W:1 \
         //XD __pycache__ ".bootstrap-bak-*" ".migrate-pending-*" \
-        //XF "*.bak_*" "*.pyc" ".deepseek_usage_session.json" > /dev/null 2>&1
+        //XF "*.bak_*" "*.pyc" ".deepseek_usage_session.json" ".qwen_usage_session.json" > /dev/null 2>&1
     EXIT=$?
     # robocopy 終了コード: 0-7 = 成功（差分の有無）、8+ = エラー
     if [ $EXIT -ge 8 ]; then
