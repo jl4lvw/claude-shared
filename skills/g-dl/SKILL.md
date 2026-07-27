@@ -1,6 +1,6 @@
 ---
 name: g-dl
-description: claude-shared をリモート Git から pull した後、`%USERPROFILE%\claude-shared\` の内容を `.claude/{skills,commands,tools,rules,memory}` にミラーコピーする。Option C ミラー方式。
+description: claude-shared をリモート Git から pull した後、`%USERPROFILE%\claude-shared\` の内容を `.claude/{skills,commands,tools,rules,memory,hooks}` にミラーコピーする。Option C ミラー方式。
 ---
 
 # /g-dl — claude-shared download (mirror approach)
@@ -41,7 +41,7 @@ if [ ! -d "$SHARED_BASH" ]; then
     echo "claude-shared not found: $SHARED_BASH (新PC は git clone が必要)" >&2
     exit 1
 fi
-TARGETS="skills commands tools rules memory"
+TARGETS="skills commands tools rules memory hooks"
 
 echo "ClaudeDir: $CLAUDE_DIR"
 echo "Shared:    $SHARED_BASH"
@@ -162,9 +162,24 @@ else
 fi
 ```
 
-### Step 2: 完了報告
+### Step 2: hook の登録（必須・ミラー成功時のみ）
 
-取り込んだコミット数（あれば）と、ミラー成否を 1〜2 行で報告。
+hook スクリプト本体 (`.claude/hooks/*.py`) はミラーで配布されるが、**登録先の
+`settings.local.json` は PC ごとのローカル設定**なので共有されない。配布された
+hook をこの PC で有効化するために、必ず次を実行する:
+
+```bash
+python "C:/ClaudeCode/.claude/tools/install_hooks.py"
+```
+
+- **冪等**（登録済みなら「変更なし」で終了。何度実行しても重複しない）
+- 既存の permissions / 他イベントの hook は保持、実行前に `.bak_` 退避
+- 未登録が追加された場合は「Claude Code を再起動すると有効になります」と表示される → ユーザーに再起動を案内する
+- 事前に差分だけ見たい場合は `--check`（書き込まない。未登録があれば exit 1）
+
+### Step 3: 完了報告
+
+取り込んだコミット数（あれば）、ミラー成否、hook 登録結果（変更なし / N 件登録＋要再起動）を 1〜2 行で報告。
 
 ## エラー時
 
@@ -173,6 +188,8 @@ fi
 - ローカル(claude-shared) に未コミット変更 → 先に `/g-ul`
 - ff-only pull 失敗 → ガイダンスで対処
 - `robocopy ERROR (exit>=8)` → ファイルロック・権限。Claude Code 終了して再試行
+- `install_hooks.py` が `[SKIP] … が見つかりません` → hooks がミラーされていない。`/g-cmp` で hooks の差分を確認
+- `install_hooks.py` が `[ERROR] settings.local.json が壊れています` → JSON 構文エラー。`.bak_*` から復元して再実行
 
 ## 実装メモ
 

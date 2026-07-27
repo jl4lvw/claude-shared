@@ -49,7 +49,7 @@ echo ""
 
 # ----- [1/3] .claude/ vs claude-shared/ (mirror gap) -----
 echo "--- [1/3] .claude/ vs claude-shared/ (ミラー差分) ---"
-TARGETS="skills commands tools rules memory"
+TARGETS="skills commands tools rules memory hooks"
 DIFF_FOUND=0
 # /g-ul / /g-dl と同じ除外パターンに揃える
 # robocopy /XD __pycache__ .bootstrap-bak-* .migrate-pending-*

@@ -1,11 +1,11 @@
 ---
 name: g-ul
-description: プロジェクトの `.claude/{skills,commands,tools,rules,memory}` を `%USERPROFILE%\claude-shared\` にミラーコピーしてから Git push する。Option C ミラー方式。コミットメッセージは引数任意（未指定時は自動生成）。
+description: プロジェクトの `.claude/{skills,commands,tools,rules,memory,hooks}` を `%USERPROFILE%\claude-shared\` にミラーコピーしてから Git push する。Option C ミラー方式。コミットメッセージは引数任意（未指定時は自動生成）。
 ---
 
 # /g-ul — claude-shared upload (mirror approach)
 
-プロジェクトの `.claude/{skills,commands,tools,rules,memory}` を `%USERPROFILE%\claude-shared\` にミラーコピー (`robocopy //MIR`) してから Git に push する。
+プロジェクトの `.claude/{skills,commands,tools,rules,memory,hooks}` を `%USERPROFILE%\claude-shared\` にミラーコピー (`robocopy //MIR`) してから Git に push する。
 
 **Option C ミラー方式**: ジャンクションを使わない。OneDrive が `.claude/` をジャンクション越しに破壊する事故を構造的に回避。
 
@@ -50,7 +50,7 @@ if [ ! -d "$SHARED_BASH" ]; then
     echo "claude-shared not found: $SHARED_BASH (新PC は git clone が必要)" >&2
     exit 1
 fi
-TARGETS="skills commands tools rules memory"
+TARGETS="skills commands tools rules memory hooks"
 
 echo "ClaudeDir: $CLAUDE_DIR"
 echo "Shared:    $SHARED_BASH"
@@ -159,6 +159,8 @@ git log -1 --format='%h %ad %s' --date=short HEAD
 ### Step 3: 完了報告
 
 push の commit hash と short stat を 1〜2 行で報告。
+
+`hooks/` に差分が含まれていた場合は、報告に **「他 PC では `/g-dl` 後に `install_hooks.py` の実行が必要」** と 1 行添える（hook 本体はミラーされるが、登録先の `settings.local.json` は PC ごとのローカル設定のため共有されない）。
 
 ## エラー時
 

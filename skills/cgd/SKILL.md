@@ -2,7 +2,7 @@
 name: cgd
 description: Codex+DeepSeek+Qwen の統合コードレビュー・設計相談・実装・委譲・検証スキル（**Gemini は2026-07にAPIエラー多発のため既定オフのオプトイン参加に格下げ済み**）。**9段階レベル（Lv0〜Lv8）**でユーザーがトークン消費・所要時間・実装主体を選択。**Lv0=委譲レーン**（DS/Qwenにコード生成を任せClaudeは分解と検証に専念・scaffold/量産タスク/コスト節約・Antigravity Plugin相当） / Lv1=Codex単独 / Lv2=Codex+DeepSeek並列（既定推奨。旧/codex等価のC+G構成は「Geminiも」等の明示指示で再現可） / Lv3=Codex+DeepSeekの技術×批評「2社×2視点」4レビュー（実装なし・review専用） / Lv4=Claude初期案→[DS+Qwen並列advisor]→Codex直列フル相談+再レビュー（Gemini併用時は先頭にGemini案出しが直列で入る） / Lv5=Lv4+🔴重大指摘の自動修正1周 / Lv6=Codex+DS+Qwen 3者並列レビュー（全員reviewer役、Gemini併用で4者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周 / Lv7=Codex多重(medium+high)+補助(DS/Qwen)の4者並列「Codex集中」構成（Gemini併用で5者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周（最深掘り） / Lv8=Lv7の技術構成そのまま+Codex(high)とDeepSeekにLv3同様の批評視点を追加した6者並列（Gemini併用で7者）+実装+検証+Codex再レビュー+🔴自動修正1周（技術の最深掘り+複眼批評、最重量級）。Lv0=実装主体の切替（コストレーン）、Lv1-8=レビュー強度の選択（品質レーン）で直交。Lv4-5はDS/Qwenをadvisor役で別案出し、Lv6は横並びreviewer、Lv7は深いintegrationバグ検出を狙ってCodex多重化+DS/Qwenに関連関数抜粋を渡して補助役を強化。差分レビュー、設計判断、別案出し、実装、委譲、検証まで一気通貫。**旧 `/codex` `/gemini` 単体スキルは廃止され、本スキル（`/cgd` または `/codex` 起動）が必ずレベル選択から始まる**。全Lv共通の任意オプションで『critic観点』（辛口ユーザー視点＝ITに疎い現場担当者の使い勝手の不満 + あるべき論＝本来この仕様はどうあるべきかの批判を Claude本体+DS criticで評価）を追加でき、技術的正しさとは別軸で使い勝手・仕様の妥当性を否定的にチェックする。環境チェックは `python C:/ClaudeCode/.claude/tools/cgd_doctor.py` で一括。「委譲」「scaffold」「量産」「DSで書かせる」「Qwenで書かせる」「コスト節約」「3者に相談」「フルパイプ」「4者レビュー」「Codex多重」「Codex集中」「辛口レビュー」「ユーザー視点」「あるべき論」「critic」「cgd」「Codexにレビュー」「セカンドオピニオン」「C+G」「cg」「Geminiも」などのキーワードで起動。重要な設計判断・難しいバグ・大きめのリファクタの検討時には積極的に提案すること。既存 /generate-by-deepseek（DS単発コード生成→Claudeレビュー）は薄い構成で並立。
 ---
-<!-- SKILL_VERSION: 2026-07-27_194451 -->
+<!-- SKILL_VERSION: 2026-07-27_212057 -->
 
 # cgd — Codex + DeepSeek + Qwen 統合スキル（Lv0〜8、Gemini はオプトイン）
 
@@ -59,13 +59,24 @@ Claude Code は司令塔。Codex / DeepSeek / Qwen を **役割分担** で使�
 `/cgd` `/codex` 起動のたびに、**Step 1 に入る前に**スキル定義が最新か確認する。既存セッションに古い手順が残ったまま実行する事故（このスキルは頻繁に改修される）を防ぐ。
 
 ### 手順
-1. **バージョンスタンプ確認**（軽量・必須）: Bash で最新スタンプを取得:
+1. **バージョン照合**（軽量・必須）: **自分のコンテキストにある本文冒頭のスタンプ**を引数で渡し、機械判定させる:
    ```bash
-   grep -m1 'SKILL_VERSION' "C:/ClaudeCode/.claude/skills/cgd/SKILL.md"
+   python "C:/ClaudeCode/.claude/tools/skill_version_check.py" cgd <自分のコンテキストのスタンプ>
    ```
+   例: `python "C:/ClaudeCode/.claude/tools/skill_version_check.py" cgd 2026-07-27_212057`
+   - 目視比較は誤りやすいため**必ずこのツールに判定させる**（exit 0=OK / 3=STALE / 4=判定不能）
 2. **判定**:
-   - 取得スタンプが、いま自分のコンテキストにある cgd/SKILL.md 本文の `<!-- SKILL_VERSION: ... -->` と**一致** → 最新。そのまま Step 1 へ
-   - **不一致**、または **今セッションで cgd/SKILL.md を読んだ記憶がない** → `Read` で cgd/SKILL.md を読み直してから Step 1 へ（`/sr` 相当）
+   - `[OK]` → 最新。そのまま Step 1 へ
+   - `[STALE]` → **必ず** `Read` で cgd/SKILL.md を読み直してから Step 1 へ（`/sr` 相当）
+   - `[UNKNOWN]` → `--show` で現物スタンプを確認し、判断がつかなければ `Read` で読み直す
+   - **今セッションで cgd/SKILL.md を読んだ記憶がない**場合も読み直す
+
+   > **なぜ必要か（2026-07-27 の実事故）**: スキル本文は `Skill` 呼び出し時点のスナップショットとして
+   > 会話に固定される。5 月に読み込んだ cgd（Lv1-5 / Gemini 第2エンジン）を 7 月まで参照し続け、
+   > 現行（Lv0-8 / DeepSeek 構成）と食い違ったまま Lv3 を実行してしまった。ディスク上のファイルは
+   > 正しく更新されていても、**コンテキスト側は自動では更新されない**。
+   > 補助として `UserPromptSubmit` hook (`.claude/hooks/skill_freshness.py`) が、セッション開始後に
+   > 更新されたスキル/コマンドを検知して警告する（全スキル対象・スキル本文非依存）。
 3. **claude-shared(Git) 未取込チェック**（他端末の更新検知・推奨・重い時はスキップ可）:
    ```bash
    git -C "$USERPROFILE/claude-shared" fetch --quiet && git -C "$USERPROFILE/claude-shared" status -sb | head -1
