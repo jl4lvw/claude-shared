@@ -2,7 +2,7 @@
 name: critic
 description: 辛口クリティック — 仕様・コード・画面・差分を「技術的な正しさ」ではなく「使う人が困らないか / 本来この仕様はどうあるべきか」の観点で否定的に評価する単独スキル。2つの帽子（①ITに疎い現場担当者の使い勝手の不満 ②熟練ITアーキテクトのあるべき論）で、Claude本体 + DS critic が辛口に粗探しする。実装前の仕様評価（手戻り防止に最も効く）・新機能/UI/操作フロー・エラー文言や確認ダイアログのレビュー・既存機能の不満調査に使う。「辛口で」「ユーザー視点で」「あるべき論で」「現場目線で」「critic」「使いにくくないか」「これ要る？」などで起動。技術バグ探し・設計の厳密レビューは /cgd（Codex/DS/Qwen reviewer）の担当で、本スキルは UX とあるべき論に特化した軽量版（cgd の critic 観点を単独起動）。評価後はユーザーが改修強度（改修しない / cgd の Lv1-7）を選び、選んだ Lv の実装フロー（実装+検証+再レビュー）まで接続できる。
 ---
-<!-- SKILL_VERSION: 2026-06-19_131428 -->
+<!-- SKILL_VERSION: 2026-07-27_194451 -->
 
 # critic — 辛口クリティック（ユーザー視点 / あるべき論）単独スキル
 
@@ -67,7 +67,7 @@ description: 辛口クリティック — 仕様・コード・画面・差分�
 ```bash
 python "C:/ClaudeCode/.claude/tools/deepseek_coder.py" --role critic "C:/tmp-ai/critic_input.txt"
 ```
-- 深掘りしたいとき: `--model deepseek-reasoner`（コスト2倍弱・あるべき論が深くなる）
+- 深掘りしたいとき: `--model deepseek-v4-pro`（コスト3倍弱・あるべき論が深くなる。2026-07-24 deepseek-reasoner 廃止に伴い移行）
 - 出力（stdout）= 辛口評価、stderr の `[DS Usage] 今回:` 行を費用集計に転記
 
 **Claude 本体** も並行で「現場担当者なりきり + あるべき論」で辛口評価する（DS の結果を待つ間に進めてよい）。業務文脈・日本語の機微・実際の運用知識を活かす。
@@ -133,4 +133,4 @@ critic 評価表を出した **後**、指摘を **改修するか・どの強�
 - **DS が `DEEPSEEK_API_KEY が設定されていません`** → 環境変数を確認
 - **`Argument list too long`** → 対象を argv 直書きせず `critic_input.txt` に書いてファイル読ませにする（Step 2）
 - **評価が甘い・肯定的** → 「擁護禁止・粗探しに徹する」を再強調。DS は `--role critic` 指定を確認
-- **もっと深く** → `--model deepseek-reasoner` / 技術面も要るなら `/cgd`
+- **もっと深く** → `--model deepseek-v4-pro` / 技術面も要るなら `/cgd`

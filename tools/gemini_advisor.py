@@ -31,6 +31,41 @@ from typing import Any
 
 from openai import OpenAI
 
+# === cgd exit code registry (keep in sync with deepseek_coder.py / qwen_advisor.py / cgd_doctor.py) ===
+EXIT_OK = 0
+EXIT_AUTH = 10
+EXIT_QUOTA = 20
+EXIT_TIMEOUT = 30
+EXIT_NETWORK = 40
+EXIT_INVALID_INPUT = 50
+EXIT_GENERIC = 1
+
+
+def _classify_openai_error(exc: BaseException) -> int:
+    """OpenAI 互換クライアントの例外を cgd 終了コード規約に振り分ける."""
+    name = type(exc).__name__
+    msg = str(exc).lower()
+    if name in {"AuthenticationError", "PermissionDeniedError"}:
+        return EXIT_AUTH
+    if name == "RateLimitError":
+        return EXIT_QUOTA
+    if name in {"APITimeoutError", "Timeout"}:
+        return EXIT_TIMEOUT
+    if name in {"APIConnectionError", "ConnectionError"}:
+        return EXIT_NETWORK
+    if name in {"BadRequestError", "UnprocessableEntityError"}:
+        return EXIT_INVALID_INPUT
+    if "401" in msg or "unauthorized" in msg or "invalid_api_key" in msg or "invalid api key" in msg:
+        return EXIT_AUTH
+    if "429" in msg or "quota" in msg or "rate limit" in msg or "rate_limit" in msg:
+        return EXIT_QUOTA
+    if "timeout" in msg or "timed out" in msg:
+        return EXIT_TIMEOUT
+    if "connection" in msg or "dns" in msg or "could not resolve" in msg:
+        return EXIT_NETWORK
+    return EXIT_GENERIC
+
+
 ROLE_PROMPTS: dict[str, str] = {
     "advisor": (
         "あなたは熟練のソフトウェア設計アドバイザーです。"
@@ -324,11 +359,11 @@ def call_gemini(
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         print("ERROR: GEMINI_API_KEY が設定されていません", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(EXIT_AUTH)
 
     if role not in ROLE_PROMPTS:
         print(f"ERROR: 未知の role '{role}'. 使えるのは {list(ROLE_PROMPTS)}", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(EXIT_INVALID_INPUT)
 
     if model is None:
         model = os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
@@ -336,15 +371,20 @@ def call_gemini(
     base_url = os.environ.get("GEMINI_BASE_URL", DEFAULT_BASE_URL)
     client = OpenAI(api_key=api_key, base_url=base_url)
 
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": ROLE_PROMPTS[role]},
-            {"role": "user", "content": prompt},
-        ],
-        max_tokens=max_tokens,
-        temperature=temperature,
-    )
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": ROLE_PROMPTS[role]},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+    except Exception as exc:
+        code = _classify_openai_error(exc)
+        print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+        sys.exit(code)
 
     if track:
         _track_usage(model, getattr(response, "usage", None), reset=reset_session)
@@ -446,7 +486,7 @@ def main() -> None:
 
     if not prompt.strip():
         print("ERROR: プロンプトが空です", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(EXIT_INVALID_INPUT)
 
     result = call_gemini(
         prompt,

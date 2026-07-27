@@ -1,7 +1,12 @@
-// cgd_lv6_review.js — Lv6 (C+G+DS+Qwen 4者並列レビュー) の review phase を Workflow 化
+// cgd_lv6_review.js — Lv6 (既定 Codex+DS+Qwen 3者並列レビュー、Gemini はオプトイン) の review phase を Workflow 化
 //
-// 目的: Codex high/medium の巨大 raw 出力 (160KB+) を subagent context に閉じ込め、
+// 目的: Codex high の巨大 raw 出力 (160KB+) を subagent context に閉じ込め、
 //       主 context には構造化 findings + 統合表 (数KB) だけ返す。
+//
+// 2026-07: Gemini は AI Studio 無料枠のレート制限でエラーが頻発したため既定から除外。
+//          args.include_gemini === true のときだけ4者目として追加参加させる。
+//          あわせて、旧廃止済み `gemini` CLI を直接叩いていたバグ（呼べば必ず失敗する）を
+//          `gemini_advisor.py`（OpenAI互換API）呼び出しに修正した。
 //
 // 主 context 側の責務 (この workflow の外):
 //   - Step 1 レベル選択 (AskUserQuestion)
@@ -9,16 +14,19 @@
 //   - この workflow 完了後、戻り値の table_md を描画
 //   - 実装許可 (AskUserQuestion) → 実装は主 context で実施 (本 workflow は review のみ)
 //
-// 起動例:
+// 起動例（既定・Gemini なし）:
 //   Workflow({ scriptPath: ".../cgd_lv6_review.js",
 //              args: { input_path: "C:/tmp-ai/review_input.txt", codex_reasoning: "medium", label: "pickorder-scan" } })
+// 起動例（Gemini オプトイン）:
+//   Workflow({ scriptPath: ".../cgd_lv6_review.js",
+//              args: { input_path: "C:/tmp-ai/review_input.txt", codex_reasoning: "medium", label: "pickorder-scan", include_gemini: true } })
 
 export const meta = {
   name: 'cgd-lv6-review',
-  description: 'Lv6 C+G+DS+Qwen 4者並列レビュー (review phase のみ・主context汚染回避)',
+  description: 'Lv6 既定Codex+DS+Qwen 3者並列レビュー（Gemini はinclude_geminiでオプトイン・review phaseのみ）',
   phases: [
-    { title: 'Review', detail: '4者並列レビュー (Codex/Gemini/DeepSeek/Qwen)' },
-    { title: 'Merge', detail: '収束判定 + 6列統合表生成' },
+    { title: 'Review', detail: '既定3者並列レビュー (Codex/DeepSeek/Qwen、Gemini はオプトイン)' },
+    { title: 'Merge', detail: '収束判定 + 統合表生成' },
   ],
 }
 
@@ -32,12 +40,13 @@ if (!_args || typeof _args !== 'object') _args = {}
 const inputPath = _args.input_path || 'C:/tmp-ai/review_input.txt'
 const reasoning = _args.codex_reasoning || 'medium'
 const label = _args.label || 'target'
+const includeGemini = _args.include_gemini === true
 
 // ドライラン: args パース + パス解決の確認用 (agent を呼ばず即 return)。dry_run=true 時のみ。
 // 起動例: Workflow({scriptPath, args:{input_path:"...", label:"...", dry_run:true}}) → 課金0
 if (_args.dry_run === true) {
-  log('[dry-run] inputPath=' + inputPath + ' / reasoning=' + reasoning + ' / label=' + label)
-  return { dry_run: true, resolved_input_path: inputPath, resolved_reasoning: reasoning, resolved_label: label }
+  log('[dry-run] inputPath=' + inputPath + ' / reasoning=' + reasoning + ' / label=' + label + ' / includeGemini=' + includeGemini)
+  return { dry_run: true, resolved_input_path: inputPath, resolved_reasoning: reasoning, resolved_label: label, resolved_include_gemini: includeGemini }
 }
 
 // ---- 各レビュアーの構造化出力スキーマ ----
@@ -67,6 +76,8 @@ const FINDING_SCHEMA = {
 }
 
 // ---- レビュアー定義 (Bash コマンドと timeout) ----
+// 既定は Codex+DeepSeek+Qwen の3者。Gemini は includeGemini のときだけ追加（Codexの次に挿入し、
+// SKILL.md の統合表の列順「Codex | (Gemini) | DS | Qwen」と揃える）。
 const reviewers = [
   {
     name: 'codex',
@@ -75,13 +86,13 @@ const reviewers = [
     usage: false,
     authSignals: 'Not logged in / 401 / unauthorized',
   },
-  {
+  ...(includeGemini ? [{
     name: 'gemini',
-    cmd: `mkdir -p /c/tmp-ai && cd /c/tmp-ai && gemini --skip-trust -p "まず ${inputPath} の全文を読み、記載の差分・対象・評価観点に従ってコードレビュー。日本語で回答。" < /dev/null`,
+    cmd: `python "C:/ClaudeCode/.claude/tools/gemini_advisor.py" --role reviewer "${inputPath}"`,
     timeout: 180000,
-    usage: false,
-    authSignals: '/auth 要求 / 401 / permission denied',
-  },
+    usage: true,
+    authSignals: 'AuthenticationError / 401 / invalid api key / GEMINI_API_KEY が設定されていません',
+  }] : []),
   {
     name: 'deepseek',
     cmd: `python "C:/ClaudeCode/.claude/tools/deepseek_coder.py" --role reviewer "${inputPath}"`,
@@ -115,7 +126,7 @@ ${r.cmd}
    - location: file:line 形式が望ましい (分かる範囲で)
    - rationale: 根拠を1行
    - recommended_fix: 推奨修正 (あれば)
-4. ${r.usage ? 'stderr に出る [DS Usage] / [Qwen Usage] の「今回:」行を usage_line にそのまま転記する。' : 'usage_line は空文字 ("") にする (サブスク認証で料金可視化なし)。'}
+4. ${r.usage ? 'stderr に出る [DS Usage] / [Qwen Usage] / [Gemini Usage] の「今回:」行を usage_line にそのまま転記する。' : 'usage_line は空文字 ("") にする (サブスク認証で料金可視化なし)。'}
 5. 認証エラー (${r.authSignals}) を検出したら auth_error=true にして findings は空配列にする。それ以外は auth_error=false。
 6. reviewer フィールドに "${r.name}" を入れる。
 
@@ -128,23 +139,24 @@ JSON で返す。`,
   )
 ))
 
-// ---- 認証エラー / 欠員チェック (Lv6 は4者全員成功が必須) ----
+// ---- 認証エラー / 欠員チェック (Lv6 はその回の参加者全員成功が必須) ----
 const ok = reviews.filter(Boolean)
 const authFailed = ok.filter((r) => r.auth_error).map((r) => r.reviewer)
 if (authFailed.length > 0) {
-  log(`認証エラー検出: ${authFailed.join(', ')} → Lv6 中断 (4者揃わないと意味がない)`)
+  log(`認証エラー検出: ${authFailed.join(', ')} → Lv6 中断 (参加者${reviewers.length}者揃わないと意味がない)`)
   return {
     halt: 'auth_error',
     failed: authFailed,
     message: `認証エラー: ${authFailed.join(', ')}。復旧後に再実行してください。`,
   }
 }
-if (ok.length < 4) {
-  log(`レビュアー欠員: ${ok.length}/4 のみ成功 → Lv6 中断`)
+if (ok.length < reviewers.length) {
+  log(`レビュアー欠員: ${ok.length}/${reviewers.length} のみ成功 → Lv6 中断`)
   return {
     halt: 'incomplete',
     got: ok.length,
-    message: 'Lv6 は4者全員の成功が必要です。',
+    expected: reviewers.length,
+    message: `Lv6 は参加者${reviewers.length}者全員の成功が必要です。`,
   }
 }
 
@@ -153,7 +165,7 @@ phase('Merge')
 const MERGE_SCHEMA = {
   type: 'object',
   properties: {
-    table_md: { type: 'string', description: '6列統合表 (markdown)' },
+    table_md: { type: 'string', description: '統合表 (markdown)' },
     convergent_findings: {
       type: 'array',
       description: '2者以上が一致した指摘 (信頼度高)',
@@ -187,8 +199,11 @@ const MERGE_SCHEMA = {
   required: ['table_md', 'convergent_findings', 'divergent_findings', 'next_actions', 'summary'],
 }
 
+const reviewerNames = reviewers.map((r) => r.name)
+const tableColumns = ['指摘 (🔴/🟠/🟡 + 根拠1行)', ...reviewerNames.map((n) => n[0].toUpperCase() + n.slice(1)), '採用判断']
+
 const merged = await agent(
-  `4者のコードレビュー結果を統合してください。
+  `${reviewerNames.length}者のコードレビュー結果を統合してください。
 
 [各レビュアーの findings]
 ${JSON.stringify(ok.map((r) => ({ reviewer: r.reviewer, findings: r.findings })), null, 2)}
@@ -196,9 +211,8 @@ ${JSON.stringify(ok.map((r) => ({ reviewer: r.reviewer, findings: r.findings }))
 [タスク]
 1. 同一の指摘を突き合わせる。location と内容が一致/類似する指摘は同じ行にまとめる。
 2. 収束シグナル判定: 2者以上が挙げた指摘は convergent_findings (信頼度高)、1者のみは divergent_findings (false positive の可能性も含め要吟味) に分類。
-3. 6列統合表 table_md を markdown で作成:
-   | 指摘 (🔴/🟠/🟡 + 根拠1行) | Codex | Gemini | DS | Qwen | 採用判断 |
-   各 AI 列は ✅ (指摘あり) / ❌ (なし) / 🔄 (部分一致) を記入。
+3. 統合表 table_md を markdown で作成。列は必ずこの順番・この列名にする: ${JSON.stringify(tableColumns)}
+   各レビュアー列は ✅ (指摘あり) / ❌ (なし) / 🔄 (部分一致) を記入。
 4. next_actions: 実装すべき項目を箇条書き (severity 高い順、ファイル・修正方針)。
 5. summary: 全体の総評を1-3行。
 
@@ -209,6 +223,8 @@ JSON で返す。`,
 return {
   level: 6,
   label,
+  include_gemini: includeGemini,
+  participants: reviewerNames,
   table_md: merged.table_md,
   convergent_findings: merged.convergent_findings,
   divergent_findings: merged.divergent_findings,

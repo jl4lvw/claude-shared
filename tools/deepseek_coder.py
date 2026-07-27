@@ -7,7 +7,7 @@ stderr に出力する。同時にセッション累計を JSON に保存し、4
 主な仕様:
 - セッションファイル: .deepseek_usage_session.json（atomic write 保護）
 - 為替: 既定 1USD=150JPY。環境変数 DEEPSEEK_USD_TO_JPY で上書き可能
-- 未知モデルは deepseek-chat 料金にフォールバック（stderr に警告）
+- 未知モデルは deepseek-v4-flash 料金にフォールバック（stderr に警告）
 - usage は属性 / dict / OpenAI 互換 prompt_tokens_details.cached_tokens に対応
 """
 
@@ -24,12 +24,53 @@ from typing import Any
 
 from openai import OpenAI
 
+# === cgd exit code registry (keep in sync with gemini_advisor.py / qwen_advisor.py / cgd_doctor.py) ===
+EXIT_OK = 0
+EXIT_AUTH = 10
+EXIT_QUOTA = 20
+EXIT_TIMEOUT = 30
+EXIT_NETWORK = 40
+EXIT_INVALID_INPUT = 50
+EXIT_GENERIC = 1
+
+
+def _classify_openai_error(exc: BaseException) -> int:
+    """OpenAI 互換クライアントの例外を cgd 終了コード規約に振り分ける."""
+    name = type(exc).__name__
+    msg = str(exc).lower()
+    if name in {"AuthenticationError", "PermissionDeniedError"}:
+        return EXIT_AUTH
+    if name == "RateLimitError":
+        return EXIT_QUOTA
+    if name in {"APITimeoutError", "Timeout"}:
+        return EXIT_TIMEOUT
+    if name in {"APIConnectionError", "ConnectionError"}:
+        return EXIT_NETWORK
+    if name in {"BadRequestError", "UnprocessableEntityError"}:
+        return EXIT_INVALID_INPUT
+    if "401" in msg or "unauthorized" in msg or "invalid_api_key" in msg or "invalid api key" in msg:
+        return EXIT_AUTH
+    if "429" in msg or "quota" in msg or "rate limit" in msg or "rate_limit" in msg:
+        return EXIT_QUOTA
+    if "timeout" in msg or "timed out" in msg:
+        return EXIT_TIMEOUT
+    if "connection" in msg or "dns" in msg or "could not resolve" in msg:
+        return EXIT_NETWORK
+    return EXIT_GENERIC
+
+
 ROLE_PROMPTS: dict[str, str] = {
     "coder": (
-        "You are an expert Python programmer. "
-        "Write clean, production-quality code with type hints and proper error handling. "
+        "You are an expert programmer. "
+        "Write clean, production-quality code in the target language indicated by the user prompt "
+        "(Python, JavaScript / TypeScript, Go, Bash, HTML / CSS, SQL, etc.), "
+        "following that language's idioms, standard library conventions, and the project's existing style. "
+        "Apply type hints / annotations when the language supports them (Python type hints, TypeScript, Go types). "
+        "Add proper error handling at boundaries (I/O, network, user input), not inside trusted internal code. "
         "Use Japanese for comments and docstrings. "
-        "Output only the code unless explicitly asked for explanations."
+        "Output only the code unless explicitly asked for explanations. "
+        "If the user prompt mentions AGENTS.md / CLAUDE.md, follow those project rules "
+        "(e.g. no shebang on Windows, explicit encoding=\"utf-8\" for Python file I/O, no unnecessary abstractions)."
     ),
     "advisor": (
         "あなたは熟練のソフトウェア設計アドバイザーです。"
@@ -76,12 +117,25 @@ ROLE_PROMPTS: dict[str, str] = {
 }
 
 # 料金（USD / 1M tokens）: (input_cache_miss, input_cache_hit, output)
-# DeepSeek 公式レート（2026/05 時点）。変更時はここだけ書き換える。
+# DeepSeek 公式レート（2026/07 時点）。変更時はここだけ書き換える。
+# 2026-07-24 に deepseek-chat / deepseek-reasoner は廃止され、
+# deepseek-v4-pro / deepseek-v4-flash に統合された（旧エントリは過去ログ参照用に残す）。
 PRICING: dict[str, tuple[float, float, float]] = {
+    "deepseek-v4-pro": (0.435, 0.003625, 0.87),
+    "deepseek-v4-flash": (0.14, 0.0028, 0.28),
     "deepseek-chat": (0.27, 0.07, 1.10),
     "deepseek-coder": (0.27, 0.07, 1.10),
     "deepseek-reasoner": (0.55, 0.14, 2.19),
 }
+
+# 未知モデルの料金概算に使うフォールバック先（廃止された deepseek-chat の後継）。
+FALLBACK_MODEL: str = "deepseek-v4-flash"
+
+# デフォルトの max_tokens。v4-pro / v4-flash は reasoning_tokens が completion_tokens 予算を
+# 消費するため、旧 deepseek-chat 時代の 4096 では reviewer 役などで本文が空になる
+# （実測: 500行規模のファイルレビューで reasoning だけで 4096 を使い切り finish_reason=length）。
+# 16000 なら同条件で余裕を持って収まることを実測済み（最大でも 4205/16000 = 26% 消費）。
+DEFAULT_MAX_TOKENS: int = 16000
 
 # 為替レート（USD → JPY 換算用）。環境変数 DEEPSEEK_USD_TO_JPY で上書き可能。
 DEFAULT_USD_TO_JPY: float = 150.0
@@ -154,7 +208,7 @@ def _calc_cost(
     rates = PRICING.get(model)
     is_fallback = rates is None
     if rates is None:
-        rates = PRICING["deepseek-chat"]
+        rates = PRICING[FALLBACK_MODEL]
     in_miss_rate, in_hit_rate, out_rate = rates
     cost = (
         cache_miss * in_miss_rate / 1_000_000
@@ -271,7 +325,7 @@ def _track_usage(model: str, usage_obj: Any, reset: bool = False) -> None:
     cost_now, is_fallback = _calc_cost(model, cache_miss, cache_hit, completion_tokens)
     if is_fallback:
         print(
-            f"[DS Usage] WARN: 未登録モデル '{model}' のため deepseek-chat 料金で概算しています",
+            f"[DS Usage] WARN: 未登録モデル '{model}' のため {FALLBACK_MODEL} 料金で概算しています",
             file=sys.stderr,
         )
 
@@ -317,7 +371,7 @@ def call_deepseek(
     prompt: str,
     role: str = "coder",
     model: str | None = None,
-    max_tokens: int = 4096,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
     temperature: float = 0.0,
     track: bool = True,
     reset_session: bool = False,
@@ -327,7 +381,7 @@ def call_deepseek(
     Args:
         prompt: ユーザープロンプト.
         role: 'coder'（コード生成・既存挙動）または 'advisor'（設計相談・別案出し）.
-        model: モデル名. 省略時は role に応じて自動選択（coder→deepseek-coder, advisor→deepseek-chat）.
+        model: モデル名. 省略時は role に応じて自動選択（coder→deepseek-v4-pro, それ以外→deepseek-v4-flash）.
         max_tokens: 最大出力トークン数.
         temperature: サンプリング温度.
         track: True なら usage を集計して stderr に出力する.
@@ -339,26 +393,31 @@ def call_deepseek(
     api_key = os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
         print("ERROR: DEEPSEEK_API_KEY が設定されていません", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(EXIT_AUTH)
 
     if role not in ROLE_PROMPTS:
         print(f"ERROR: 未知の role '{role}'. 使えるのは {list(ROLE_PROMPTS)}", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(EXIT_INVALID_INPUT)
 
     if model is None:
-        model = "deepseek-coder" if role == "coder" else "deepseek-chat"
+        model = "deepseek-v4-pro" if role == "coder" else "deepseek-v4-flash"
 
     client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": ROLE_PROMPTS[role]},
-            {"role": "user", "content": prompt},
-        ],
-        max_tokens=max_tokens,
-        temperature=temperature,
-    )
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": ROLE_PROMPTS[role]},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+    except Exception as exc:
+        code = _classify_openai_error(exc)
+        print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+        sys.exit(code)
 
     if track:
         _track_usage(model, getattr(response, "usage", None), reset=reset_session)
@@ -430,7 +489,7 @@ def main() -> None:
         help="動作モード: coder=コード生成（既定）, advisor=設計相談・別案出し",
     )
     parser.add_argument("--model", default=None, help="モデル名を明示指定する場合")
-    parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument(
         "--no-usage",
@@ -460,7 +519,7 @@ def main() -> None:
 
     if not prompt.strip():
         print("ERROR: プロンプトが空です", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(EXIT_INVALID_INPUT)
 
     result = call_deepseek(
         prompt,
