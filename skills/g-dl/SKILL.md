@@ -41,8 +41,6 @@ if [ ! -d "$SHARED_BASH" ]; then
     echo "claude-shared not found: $SHARED_BASH (新PC は git clone が必要)" >&2
     exit 1
 fi
-TARGETS="skills commands tools rules memory hooks"
-
 echo "ClaudeDir: $CLAUDE_DIR"
 echo "Shared:    $SHARED_BASH"
 
@@ -127,6 +125,15 @@ else
 fi
 
 # Step B: claude-shared/* -> .claude/* ミラー
+# TARGETS は pull 直後の claude-shared 直下ディレクトリ一覧から動的に決める(固定リストにしない)。
+# 理由: このBashブロックは「呼び出された時点で読み込まれたSKILL.md」の内容で実行される。
+# もし今回の pull で /g-dl 自身の更新(ミラー対象フォルダの追加など)が含まれていても、
+# 実行中のこのブロックは古い版のまま=固定リストだと新フォルダを取りこぼす
+# (次回 /g-dl まで気付かれずに放置されるバグが過去にあった: 2026-07-31 B端末報告)。
+# pull 後にディレクトリ一覧から都度算出すれば、1回目の実行から最新状態を反映できる。
+TARGETS=$(cd "$SHARED_BASH" && for d in */; do d="${d%/}"; [ "$d" = ".git" ] && continue; echo "$d"; done)
+echo ""
+echo "targets (claude-shared直下から動的算出): $TARGETS"
 cd /
 echo ""
 echo "=== Mirror claude-shared/ -> .claude/ ==="

@@ -42,19 +42,43 @@ def _project_dir() -> Path:
 
 
 # 配布・登録したい hook の定義。追加したらここに 1 行足す。
-# (イベント名, hook スクリプトの相対パス, timeout 秒, 用途メモ)
-_HOOKS: tuple[tuple[str, str, int, str], ...] = (
+# (イベント名, matcher(Noneなら未指定), hook スクリプトの相対パス, timeout 秒, 用途メモ)
+# matcher が異なる同一イベントは別グループとして登録する(例: PostCompact の auto/manual)。
+_HOOKS: tuple[tuple[str, str | None, str, int, str], ...] = (
     (
         "UserPromptSubmit",
+        None,
         ".claude/hooks/skill_freshness.py",
         5,
         "セッション開始後に更新されたスキル/コマンドを検知して警告",
     ),
     (
         "UserPromptSubmit",
+        None,
         ".claude/hooks/r_consume.py",
         5,
         "貼付テキスト末尾の r-consume タグを検出して RemoteInstructions を consume",
+    ),
+    (
+        "UserPromptSubmit",
+        None,
+        ".claude/hooks/ctx_inject.py",
+        5,
+        "ctx: 圧縮直後に制約・承認・状態を注入(ctx/SKILL.md 184-186)",
+    ),
+    (
+        "PostCompact",
+        "auto",
+        ".claude/hooks/ctx_compact_mark.py",
+        5,
+        "ctx: 自動圧縮時に台帳へ COMPACT auto を追記(ctx/SKILL.md 184-186)",
+    ),
+    (
+        "PostCompact",
+        "manual",
+        ".claude/hooks/ctx_compact_mark.py",
+        5,
+        "ctx: 手動圧縮時に台帳へ COMPACT manual を追記(ctx/SKILL.md 184-186)",
     ),
 )
 
@@ -74,9 +98,15 @@ def _load(settings_path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _existing_commands(settings: dict, event: str) -> set[str]:
+def _existing_commands(settings: dict, event: str, matcher: str | None) -> set[str]:
+    """matcher が None の場合は matcher 未指定グループのみ、指定時はそのmatcherの
+    グループのみを見る(PostCompact の auto/manual 等、matcher違いは別グループのため
+    混同してはいけない)。"""
     out: set[str] = set()
     for group in settings.get("hooks", {}).get(event, []) or []:
+        group_matcher = (group or {}).get("matcher")
+        if group_matcher != matcher:
+            continue
         for h in (group or {}).get("hooks", []) or []:
             cmd = h.get("command")
             if isinstance(cmd, str):
@@ -96,18 +126,19 @@ def main() -> int:
     print(f"project : {project}")
     print(f"settings: {settings_path} ({'既存' if settings_path.exists() else '新規作成'})")
 
-    to_add: list[tuple[str, str, int, str]] = []
-    for event, rel, timeout, note in _HOOKS:
+    to_add: list[tuple[str, str | None, str, int, str]] = []
+    for event, matcher, rel, timeout, note in _HOOKS:
         script = project / rel
         if not script.is_file():
             print(f"  [SKIP] {rel} が見つかりません（/g-dl で配布されていない可能性）")
             continue
         cmd = _command_for(rel)
-        if cmd in _existing_commands(settings, event):
-            print(f"  [OK]   登録済: {event} <- {rel}")
+        label = f"{event}" + (f"[{matcher}]" if matcher else "")
+        if cmd in _existing_commands(settings, event, matcher):
+            print(f"  [OK]   登録済: {label} <- {rel}")
             continue
-        print(f"  [ADD]  未登録: {event} <- {rel}  ({note})")
-        to_add.append((event, rel, timeout, note))
+        print(f"  [ADD]  未登録: {label} <- {rel}  ({note})")
+        to_add.append((event, matcher, rel, timeout, note))
 
     if not to_add:
         print("\n変更なし（すべて登録済み）")
@@ -125,13 +156,22 @@ def main() -> int:
         print(f"\nバックアップ: {bak.name}")
 
     hooks_root = settings.setdefault("hooks", {})
-    for event, rel, timeout, _note in to_add:
+    for event, matcher, rel, timeout, _note in to_add:
         groups = hooks_root.setdefault(event, [])
         entry = {"type": "command", "command": _command_for(rel), "timeout": timeout}
-        if groups and isinstance(groups[0], dict) and isinstance(groups[0].get("hooks"), list):
-            groups[0]["hooks"].append(entry)  # 既存グループに相乗り
+        # matcher が一致する既存グループを探し、あれば相乗り。なければ新規グループ追加。
+        target_group = None
+        for group in groups:
+            if isinstance(group, dict) and group.get("matcher") == matcher:
+                target_group = group
+                break
+        if target_group is not None and isinstance(target_group.get("hooks"), list):
+            target_group["hooks"].append(entry)
         else:
-            groups.append({"hooks": [entry]})
+            new_group: dict = {"hooks": [entry]}
+            if matcher is not None:
+                new_group["matcher"] = matcher
+            groups.append(new_group)
 
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = settings_path.with_suffix(".json.tmp")
