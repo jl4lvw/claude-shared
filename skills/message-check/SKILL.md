@@ -51,6 +51,68 @@ python ".claude/skills/relay/scripts/relay_client.py" check
     - 外部への送信・公開(メール送信、SNS投稿、他システムへのAPI呼び出し等)
     - 機密情報(APIキー、個人情報等)へのアクセス・送信
 
+### 2.2 処理を始める前に処理権(claim)を取る(必須・2026-07-30追加)
+
+同じ受信箱を**複数の実行者が同時に見ている**ため、claimを取らずに処理すると
+同じ依頼に二重返信してしまう。該当する並行パターン:
+
+- A端末の常駐GUI(自動確認)と、人が手で打った `/m` セッション
+- A端末の代理処理(TK宛)と、TK端末本人の自動確認
+
+**そのため、自分宛・代理を問わず、1件ごとに処理直前にclaimを取る**:
+
+```bash
+python ".claude/skills/relay/scripts/relay_client.py" claim <message_id>
+```
+
+- **終了コード2 = 他の実行者が処理中** → そのメッセージは**スキップし、返信もdoneもしない**
+  (`check` の出力にも `※ 処理権: ... が処理中 → 手を出さない` と表示される)
+- 終了コード0 = 処理権を取得できた → 作業して返信し、`done` で消し込む
+- 終了コード1 = 通常のAPIエラー(通信不可等) → ユーザーに報告する
+- claimは同じ実行者からの再実行では冪等に成功する(リトライ安全)
+
+**claimを取ったら必ず`done`まで完了させる**。途中で放置すると他の端末も触れなくなる。
+
+処理を中断する場合(判断に迷う・自分の担当ではないと分かった等)は、
+**必ず処理権を解除してから**ユーザーに報告する:
+
+```bash
+python ".claude/skills/relay/scripts/relay_client.py" unclaim <message_id>
+```
+
+解除しないまま放置すると、他端末が`done`できないうえ**放置通知の対象からも外れる**
+(`stale_notify`はclaim済みを「担当確定」として除外するため、誰も気付けなくなる)。
+
+### 2.5 TK宛の代理処理(A端末のみ・2026-07-30追加)
+
+RCがA/B/TKを区別できず、本来A端末で処理すべきPWA改修依頼がTK宛に届くため、
+A端末はTK宛のRC発メッセージも代理で扱える(委任済み: A→TK名義、RC発のみ)。
+
+**手順**:
+
+1. 自分宛の処理が終わったら、TK宛の代理分も確認する:
+   ```bash
+   python ".claude/skills/relay/scripts/relay_client.py" check --as TK
+   ```
+   (RC発のみ表示される。この閲覧ではstatusは変わらないため、TK端末の新着を奪わない)
+2. **内容を見て「A端末で処理すべきか」を判断する**。PWA改修・productmaster関連など、
+   A端末の担当領域であれば代理処理する。TK端末で処理すべき内容(TK固有の作業)なら**手を出さず放置する**
+3. 代理処理すると決めたら、**2.2と同様に処理権を取る**(名義を付ける):
+   ```bash
+   python ".claude/skills/relay/scripts/relay_client.py" claim <message_id> --as TK
+   ```
+   終了コード2(他の実行者が処理中)なら、そのメッセージには手を出さない
+4. 作業してTK名義で返信し、doneで消し込む:
+   ```bash
+   python ".claude/skills/relay/scripts/relay_client.py" send "<要約>" --to RC --thread <thread_id> --type result --as TK
+   python ".claude/skills/relay/scripts/relay_client.py" done <message_id> --as TK
+   ```
+
+**注意**:
+- **代理処理は「判断して選んだものだけ」行う**。TK宛を機械的に全部処理しない(cgd Lv3レビューで4者が一致して指摘した点)
+- 判断に迷う場合はユーザーに確認する(TK宛はA端末の担当範囲か曖昧なことがある)
+- 監査ログには実行者(A)と名義(TK)が両方残るので、後から追跡できる
+
 ### 3. 完了後の返信
 
 処理が完了したら、発信元のスレッドに処理内容の要約を`--type result`で返信する:

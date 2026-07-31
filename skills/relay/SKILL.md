@@ -21,6 +21,13 @@ description: Claude Code同士(複数拠点・全員相互・対称双方向)が
 /relay send --to RC --file report.pdf "PDFを確認して"              # ファイル添付
 /relay send --to B --thread <thread_id> --type reply --no-reply-needed "ありがとうございました"  # 返信不要な締めの一言
 /relay check                                                     # 自分宛の未処理を全件確認(添付は自動DL)
+
+# 代理処理(2026-07-30追加。A端末がTK宛のRC発メッセージを扱う運用)
+/relay check --as TK                                             # TK宛を代理で閲覧(statusは変えない)
+/relay claim <message_id> --as TK                                # 処理権を取る(二重処理防止・処理前に必須)
+/relay send --to RC --thread <id> --type reply --as TK "..."      # TK名義で代理返信
+/relay done <message_id> --as TK                                 # 代理で消し込み
+/relay delegations                                               # 代理権限の一覧
 ```
 
 `--to`は必須。全員相互に送信できるため、宛先を明示する必要がある。
@@ -42,6 +49,41 @@ description: Claude Code同士(複数拠点・全員相互・対称双方向)が
 **「取得済み・未処理」で止まったまま「既読処理済」にならない**のは、取得したが実際の対応(返信・処理)を忘れている・放置しているサインになる。ビューアPWA(`https://relay-viewer.sfuji.f5.si`)では、`processing`のまま24時間以上経過したメッセージに⚠️バッジが表示されるので、送信側はそこで放置に気付ける。
 
 **この設計にした理由**: 以前は受信側が明示的に既読化APIを呼ぶ運用だったが、呼び忘れると永久に「未読」のまま放置され、送信側は「相手が読んだかどうか」すら分からなかった。`/relay check`の取得自体を「データ読取済」のトリガーにすることで、少なくとも「読んだかどうか」は確実に記録される。
+
+## 代理処理(delegation)— 他端末宛を代理で扱う
+
+**背景**: RCがA/B/TKを区別できず、本来A端末で処理すべきPWA改修依頼がTK宛に届くため。
+A/B/TKは同一運用者の3台の端末なので、名義を明示したうえでA端末が代理処理する
+(2026-07-30、cgd Lv3レビュー(Codex+DeepSeekの技術×批評4レビュー)を経て設計確定)。
+
+### 仕組み
+
+- **`X-Act-As: <名義>` ヘッダ**で代理する。自分のAPIキーで認証しつつ名義だけ切り替える
+- **APIキー=身元(actor)の原則は崩さない**。他人のキーを使い回す運用はしない
+- 事前に委任表への登録が必要。未登録なら403(なりすまし不可)
+- 現在の登録: **A → TK名義、RC発のみ、権限=read,reply,done**
+
+### 重要な挙動(触る前に理解すること)
+
+| 項目 | 挙動 | 理由 |
+|---|---|---|
+| 代理での閲覧 | **statusを変えない**(unreadのまま) | 代理側が読んだだけでTK端末の新着から消え、双方が見失う事故を防ぐ |
+| 送信者制限 | `from_filter=RC`なら**RC発のみ**見える・扱える | TK端末で処理すべき内部タスクをA端末が奪わないため |
+| 処理権(claim) | 処理前に`claim`を取る。**他の実行者がclaim済みなら409** | A端末とTK端末が同じメッセージを二重処理する事故を防ぐ |
+| doneの保護 | 他の実行者がclaim中のものは**doneできない** | TK端末が作業中のメッセージをA端末が消し込む事故を防ぐ |
+| 放置検知 | `claimed_by`が入っていれば**通知対象外**。`read_by`だけなら対象に残る | 「誰かが開いただけで放置検知が消える」問題への対策 |
+| 監査ログ | `proxy_audit_log`に**actor(実行者)とprincipal(名義)を両方**記録 | 「Aが作業したのに記録上はTK」という追跡不能を防ぐ |
+
+### 代理権限の管理
+
+```bash
+# 登録(自分が誰かの代理をする)
+python relay_client.py delegate TK --from-user RC --scopes read,reply,done --note "用途"
+# 一覧(--all で取消済みも表示)
+python relay_client.py delegations
+# 取消(actor本人・principal本人どちらからでも可)
+python relay_client.py revoke <delegation_id>
+```
 
 ## 初回セットアップ(メンバーそれぞれで1回だけ)
 
@@ -103,4 +145,29 @@ description: Claude Code同士(複数拠点・全員相互・対称双方向)が
 - `GET /messages`(≒`/relay check`の内部呼び出し)は、返却する未読メッセージを**サーバー側で自動的に`processing`(データ読取済)へ遷移**させる。クライアントが明示的に既読化APIを呼ぶ必要はない(2026-07-11、RC関連メッセージが大量に未読のまま放置されていた問題への対策)
 - `POST /messages/{id}/done`(`relay_client.py done`)は引き続き明示的な呼び出しが必要。「読んだ」と「処理を終えた」を区別するための最後の一手
 - LineWorks通知(任意機能、`app/lineworks_notify.py`): メッセージ保存成功後、宛先に対応するLineWorks通知先が`secrets/lineworks_usermap.json`にあればBot API経由でfire-and-forget通知。通知文には送信者・宛先・種別(タスク/返信/結果/質問)・本文(文字数上限まで)を含める
+- **連携GUI (A端末のみ、2026-07-30)**: `041.Claude間連携API/gui/` の常駐GUI(tkinter + Claude Agent SDK)が、AI間のやり取りを1画面で完結させる。5分ごとに未処理を確認し、新着があればGUI内のSDKでClaudeが処理する。**Claudeからの質問は`mcp__gui__ask_user`ツール経由でGUIのダイアログに出て、回答が会話に返る**。危険操作(削除・force push・taskkill・本番書込API等)はPreToolUseフックでGUI承認にかける。Scheduled Task「RelayGui」が5分間隔で未起動なら自動起動(多重起動は実プロセス検査で抑止)。詳細は`gui/README.md`
+- ~~新着監視 (RelayWatcher)~~: **2026-07-30に無効化**(GUIと二重にClaudeを起動するため)。タスク定義は残してあるので、GUI運用をやめる場合は`Enable-ScheduledTask -TaskName RelayWatcher`で戻せる。以下は当時の仕様: Scheduled Task「RelayWatcher」が5分おきに`GET /messages/summary`(超軽量・副作用なし)をポーリングし、`max_pending_id`が前回より進んだ時だけ`claude -p "/m"`をheadless起動する。空振り時のトークン消費はゼロ。実装は`C:/ClaudeCode/_relay_watcher_launch/`(relay_watcher.py・状態ファイル・ロック・ログ)。手動の`/m`とは共存し、いつでも手動実行できる
+- `GET /messages/summary`: 自分宛の未処理件数・最大message_id・最終作成時刻のみ返す(本文なし・status遷移なし)。監視スクリプト用
+- **監視の異常通知 (2026-07-30、cgd Lv3レビューを受けて追加)**: `relay_watcher.py`がサイレント故障を検知してLineWorksへ能動通知する。通知本体は`041.Claude間連携API/scripts/alert_notify.py`(venv必須のため分離、宛先はusermapの`A`=運用者)
+  - `auth_error`(認証切れ): **即通知**(自然復旧しないため)。rc=0でも出力に認証エラーが出る実例があったため終了コードだけでなく本文も判定する
+  - `api_unreachable`(relay API到達不能) / `claude_failed`(起動失敗・タイムアウト): **3回連続**で通知(一時的な失敗を除外)
+  - 同一異常の再通知は6時間間隔、夜間23:00〜7:00は送信保留(解消しなければ明けに通知)
+  - 復旧時は「復旧しました」を通知して状態をリセット
+  - 通知文には**復旧手順**を含める(認証切れなら`claude setup-token`の再発行手順など)
 - 定時放置通知バッチ(`041.Claude間連携API/scripts/stale_notify.py`、Windows Scheduled Task「RelayStaleNotify」で1日4回・9/13/16/19時に自動実行): `status=unread`、または`status=processing`かつ`processing_started_at`から12時間以上経過したメッセージがあるユーザーへLineWorksで件数を通知。夜間23:00〜7:00は送信抑止。`no_reply_needed=true`のメッセージは集計対象外(2026-07-11実装)
+
+## claimの扱い(二重処理防止)
+
+**claimは代理処理だけでなく、自分宛の処理でも必須**(2026-07-30)。
+A端末の常駐GUIと手動セッション、A端末の代理処理とTK端末本人が同じメッセージを
+同時に処理してしまう事故を防ぐため。**終了コード2は「他の実行者が処理中」**を意味し、
+異常終了(1)とは区別される。2が返ったらそのメッセージには手を出さない。
+
+処理を中断するときは `unclaim` で解除する(解除できるのは保有者本人のみ):
+
+```bash
+python ".claude/skills/relay/scripts/relay_client.py" unclaim <message_id> [--as TK]
+```
+
+解除しないと他端末が`done`できず、さらに`stale_notify`がclaim済みを除外するため
+**放置通知も止まる**(詰まりに気付けない)。claimしたまま落ちた場合の復旧口でもある。
