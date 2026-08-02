@@ -120,6 +120,58 @@ _MIME_OVERRIDES = {
     ".zip": "application/zip",
 }
 
+# GET /config のキャッシュ(プロセス内で1回だけ取得する)。
+# 2026-08-02 TK運用者提言 項目1・2: 添付の上限・許可拡張子をSKILL.mdへハードコードせず、
+# サーバー(単一の正)から機械可読に取得して、送信前チェックに使う。
+_CONFIG_CACHE: Optional[dict[str, Any]] = None
+
+
+def _fetch_config() -> Optional[dict[str, Any]]:
+    """GET /config を取得する。失敗しても呼び出し側は事前チェックを諦めるだけにする
+
+    (サーバー側の413/415は引き続き最終防衛線として機能するため、/config自体が
+    取れないことを送信失敗の理由にはしない)。
+    """
+    global _CONFIG_CACHE
+    if _CONFIG_CACHE is not None:
+        return _CONFIG_CACHE
+    try:
+        _CONFIG_CACHE = _request_json("GET", "/config")
+    except SystemExit:
+        _CONFIG_CACHE = None
+    return _CONFIG_CACHE
+
+
+def _check_attachment_before_send(file_path: Path) -> Optional[str]:
+    """送信前にサイズ・拡張子を/configと照合する。問題があれば理由文字列を返す。
+
+    2026-08-02 項目2(必須): 従来は本文POSTの後に添付だけ415/413で失敗し、
+    「添付なし孤児メッセージ」が本文だけ残る事故があった。本文を送る前に検査し、
+    違反があれば送信自体を中止する。
+    """
+    config = _fetch_config()
+    if config is None:
+        return None  # /configが取れない時は事前チェックを諦める(サーバー側の413/415に委ねる)
+    try:
+        size = file_path.stat().st_size
+    except OSError as exc:
+        return f"添付ファイルを確認できません: {exc}"
+    max_bytes = config.get("max_file_size_bytes")
+    if isinstance(max_bytes, int) and size > max_bytes:
+        return (
+            f"添付ファイルのサイズ({size}バイト)が上限"
+            f"({config.get('max_file_size_mb', max_bytes // (1024 * 1024))}MB)を超えています。"
+            "送信を中止しました(本文だけ送られる事故を防ぐため)。"
+        )
+    ext = file_path.suffix.lower()
+    allowed_exts = config.get("allowed_extensions")
+    if isinstance(allowed_exts, list) and ext and ext not in allowed_exts:
+        return (
+            f"添付ファイルの拡張子({ext})が許可リスト外です"
+            f"(許可: {', '.join(sorted(allowed_exts))})。送信を中止しました。"
+        )
+    return None
+
 
 def _upload_file(thread_id: str, message_id: int, file_path: Path) -> dict[str, Any]:
     boundary = uuid.uuid4().hex
@@ -143,7 +195,9 @@ def _upload_file(thread_id: str, message_id: int, file_path: Path) -> dict[str, 
     req.add_header("X-API-Key", API_KEY)
     req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
     try:
-        with request.urlopen(req, timeout=60) as resp:
+        # 20MB前提でタイムアウトを180秒に拡張(2026-08-02 項目8。従来60秒は低速回線で
+        # 大きめの添付が完了前に切れる余地があった)
+        with request.urlopen(req, timeout=180) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
@@ -157,12 +211,35 @@ def _download_file(file_id: str, filename: str) -> Path:
     req = request.Request(url, method="GET")
     req.add_header("X-API-Key", API_KEY)
     dest = DOWNLOAD_DIR / f"{file_id}_{filename}"
-    with request.urlopen(req, timeout=60) as resp:
-        dest.write_bytes(resp.read())
+    # タイムアウトは180秒(項目8、アップロードと同じ理由)
+    with request.urlopen(req, timeout=180) as resp:
+        content = resp.read()
+        # Content-Length検査(項目8): 途中で切れたダウンロードを「成功」として
+        # 扱わない。ヘッダが無い場合は検査をスキップする(サーバー実装依存にしない)。
+        declared = resp.headers.get("Content-Length")
+        if declared is not None and int(declared) != len(content):
+            raise RuntimeError(
+                f"ダウンロードが不完全です(宣言サイズ{declared}バイト、"
+                f"受信{len(content)}バイト)。再試行してください"
+            )
+        dest.write_bytes(content)
     return dest
 
 
 def cmd_send(args: argparse.Namespace) -> None:
+    # 送信前チェック(2026-08-02 項目2・必須): 本文POSTより前にサイズ・拡張子を
+    # /configと照合する。違反があれば送信自体を中止し、「添付なし孤児メッセージ」
+    # (本文だけ送られ添付が415/413で失敗した状態)を残さない。
+    if args.file:
+        file_path = Path(args.file)
+        if not file_path.exists():
+            print(f"ファイルが見つかりません: {file_path}", file=sys.stderr)
+            sys.exit(1)
+        problem = _check_attachment_before_send(file_path)
+        if problem:
+            print(problem, file=sys.stderr)
+            sys.exit(1)
+
     payload: dict[str, Any] = {"to": args.to, "type": args.type, "content": args.content}
     if args.thread:
         payload["thread_id"] = args.thread

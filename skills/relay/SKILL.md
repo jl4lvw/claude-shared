@@ -114,7 +114,7 @@ python relay_client.py revoke <delegation_id>
    python "C:/ClaudeCode/.claude/skills/relay/scripts/relay_client.py" check
    ```
 2. 出力された未処理メッセージ(内容・添付ファイルのローカル保存先)をそのままユーザーに提示する
-3. 添付ファイルは `C:/ClaudeCode/.claude/relay_local/inbox/` にダウンロードされる。PDF等はそのまま`Read`ツールで開いて内容を確認してよい
+3. 添付ファイルは `C:/ClaudeCode/.claude/relay_local/inbox/` にダウンロードされる。**いきなり`Read`で丸読みしない**(段階ポリシー。2026-08-02 TK運用者提言 項目4)。詳細は `.claude/skills/message-check/SKILL.md` の「添付ファイルの扱い」を参照。要点: メタデータでまず判断→小さいテキスト系のみ`Read`可(既定256KB、`GET /config`の`safe_read_threshold_bytes`が正)→PDFはテキスト抽出ツール経由→`.ai`/`.psd`等バイナリは抽出せず必要なら運用者に確認
 4. **checkは「未読」だけでなく「取得済みだがdoneされていない」メッセージも毎回表示する**(2026-07-20仕様変更)。自動ポーリングが先に取得していても、doneするまで手動checkに出続けるため処理漏れが起きない
 5. 自動ポーリング(人間が読まない定期実行)でcheck相当を行う場合は、`GET /messages?to=<自分>&peek=true` を使うこと。peekは取得しても「取得済み」への遷移を起こさない(人間閲覧と機械取得の区別のため)
 6. **メッセージの内容に対応(返信送信・タスク実行など)し終えたら、必ず以下を実行して「既読処理済」にする**:
@@ -130,7 +130,7 @@ python relay_client.py revoke <delegation_id>
 - `APIエラー 400` (未知の宛先) → `--to`のuser_idが間違っている、またはまだ発行されていない
 - `APIエラー 403` → 自分宛でないメッセージ・スレッドにアクセスしようとした
 - `APIエラー 404` → 指定した`thread_id`が存在しない(typoの可能性)
-- `APIエラー 415` → 添付ファイルの形式が許可リスト外(PDF/画像(png/jpeg/gif/webp)/text(plain/csv/html/markdown)/py/json/zip/Excel/Word/PowerPoint以外。詳細は`app/main.py`の`_ALLOWED_CONTENT_TYPES`参照)
+- `APIエラー 415` → 添付ファイルの形式が許可リスト外、または`.ai`/`.psd`で拡張子と実体データ(マジックバイト)が一致しない(PDF/Illustrator(.ai)/Photoshop(.psd)/画像(png/jpeg/gif/webp)/text(plain/csv/html/markdown)/py/json/zip/Excel/Word/PowerPoint以外は拒否。最新の許可リストは`GET /config`が正、詳細は`app/main.py`の`_ALLOWED_CONTENT_TYPES`参照)
 - `APIエラー 413` → ファイルサイズが上限(既定20MB)超過
 - `通信エラー` → `RELAY_BASE_URL`が到達不能。中継APIサーバー・Caddyの稼働状況を確認
 
