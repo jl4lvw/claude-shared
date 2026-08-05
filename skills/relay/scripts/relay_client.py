@@ -316,14 +316,20 @@ def cmd_check(args: argparse.Namespace) -> None:
     # していても、doneするまで毎回表示されるため処理漏れが起きない。
     # 取得と同時にサーバー側でunread→processing(取得済み)へ自動遷移する。
     act_as = getattr(args, "act_as", None)
+    peek = getattr(args, "peek", False)
     target = act_as or SELF_USER_ID
     # holder未指定なら、他クライアントが予約中のスレッドはサーバー側で除外される。
     # 常駐GUIの内蔵エージェントもこの check を通るため、ここで受け取らないことが
     # 「予約したセッションが返信を受け取る」の実効性を担保している
+    params = {"to": target, "unread": "true"}
+    if peek:
+        # peek=true はサーバー側でunread→processingへの遷移を起こさない
+        # (自動ポーリング向け。2026-07-20仕様、wait コマンドでも同様に使用)
+        params["peek"] = "true"
     messages = _request_json(
         "GET",
         "/messages",
-        params={"to": target, "unread": "true"},
+        params=params,
         act_as=act_as,
         holder=getattr(args, "holder", None),
     )
@@ -333,6 +339,8 @@ def cmd_check(args: argparse.Namespace) -> None:
         return
     if act_as:
         print(f"※ {act_as}宛を代理で閲覧しています(statusは変更されません)")
+    if peek:
+        print("※ --peek: 副作用なしで確認しています(statusは変更されません)")
 
     status_labels = {"unread": "新着", "processing": "未処理(以前取得済み)"}
     for msg in messages:
@@ -692,6 +700,13 @@ def main() -> None:
         default=None,
         help="自分が予約中のスレッドも見る場合に指定する。"
         "省略すると予約中スレッドは表示されない(常駐GUIとの二重処理を防ぐため)",
+    )
+    check_parser.add_argument(
+        "--peek",
+        action="store_true",
+        help="副作用なしで確認する(unread→processingへの遷移を起こさない)。"
+        "人間が読まない自動ポーリング(スケジュールタスク等)向け。"
+        "変化があれば通常のcheck(--peek無し)で本取得すること",
     )
     _add_as_option(check_parser, "指定user宛を代理で閲覧する(statusは変更されない)")
     check_parser.set_defaults(func=cmd_check)
