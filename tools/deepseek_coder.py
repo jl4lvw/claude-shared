@@ -135,7 +135,11 @@ FALLBACK_MODEL: str = "deepseek-v4-flash"
 # 消費するため、旧 deepseek-chat 時代の 4096 では reviewer 役などで本文が空になる
 # （実測: 500行規模のファイルレビューで reasoning だけで 4096 を使い切り finish_reason=length）。
 # 16000 なら同条件で余裕を持って収まることを実測済み（最大でも 4205/16000 = 26% 消費）。
-DEFAULT_MAX_TOKENS: int = 16000
+# 2026-08-05: 16000 でも Lv7 の大きめレビューで**予算を使い切って本文が空**になった
+# (実測 completion_tokens がぴったり 16000 = finish_reason=length)。
+# API は 65536 まで受理することを実測したので 32000 へ引き上げる。
+# 課金は実際に生成した分だけなので、上限を上げること自体のコスト増はない。
+DEFAULT_MAX_TOKENS: int = 32000
 
 # 為替レート（USD → JPY 換算用）。環境変数 DEEPSEEK_USD_TO_JPY で上書き可能。
 DEFAULT_USD_TO_JPY: float = 150.0
@@ -422,7 +426,36 @@ def call_deepseek(
     if track:
         _track_usage(model, getattr(response, "usage", None), reset=reset_session)
 
-    return response.choices[0].message.content
+    choice = response.choices[0]
+    content = (choice.message.content or "").strip()
+    finish = getattr(choice, "finish_reason", None)
+
+    # 出力予算を使い切ったのに黙って空文字を返すのが最悪の失敗の仕方だった
+    # (呼び出し側は「レビュー結果なし」と区別できない)。必ず気づける形にする。
+    if finish == "length":
+        print(
+            f"WARNING: 出力が上限({max_tokens} tok)で打ち切られました。"
+            f" --max-tokens を上げるか、入力を分割してください。",
+            file=sys.stderr,
+        )
+    if not content:
+        # 推論(reasoning)だけで予算を使い切ると本文が空になる。
+        # 空を返して正常終了すると「指摘なし」と誤解されるので落とす。
+        reasoning = getattr(choice.message, "reasoning_content", None) or ""
+        print(
+            "ERROR: 本文が空です"
+            + (f"(finish_reason={finish})" if finish else "")
+            + "。推論だけで出力予算を使い切った可能性があります。"
+            + " --max-tokens を上げて再実行してください。",
+            file=sys.stderr,
+        )
+        if reasoning.strip():
+            print(
+                f"(参考: reasoning は {len(reasoning)} 文字ありました)", file=sys.stderr
+            )
+        sys.exit(EXIT_GENERIC)
+
+    return content
 
 
 def _print_session_summary() -> int:

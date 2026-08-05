@@ -37,6 +37,11 @@ EXIT_NETWORK = 40
 EXIT_INVALID_INPUT = 50
 EXIT_GENERIC = 1
 
+# reviewer 役の長文レビューには 4096 では足りない(2026-08-05)。
+# API は 65536 まで受理することを実測済み。課金は生成分のみなので上限を上げる
+# こと自体のコスト増はない。
+QWEN_DEFAULT_MAX_TOKENS: int = 32000
+
 
 def _classify_openai_error(exc: BaseException) -> int:
     """OpenAI 互換クライアントの例外を cgd 終了コード規約に振り分ける."""
@@ -352,7 +357,7 @@ def call_qwen(
     prompt: str,
     role: str = "advisor",
     model: str | None = None,
-    max_tokens: int = 4096,
+    max_tokens: int = QWEN_DEFAULT_MAX_TOKENS,
     temperature: float = 0.0,
     track: bool = True,
     reset_session: bool = False,
@@ -404,7 +409,28 @@ def call_qwen(
     if track:
         _track_usage(model, getattr(response, "usage", None), reset=reset_session)
 
-    return response.choices[0].message.content
+    choice = response.choices[0]
+    content = (choice.message.content or "").strip()
+    finish = getattr(choice, "finish_reason", None)
+
+    # 出力予算切れで空文字を黙って返すと「指摘なし」と誤解される(DS側で実害あり)。
+    # 同じ失敗をこちらでも起こさないよう、必ず気づける形にする(2026-08-05)
+    if finish == "length":
+        print(
+            f"WARNING: 出力が上限({max_tokens} tok)で打ち切られました。"
+            f" --max-tokens を上げるか、入力を分割してください。",
+            file=sys.stderr,
+        )
+    if not content:
+        print(
+            "ERROR: 本文が空です"
+            + (f"(finish_reason={finish})" if finish else "")
+            + "。--max-tokens を上げて再実行してください。",
+            file=sys.stderr,
+        )
+        sys.exit(EXIT_GENERIC)
+
+    return content
 
 
 def _print_session_summary() -> int:
@@ -471,7 +497,7 @@ def main() -> None:
         help="動作モード: advisor=設計相談・別案出し（既定）, coder=コード生成",
     )
     parser.add_argument("--model", default=None, help="モデル名を明示指定する場合")
-    parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument("--max-tokens", type=int, default=QWEN_DEFAULT_MAX_TOKENS)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument(
         "--no-usage",

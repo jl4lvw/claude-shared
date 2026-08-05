@@ -408,6 +408,26 @@ def cmd_done(args: argparse.Namespace) -> None:
     print(f"既読処理済にしました: message_id={message['id']} completed_at={message['completed_at']}")
 
 
+def cmd_forward(args: argparse.Namespace) -> None:
+    """自分宛のメッセージを別名義へ転送し、スレッドごと引き継がせる。
+
+    転送先は**自分の名義のまま**原送信者と同じスレッドで続けられる。
+    自分は担当から外れる(未処理・予約が外れる)が、履歴としてスレッドは残る。
+    """
+    act_as = getattr(args, "act_as", None)
+    body: dict[str, Any] = {"to": args.to}
+    if args.note:
+        body["note"] = args.note
+    result = _request_json(
+        "POST", f"/messages/{args.message_id}/forward", body, act_as=act_as
+    )
+    print(
+        f"引き継ぎました: #{args.message_id} → {result['to_user']} "
+        f"(thread={result['thread_id']} 転送メッセージ=#{result['forward_message_id']})"
+    )
+    print(f"以後このスレッドは {result['to_user']} が担当します。あなたの受信箱からは外れました。")
+
+
 # claim が競合した(他端末が処理中)ときの終了コード。異常終了(1)と区別するため。
 EXIT_CLAIM_CONFLICT = 2
 
@@ -781,6 +801,15 @@ def main() -> None:
     done_parser.add_argument("message_id", type=int, help="完了にするメッセージのID")
     _add_as_option(done_parser)
     done_parser.set_defaults(func=cmd_done)
+
+    forward_parser = subparsers.add_parser(
+        "forward", help="自分宛のメッセージを別名義へ転送し、スレッドごと引き継がせる"
+    )
+    forward_parser.add_argument("message_id", type=int, help="転送するメッセージのID")
+    forward_parser.add_argument("--to", required=True, help="引き継ぐ相手のuser_id (例: RCS)")
+    forward_parser.add_argument("--note", help="転送時に添える一言(引き継ぐ理由など)")
+    _add_as_option(forward_parser)
+    forward_parser.set_defaults(func=cmd_forward)
 
     delegate_parser = subparsers.add_parser(
         "delegate", help="代理権限を登録する(自分が誰かの代理をする)"

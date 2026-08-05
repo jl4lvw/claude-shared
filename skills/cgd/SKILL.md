@@ -2,7 +2,7 @@
 name: cgd
 description: Codex+DeepSeek+Qwen の統合コードレビュー・設計相談・実装・委譲・検証スキル（**Gemini は2026-07にAPIエラー多発のため既定オフのオプトイン参加に格下げ済み**）。**9段階レベル（Lv0〜Lv8）**でユーザーがトークン消費・所要時間・実装主体を選択。**Lv0=委譲レーン**（DS/Qwenにコード生成を任せClaudeは分解と検証に専念・scaffold/量産タスク/コスト節約・Antigravity Plugin相当） / Lv1=Codex単独 / Lv2=Codex+DeepSeek並列（既定推奨。旧/codex等価のC+G構成は「Geminiも」等の明示指示で再現可） / Lv3=Codex+DeepSeekの技術×批評「2社×2視点」4レビュー（実装なし・review専用） / Lv4=Claude初期案→[DS+Qwen並列advisor]→Codex直列フル相談+再レビュー（Gemini併用時は先頭にGemini案出しが直列で入る） / Lv5=Lv4+🔴重大指摘の自動修正1周 / Lv6=Codex+DS+Qwen 3者並列レビュー（全員reviewer役、Gemini併用で4者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周 / Lv7=Codex多重(medium+high)+補助(DS/Qwen)の4者並列「Codex集中」構成（Gemini併用で5者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周（最深掘り） / Lv8=Lv7の技術構成そのまま+Codex(high)とDeepSeekにLv3同様の批評視点を追加した6者並列（Gemini併用で7者）+実装+検証+Codex再レビュー+🔴自動修正1周（技術の最深掘り+複眼批評、最重量級）。Lv0=実装主体の切替（コストレーン）、Lv1-8=レビュー強度の選択（品質レーン）で直交。Lv4-5はDS/Qwenをadvisor役で別案出し、Lv6は横並びreviewer、Lv7は深いintegrationバグ検出を狙ってCodex多重化+DS/Qwenに関連関数抜粋を渡して補助役を強化。差分レビュー、設計判断、別案出し、実装、委譲、検証まで一気通貫。**旧 `/codex` `/gemini` 単体スキルは廃止され、本スキル（`/cgd` または `/codex` 起動）が必ずレベル選択から始まる**。全Lv共通の任意オプションで『critic観点』（辛口ユーザー視点＝ITに疎い現場担当者の使い勝手の不満 + あるべき論＝本来この仕様はどうあるべきかの批判を Claude本体+DS criticで評価）を追加でき、技術的正しさとは別軸で使い勝手・仕様の妥当性を否定的にチェックする。環境チェックは `python C:/ClaudeCode/.claude/tools/cgd_doctor.py` で一括。「委譲」「scaffold」「量産」「DSで書かせる」「Qwenで書かせる」「コスト節約」「3者に相談」「フルパイプ」「4者レビュー」「Codex多重」「Codex集中」「辛口レビュー」「ユーザー視点」「あるべき論」「critic」「cgd」「Codexにレビュー」「セカンドオピニオン」「C+G」「cg」「Geminiも」などのキーワードで起動。重要な設計判断・難しいバグ・大きめのリファクタの検討時には積極的に提案すること。既存 /generate-by-deepseek（DS単発コード生成→Claudeレビュー）は薄い構成で並立。
 ---
-<!-- SKILL_VERSION: 2026-07-27_212057 -->
+<!-- SKILL_VERSION: 2026-08-05_200531 -->
 
 # cgd — Codex + DeepSeek + Qwen 統合スキル（Lv0〜8、Gemini はオプトイン）
 
@@ -1536,6 +1536,13 @@ Bash 並列起動の各段の `$?` を確認し、**1 つでも非 0 が出た�
 ## トラブルシュート
 
 - **Lv2/4/6/7 で Gemini が呼ばれない/表に出てこない** → **意図的な既定動作**（2026-07にオプトイン化）。「Geminiも」等を明示すれば追加参加する
+- **DS/Qwen が「本文が空です(finish_reason=length)」で exit 1** → 推論だけで出力予算を使い切った。
+  `--max-tokens` を上げて再実行する(既定 32000 / API は 65536 まで受理を実測済み)。
+  入力が大きいときは対象を分割する方が確実
+- **DS/Qwen が「出力が上限で打ち切られました」と警告** → 本文は途中まで出ているが不完全。
+  そのまま統合表に載せず、`--max-tokens` を上げて取り直す
+  (2026-08-05以前は**空文字を黙って返して正常終了**していたため、レビュー結果ゼロを
+   「指摘なし」と誤解する事故が起きた。現在は必ず気づける)
 - **DS が `DEEPSEEK_API_KEY が設定されていません`** → 環境変数を確認
 - **DS のレスポンスがコード生成っぽい** → `--role advisor` または `--role reviewer` 付け忘れ。デフォルトは `coder`
 - **DS reviewer が別案を返す（advisor 風出力）** → Lv6 で `--role advisor` のまま実行している。必ず `--role reviewer` を付ける
