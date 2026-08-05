@@ -13,7 +13,9 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import os
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -26,8 +28,20 @@ if sys.stdout.encoding is None or sys.stdout.encoding.lower() != "utf-8":
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 LOCAL_DIR = Path(__file__).resolve().parents[3] / "relay_local"
-ENV_PATH = LOCAL_DIR / ".env"
-DOWNLOAD_DIR = LOCAL_DIR / "inbox"
+# 参照する .env は環境変数で差し替えられる(2026-08-05)。
+# これが無いと「1つのクライアントで複数の名義を使い分ける」ことができず、
+# 名義を分けたいだけでクライアント一式を複製する羽目になる(RC/TK間の論点)。
+# .env の中身を切り替えのたびに書き換える運用は、並行実行時に
+# **取り違えた名義で送信する**ため採らない。
+# expanduser は Mac/Linux で "~/..." を設定ファイル等に書いた場合の保険
+# (シェルの外で代入されると ~ が展開されないまま渡ってくる)
+ENV_PATH = Path(os.environ.get("RELAY_ENV_FILE") or (LOCAL_DIR / ".env")).expanduser()
+# 受信ファイルの置き場も名義ごとに分けられる。既定は .env と同じ場所の inbox なので、
+# **別名義の .env を既存の .env と同じディレクトリに置くと inbox は分かれない**。
+# 分けたいなら .env ごと別ディレクトリに置くか、RELAY_INBOX_DIR を明示する。
+DOWNLOAD_DIR = Path(
+    os.environ.get("RELAY_INBOX_DIR") or (ENV_PATH.parent / "inbox")
+).expanduser()
 
 
 def _load_env(path: Path) -> dict[str, str]:
@@ -44,9 +58,20 @@ def _load_env(path: Path) -> dict[str, str]:
 
 
 _ENV = _load_env(ENV_PATH)
-BASE_URL = _ENV.get("RELAY_BASE_URL", "").rstrip("/")
-API_KEY = _ENV.get("RELAY_API_KEY", "")
-SELF_USER_ID = _ENV.get("RELAY_SELF_USER_ID", "")
+
+
+def _setting(name: str) -> str:
+    """設定を1つ読む。**環境変数が .env より優先**する。
+
+    環境変数を上に置くのは、セッションごとに名義を切り替えられるようにするため。
+    .env は従来どおり既定値として残るので、何も指定しなければ挙動は変わらない。
+    """
+    return (os.environ.get(name) or _ENV.get(name, "")).strip()
+
+
+BASE_URL = _setting("RELAY_BASE_URL").rstrip("/")
+API_KEY = _setting("RELAY_API_KEY")
+SELF_USER_ID = _setting("RELAY_SELF_USER_ID")
 
 
 def _require_config() -> None:
@@ -62,7 +87,10 @@ def _require_config() -> None:
     if missing:
         print(
             f"設定が不足しています: {', '.join(missing)}。{ENV_PATH} を作成してください"
-            f"({SCRIPT_DIR / '.env.example'} をコピー)。",
+            f"({SCRIPT_DIR / '.env.example'} をコピー)。"
+            f"\n別名義で使う場合は、環境変数で直接指定するか"
+            f" RELAY_ENV_FILE で別の .env を指すこともできます"
+            f"(環境変数が .env より優先)。",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -83,6 +111,7 @@ def _request_json(
     params: Optional[dict[str, str]] = None,
     act_as: Optional[str] = None,
     soft_status: tuple[int, ...] = (),
+    holder: Optional[str] = None,
 ) -> Any:
     url = f"{BASE_URL}{path}"
     if params:
@@ -94,6 +123,11 @@ def _request_json(
     # サーバー側で委任表を引くため、登録がなければ403で弾かれる(なりすまし不可)。
     if act_as:
         req.add_header("X-Act-As", act_as)
+    # スレッド予約(2026-08-04 /r#28)のクライアント識別子。
+    # APIキー(=actor)は常駐GUIもこのCLIも同じなので、これが無いと両者を区別できない。
+    # 未指定なら「予約中スレッドは見えない」側に倒れる(fail safe)。
+    if holder:
+        req.add_header("X-Relay-Holder", holder)
     if data is not None:
         req.add_header("Content-Type", "application/json")
     try:
@@ -246,10 +280,26 @@ def cmd_send(args: argparse.Namespace) -> None:
     if args.no_reply_needed:
         payload["no_reply_needed"] = True
 
+    # 返信の受け取り手を、送信と同じ操作で予約する(2026-08-04 /r#28)。
+    # 送信してから別コマンドで予約すると、その隙に返信が届いて常駐GUIに攫われる。
+    # サーバー側では同一トランザクションで処理されるため、この窓が生じない。
+    holder: Optional[str] = None
+    if getattr(args, "reserve", False):
+        holder = getattr(args, "holder", None) or _new_holder()
+        payload["reserve_holder"] = holder
+        payload["reserve_ttl_sec"] = args.reserve_ttl
+
     act_as = getattr(args, "act_as", None)
     message = _request_json("POST", "/messages", payload=payload, act_as=act_as)
     name = f"{act_as}名義(実行はあなた)" if act_as else "自分名義"
     print(f"送信しました[{name}]: thread_id={message['thread_id']} message_id={message['id']}")
+    if holder:
+        print(f"返信を予約しました: holder={holder}(期限 {args.reserve_ttl}秒)")
+        print("このセッションで返信を受け取るには、続けて次を実行してください:")
+        print(
+            f"  relay_client.py wait --thread {message['thread_id']} "
+            f"--holder {holder} --after-id {message['id']}"
+        )
 
     if args.file:
         file_path = Path(args.file)
@@ -267,8 +317,15 @@ def cmd_check(args: argparse.Namespace) -> None:
     # 取得と同時にサーバー側でunread→processing(取得済み)へ自動遷移する。
     act_as = getattr(args, "act_as", None)
     target = act_as or SELF_USER_ID
+    # holder未指定なら、他クライアントが予約中のスレッドはサーバー側で除外される。
+    # 常駐GUIの内蔵エージェントもこの check を通るため、ここで受け取らないことが
+    # 「予約したセッションが返信を受け取る」の実効性を担保している
     messages = _request_json(
-        "GET", "/messages", params={"to": target, "unread": "true"}, act_as=act_as
+        "GET",
+        "/messages",
+        params={"to": target, "unread": "true"},
+        act_as=act_as,
+        holder=getattr(args, "holder", None),
     )
     if not messages:
         who = f"{target}宛(代理)" if act_as else "自分宛"
@@ -423,6 +480,164 @@ def cmd_revoke(args: argparse.Namespace) -> None:
     print(f"代理権限を取り消しました: id={body['id']} revoked_at={body['revoked_at']}")
 
 
+# --- スレッド予約と返信待ち受け(2026-08-04 /r#28) ------------------------
+# 常駐GUI「AIリレー コンソール」と、この CLI を使う Claude Code セッションは
+# 同じ受信箱(to=自分)を見ている。何もしなければ、送った相手からの返信は
+# 先にポーリングしたGUIが攫っていき、発信元セッションではラリーを続けられない。
+#
+# そこで「このスレッドの返信は自分が受け取る」とサーバーに予約(lease)を立てる。
+# 予約の持ち主(holder)はAPIキーの持ち主ではなくクライアント識別子で、
+# GUIもCLIも同じキーで動く以上、これが無いと両者を区別できない。
+
+_WAIT_TIMEOUT_EXIT = 3   # 返信が来ないまま待ち時間切れ(異常終了1と区別する)
+_WAIT_LOST_EXIT = 4      # 予約を失った(期限切れ後に他が取得した等)
+
+
+def _new_holder() -> str:
+    """このセッション用のクライアント識別子を作る。"""
+    return f"cli:{uuid.uuid4().hex[:12]}"
+
+
+def _touch_lease(
+    thread_id: str, holder: str, ttl_sec: int, act_as: Optional[str] = None
+) -> Optional[dict[str, Any]]:
+    """予約を取得・延長する。他holderに取られていれば None を返す。"""
+    result = _request_json(
+        "POST",
+        f"/threads/{thread_id}/lease",
+        payload={"holder": holder, "ttl_sec": ttl_sec, "pid": os.getpid()},
+        act_as=act_as,
+        soft_status=(409,),
+    )
+    if isinstance(result, ApiConflict):
+        return None
+    return result
+
+
+def cmd_reserve(args: argparse.Namespace) -> None:
+    """スレッドを予約する(既に自分が持っていれば延長)。"""
+    holder = args.holder or _new_holder()
+    act_as = getattr(args, "act_as", None)
+    lease = _touch_lease(args.thread, holder, args.ttl, act_as)
+    if lease is None:
+        print(
+            f"他のクライアントがこのスレッドを予約中です: thread_id={args.thread}",
+            file=sys.stderr,
+        )
+        sys.exit(_WAIT_LOST_EXIT)
+    print(f"予約しました: thread_id={args.thread} holder={holder}")
+    print(f"  期限: {lease['expires_at']} (待ち受け中は自動で延長されます)")
+    print(f"  返信を待つ: relay_client.py wait --thread {args.thread} --holder {holder}")
+
+
+def cmd_release(args: argparse.Namespace) -> None:
+    """予約を解放して常駐GUIに戻す。予約が無くても成功する(冪等)。"""
+    body = _request_json(
+        "DELETE",
+        f"/threads/{args.thread}/lease",
+        params={"holder": args.holder},
+        act_as=getattr(args, "act_as", None),
+    )
+    if body and body.get("released"):
+        print(f"予約を解放しました: thread_id={args.thread}(常駐GUIが引き取れる状態に戻りました)")
+    else:
+        print(f"予約はありませんでした: thread_id={args.thread}")
+
+
+def cmd_wait(args: argparse.Namespace) -> None:
+    """このスレッドへの返信が来るまで待ち、来たら表示する。
+
+    取得は peek=true(副作用なし)で行う。status=unread で待つと、常駐GUIや
+    手動checkが一瞬でも先に触った瞬間 processing に進んで見えなくなるため
+    (cgd Lv7 で Codex medium/high が独立に指摘)。
+    """
+    holder = args.holder
+    act_as = getattr(args, "act_as", None)
+    target = act_as or SELF_USER_ID
+    params: dict[str, str] = {
+        "to": target,
+        "peek": "true",
+        "thread_id": args.thread,
+    }
+    if args.after_id is not None:
+        params["after_id"] = str(args.after_id)
+
+    deadline = time.monotonic() + args.timeout
+    print(
+        f"返信を待っています: thread_id={args.thread} holder={holder} "
+        f"(最大{args.timeout}秒 / {args.interval}秒間隔)"
+    )
+    while True:
+        # 待っている間はTTLを延ばし続ける。延長できない=予約を失った合図
+        if _touch_lease(args.thread, holder, args.ttl, act_as) is None:
+            print(
+                "予約を失いました(他のクライアントが取得済み)。"
+                "常駐GUIがこのスレッドを処理している可能性があります。",
+                file=sys.stderr,
+            )
+            sys.exit(_WAIT_LOST_EXIT)
+
+        messages = _request_json(
+            "GET", "/messages", params=params, act_as=act_as, holder=holder
+        )
+        if messages:
+            # 受け取った後も返信を書き終えるまで予約を保持する必要がある。
+            # wait が返った瞬間にheartbeatが止まると、返信作成中にTTLが切れて
+            # 常駐GUIが同じスレッドに二重返信しうる(cgd Lv7 DS critic 指摘)。
+            # 延長できたかは必ず確認する — 失敗を黙って成功と表示すると、
+            # 二重返信防止という中心要件が静かに破れる(Step C Codex指摘)
+            held = _touch_lease(args.thread, holder, args.hold, act_as) is not None
+            for msg in messages:
+                print("=" * 60)
+                print(
+                    f"[{msg['type']}] message_id={msg['id']} from={msg['from_user']} "
+                    f"at={msg['created_at']}"
+                )
+                print(msg["content"])
+            print("=" * 60)
+            if held:
+                print(f"{len(messages)}件の返信を受け取りました(予約は{args.hold}秒延長済み)。")
+            else:
+                print(
+                    f"{len(messages)}件の返信を受け取りましたが、"
+                    "**予約の延長に失敗しました**。返信を書いている間に常駐GUIが"
+                    "同じスレッドを処理する可能性があります。すぐに返信するか、"
+                    f"reserve --thread {args.thread} --holder {holder} で取り直してください。",
+                    file=sys.stderr,
+                )
+            print("続けてやり取りする場合:")
+            print(
+                f"  relay_client.py send --to {messages[0]['from_user']} "
+                f"--thread {args.thread} --type reply \"本文\""
+            )
+            print("処理を終えたら、必ず消し込みと予約解放を行ってください:")
+            for msg in messages:
+                print(f"  relay_client.py done {msg['id']}")
+            print(f"  relay_client.py release --thread {args.thread} --holder {holder}")
+            return
+
+        if time.monotonic() >= deadline:
+            # 待ち切れなかったら予約を返す。持ったまま放置すると、
+            # 誰も見ないメッセージが生まれる(このシステムが一番避けたい状態)。
+            # 直前のheartbeatからここまでの間に他へ移っていると409になるが、
+            # 「もう自分の手元に無い」だけなので後始末としては成功扱いでよい
+            # (Step C Codex指摘: 通常エラー終了だと終了コード3を返せない)
+            _request_json(
+                "DELETE",
+                f"/threads/{args.thread}/lease",
+                params={"holder": holder},
+                act_as=act_as,
+                soft_status=(409,),
+            )
+            print(
+                f"返信がないまま{args.timeout}秒が経過しました。"
+                "予約を解放したので、以降は常駐GUIが引き取ります。",
+                file=sys.stderr,
+            )
+            sys.exit(_WAIT_TIMEOUT_EXIT)
+        time.sleep(args.interval)
+
+
 def _add_as_option(parser: argparse.ArgumentParser, help_text: str | None = None) -> None:
     """`--as <user>` を追加する。自分のキーで認証しつつ名義だけ切り替える(代理)。"""
     parser.add_argument(
@@ -454,12 +669,77 @@ def main() -> None:
         help="相手からの返信・確認を要さないメッセージ(お礼・完了報告等)に付与する。"
         "定時LineWorks通知やビューアの放置⚠️バッジの対象から除外される",
     )
+    send_parser.add_argument(
+        "--reserve",
+        action="store_true",
+        help="返信の受け取り手をこのセッションとして予約する。"
+        "付けないと、返信は常駐GUIが先に拾って処理する",
+    )
+    send_parser.add_argument(
+        "--holder",
+        default=None,
+        help="--reserve時のクライアント識別子。省略すると自動採番して表示する",
+    )
+    send_parser.add_argument(
+        "--reserve-ttl", type=int, default=900, help="--reserve時の予約TTL秒(既定900)"
+    )
     _add_as_option(send_parser)
     send_parser.set_defaults(func=cmd_send)
 
     check_parser = subparsers.add_parser("check", help="自分宛の未処理を確認する")
+    check_parser.add_argument(
+        "--holder",
+        default=None,
+        help="自分が予約中のスレッドも見る場合に指定する。"
+        "省略すると予約中スレッドは表示されない(常駐GUIとの二重処理を防ぐため)",
+    )
     _add_as_option(check_parser, "指定user宛を代理で閲覧する(statusは変更されない)")
     check_parser.set_defaults(func=cmd_check)
+
+    reserve_parser = subparsers.add_parser(
+        "reserve", help="スレッドを予約する(返信を常駐GUIでなく自分が受け取る)"
+    )
+    reserve_parser.add_argument("--thread", required=True, help="予約するthread_id")
+    reserve_parser.add_argument(
+        "--holder", default=None, help="クライアント識別子。省略すると自動採番"
+    )
+    reserve_parser.add_argument("--ttl", type=int, default=900, help="予約TTL秒(既定900)")
+    _add_as_option(reserve_parser)
+    reserve_parser.set_defaults(func=cmd_reserve)
+
+    release_parser = subparsers.add_parser(
+        "release", help="予約を解放して常駐GUIに戻す(処理が終わったら必ず実行する)"
+    )
+    release_parser.add_argument("--thread", required=True, help="解放するthread_id")
+    release_parser.add_argument("--holder", required=True, help="予約時のクライアント識別子")
+    _add_as_option(release_parser)
+    release_parser.set_defaults(func=cmd_release)
+
+    wait_parser = subparsers.add_parser(
+        "wait", help="予約したスレッドへの返信を待ち受ける(そのままラリーを続けるため)"
+    )
+    wait_parser.add_argument("--thread", required=True, help="待ち受けるthread_id")
+    wait_parser.add_argument("--holder", required=True, help="予約時のクライアント識別子")
+    wait_parser.add_argument(
+        "--after-id",
+        type=int,
+        default=None,
+        dest="after_id",
+        help="このmessage_idより新しい返信だけを待つ(通常は自分が送ったmessage_id)",
+    )
+    wait_parser.add_argument("--timeout", type=int, default=900, help="待つ上限秒(既定900)")
+    wait_parser.add_argument("--interval", type=int, default=5, help="確認間隔秒(既定5)")
+    wait_parser.add_argument(
+        "--ttl", type=int, default=300, help="待ち受け中に維持する予約TTL秒(既定300)"
+    )
+    wait_parser.add_argument(
+        "--hold",
+        type=int,
+        default=900,
+        help="返信を受け取った後、返信を書き終えるまで予約を保つ秒数(既定900)",
+    )
+    _add_as_option(wait_parser)
+    wait_parser.set_defaults(func=cmd_wait)
 
     edit_parser = subparsers.add_parser("edit", help="未読の自分の送信メッセージを編集する")
     edit_parser.add_argument("message_id", type=int, help="編集するメッセージのID")
