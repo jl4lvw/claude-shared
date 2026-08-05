@@ -1,6 +1,6 @@
 ---
 name: g-dl
-description: claude-shared をリモート Git から pull した後、`%USERPROFILE%\claude-shared\` の内容を `.claude/{skills,commands,tools,rules,memory,hooks}` にミラーコピーする。Option C ミラー方式。
+description: claude-shared をリモート Git から pull した後、`%USERPROFILE%\claude-shared\` の内容を `.claude/{skills,commands,tools,rules,memory,hooks,incidents}` にミラーコピーする。Option C ミラー方式。
 ---
 
 # /g-dl — claude-shared download (mirror approach)

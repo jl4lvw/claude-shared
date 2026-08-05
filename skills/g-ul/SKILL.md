@@ -1,11 +1,13 @@
 ---
 name: g-ul
-description: プロジェクトの `.claude/{skills,commands,tools,rules,memory,hooks}` を `%USERPROFILE%\claude-shared\` にミラーコピーしてから Git push する。Option C ミラー方式。コミットメッセージは引数任意（未指定時は自動生成）。
+description: プロジェクトの `.claude/{skills,commands,tools,rules,memory,hooks,incidents}` を `%USERPROFILE%\claude-shared\` にミラーコピーしてから Git push する。Option C ミラー方式。コミットメッセージは引数任意（未指定時は自動生成）。
 ---
 
 # /g-ul — claude-shared upload (mirror approach)
 
-プロジェクトの `.claude/{skills,commands,tools,rules,memory,hooks}` を `%USERPROFILE%\claude-shared\` にミラーコピー (`robocopy //MIR`) してから Git に push する。
+プロジェクトの `.claude/{skills,commands,tools,rules,memory,hooks,incidents}` を `%USERPROFILE%\claude-shared\` にミラーコピー (`robocopy //MIR`) してから Git に push する。
+
+`incidents/` は不具合台帳 (`incidents.jsonl`) の共有用。同ディレクトリの `telemetry.jsonl` は**端末ローカルの自動計測**なのでミラー除外している（量が多く、他拠点と合流させる意味がない）。
 
 **Option C ミラー方式**: ジャンクションを使わない。OneDrive が `.claude/` をジャンクション越しに破壊する事故を構造的に回避。
 
@@ -50,7 +52,7 @@ if [ ! -d "$SHARED_BASH" ]; then
     echo "claude-shared not found: $SHARED_BASH (新PC は git clone が必要)" >&2
     exit 1
 fi
-TARGETS="skills commands tools rules memory hooks"
+TARGETS="skills commands tools rules memory hooks incidents"
 
 echo "ClaudeDir: $CLAUDE_DIR"
 echo "Shared:    $SHARED_BASH"
@@ -87,7 +89,7 @@ for t in $TARGETS; do
     # git-bash では robocopy のスラッシュオプションが MSYS パス変換に巻き込まれるため //OPT で escape
     robocopy "$SRC_W" "$DST_W" //MIR //NFL //NDL //NP //R:2 //W:1 \
         //XD __pycache__ ".bootstrap-bak-*" ".migrate-pending-*" \
-        //XF "*.bak_*" "*.pyc" ".deepseek_usage_session.json" ".qwen_usage_session.json" > /dev/null 2>&1
+        //XF "*.bak_*" "*.pyc" ".deepseek_usage_session.json" ".qwen_usage_session.json" "telemetry.jsonl" > /dev/null 2>&1
     EXIT=$?
     # robocopy 終了コード: 0-7 = 成功（差分の有無）、8+ = エラー
     if [ $EXIT -ge 8 ]; then

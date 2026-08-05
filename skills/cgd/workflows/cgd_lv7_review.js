@@ -81,7 +81,7 @@ const FINDING_SCHEMA = {
 const reviewers = [
   {
     name: 'codex_med',
-    cmd: `mkdir -p /c/tmp-ai && cd /c/tmp-ai && codex exec -c model_reasoning_effort="medium" --sandbox read-only --skip-git-repo-check "まず ${codexInput} の全文を読み、記載の差分・対象・評価観点に従ってコードレビュー。必要なら対象実ファイルも読んでよい。日本語で回答。" < /dev/null`,
+    cmd: `mkdir -p /c/tmp-ai && cd /c/tmp-ai && CGD_WF_RUN=1 codex exec -c model_reasoning_effort="medium" --sandbox read-only --skip-git-repo-check "まず ${codexInput} の全文を読み、記載の差分・対象・評価観点に従ってコードレビュー。必要なら対象実ファイルも読んでよい。日本語で回答。" < /dev/null`,
     timeout: 300000,
     usage: false,
     authSignals: 'Not logged in / 401 / unauthorized',
@@ -89,7 +89,7 @@ const reviewers = [
   },
   {
     name: 'codex_high',
-    cmd: `mkdir -p /c/tmp-ai && cd /c/tmp-ai && codex exec -c model_reasoning_effort="high" --sandbox read-only --skip-git-repo-check "まず ${codexInput} の全文を読み、記載の差分・対象・評価観点に従ってコードレビュー。必要なら対象実ファイルも読んでよい。日本語で回答。" < /dev/null`,
+    cmd: `mkdir -p /c/tmp-ai && cd /c/tmp-ai && CGD_WF_RUN=1 codex exec -c model_reasoning_effort="high" --sandbox read-only --skip-git-repo-check "まず ${codexInput} の全文を読み、記載の差分・対象・評価観点に従ってコードレビュー。必要なら対象実ファイルも読んでよい。日本語で回答。" < /dev/null`,
     timeout: 600000,
     usage: false,
     authSignals: 'Not logged in / 401 / unauthorized',

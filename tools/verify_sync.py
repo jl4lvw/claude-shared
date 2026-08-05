@@ -40,7 +40,7 @@ EXIT_DRIFT = 1        # 反映されていない(検証失敗)
 EXIT_ENV = 2          # 前提が揃っていない(パスが無い等)
 
 # /g-ul のミラー対象と必ず一致させること。ずれると誤検知になる
-TARGETS: tuple[str, ...] = ("skills", "commands", "tools", "rules", "memory", "hooks")
+TARGETS: tuple[str, ...] = ("skills", "commands", "tools", "rules", "memory", "hooks", "incidents")
 
 # robocopy の除外指定と同じもの。合わせないと「毎回不一致」になって
 # 警告が形骸化する(狼少年になった検証は無いのと同じ)
@@ -51,6 +51,8 @@ EXCLUDE_FILES: tuple[str, ...] = (
     ".deepseek_usage_session.json",
     ".qwen_usage_session.json",
     ".gemini_usage_session.json",
+    # 端末ローカルの自動計測 (量が多く共有しない)。incidents.jsonl だけを共有する
+    "telemetry.jsonl",
 )
 
 

@@ -67,6 +67,20 @@ _HOOKS: tuple[tuple[str, str | None, str, int, str], ...] = (
         "ctx: 圧縮直後に制約・承認・状態を注入(ctx/SKILL.md 184-186)",
     ),
     (
+        "PreToolUse",
+        "Bash",
+        ".claude/hooks/cgd_wf_gate.py",
+        5,
+        "cgd Lv6/Lv7 で inline の codex exec を遮断し Workflow 実行を強制",
+    ),
+    (
+        "PostToolUse",
+        "Bash",
+        ".claude/hooks/ai_telemetry.py",
+        5,
+        "外部AI(codex/DS/Qwen/Gemini)呼出のトークン・出力サイズを telemetry.jsonl に自動記録",
+    ),
+    (
         "PostCompact",
         "auto",
         ".claude/hooks/ctx_compact_mark.py",

@@ -1,8 +1,8 @@
 ---
 name: cgd
-description: Codex+DeepSeek+Qwen の統合コードレビュー・設計相談・実装・委譲・検証スキル（**Gemini は2026-07にAPIエラー多発のため既定オフのオプトイン参加に格下げ済み**）。**9段階レベル（Lv0〜Lv8）**でユーザーがトークン消費・所要時間・実装主体を選択。**Lv0=委譲レーン**（DS/Qwenにコード生成を任せClaudeは分解と検証に専念・scaffold/量産タスク/コスト節約・Antigravity Plugin相当） / Lv1=Codex単独 / Lv2=Codex+DeepSeek並列（既定推奨。旧/codex等価のC+G構成は「Geminiも」等の明示指示で再現可） / Lv3=Codex+DeepSeekの技術×批評「2社×2視点」4レビュー（実装なし・review専用） / Lv4=Claude初期案→[DS+Qwen並列advisor]→Codex直列フル相談+再レビュー（Gemini併用時は先頭にGemini案出しが直列で入る） / Lv5=Lv4+🔴重大指摘の自動修正1周 / Lv6=Codex+DS+Qwen 3者並列レビュー（全員reviewer役、Gemini併用で4者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周 / Lv7=Codex多重(medium+high)+補助(DS/Qwen)の4者並列「Codex集中」構成（Gemini併用で5者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周（最深掘り） / Lv8=Lv7の技術構成そのまま+Codex(high)とDeepSeekにLv3同様の批評視点を追加した6者並列（Gemini併用で7者）+実装+検証+Codex再レビュー+🔴自動修正1周（技術の最深掘り+複眼批評、最重量級）。Lv0=実装主体の切替（コストレーン）、Lv1-8=レビュー強度の選択（品質レーン）で直交。Lv4-5はDS/Qwenをadvisor役で別案出し、Lv6は横並びreviewer、Lv7は深いintegrationバグ検出を狙ってCodex多重化+DS/Qwenに関連関数抜粋を渡して補助役を強化。差分レビュー、設計判断、別案出し、実装、委譲、検証まで一気通貫。**旧 `/codex` `/gemini` 単体スキルは廃止され、本スキル（`/cgd` または `/codex` 起動）が必ずレベル選択から始まる**。全Lv共通の任意オプションで『critic観点』（辛口ユーザー視点＝ITに疎い現場担当者の使い勝手の不満 + あるべき論＝本来この仕様はどうあるべきかの批判を Claude本体+DS criticで評価）を追加でき、技術的正しさとは別軸で使い勝手・仕様の妥当性を否定的にチェックする。環境チェックは `python C:/ClaudeCode/.claude/tools/cgd_doctor.py` で一括。「委譲」「scaffold」「量産」「DSで書かせる」「Qwenで書かせる」「コスト節約」「3者に相談」「フルパイプ」「4者レビュー」「Codex多重」「Codex集中」「辛口レビュー」「ユーザー視点」「あるべき論」「critic」「cgd」「Codexにレビュー」「セカンドオピニオン」「C+G」「cg」「Geminiも」などのキーワードで起動。重要な設計判断・難しいバグ・大きめのリファクタの検討時には積極的に提案すること。既存 /generate-by-deepseek（DS単発コード生成→Claudeレビュー）は薄い構成で並立。
+description: Codex+DeepSeek+Qwen の統合コードレビュー・設計相談・実装・委譲・検証スキル（**Gemini は2026-07にAPIエラー多発のため既定オフのオプトイン参加に格下げ済み**）。**9段階レベル（Lv0〜Lv8）**でトークン消費・所要時間・実装主体が決まる。**レベル・Codex reasoning(low/medium/high)・Gemini/critic観点はすべてClaudeが対象から自動選択して宣言する（ユーザーに選ばせない・明示指示が最優先）**。**Lv0=委譲レーン**（DS/Qwenにコード生成を任せClaudeは分解と検証に専念・scaffold/量産タスク/コスト節約・Antigravity Plugin相当） / Lv1=Codex単独 / Lv2=Codex+DeepSeek並列（既定推奨。旧/codex等価のC+G構成は「Geminiも」等の明示指示で再現可） / Lv3=Codex+DeepSeekの技術×批評「2社×2視点」4レビュー（実装なし・review専用） / Lv4=Claude初期案→[DS+Qwen並列advisor]→Codex直列フル相談+再レビュー（Gemini併用時は先頭にGemini案出しが直列で入る） / Lv5=Lv4+🔴重大指摘の自動修正1周 / Lv6=Codex+DS+Qwen 3者並列レビュー（全員reviewer役、Gemini併用で4者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周（**Workflow実行必須**） / Lv7=Codex多重(medium+high)+補助(DS/Qwen)の4者並列「Codex集中」構成（Gemini併用で5者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正**2周**（最深掘り・**Workflow実行必須**） / Lv8=Lv7の技術構成そのまま+Codex(high)とDeepSeekにLv3同様の批評視点を追加した6者並列（Gemini併用で7者）+実装+検証+Codex再レビュー+🔴自動修正**2周**（技術の最深掘り+複眼批評、最重量級・**Workflow実行必須**）。Lv0=実装主体の切替（コストレーン）、Lv1-8=レビュー強度の選択（品質レーン）で直交。Lv4-5はDS/Qwenをadvisor役で別案出し、Lv6は横並びreviewer、Lv7は深いintegrationバグ検出を狙ってCodex多重化+DS/Qwenに関連関数抜粋を渡して補助役を強化。差分レビュー、設計判断、別案出し、実装、委譲、検証まで一気通貫。**旧 `/codex` `/gemini` 単体スキルは廃止され、本スキル（`/cgd` または `/codex` 起動）が必ずレベル自動決定から始まる**。全Lv共通の任意オプションで『critic観点』（辛口ユーザー視点＝ITに疎い現場担当者の使い勝手の不満 + あるべき論＝本来この仕様はどうあるべきかの批判を Claude本体+DS criticで評価）を追加でき、技術的正しさとは別軸で使い勝手・仕様の妥当性を否定的にチェックする。環境チェックは `python C:/ClaudeCode/.claude/tools/cgd_doctor.py` で一括。「委譲」「scaffold」「量産」「DSで書かせる」「Qwenで書かせる」「コスト節約」「3者に相談」「フルパイプ」「4者レビュー」「Codex多重」「Codex集中」「辛口レビュー」「ユーザー視点」「あるべき論」「critic」「cgd」「Codexにレビュー」「セカンドオピニオン」「C+G」「cg」「Geminiも」などのキーワードで起動。重要な設計判断・難しいバグ・大きめのリファクタの検討時には積極的に提案すること。既存 /generate-by-deepseek（DS単発コード生成→Claudeレビュー）は薄い構成で並立。
 ---
-<!-- SKILL_VERSION: 2026-08-05_200531 -->
+<!-- SKILL_VERSION: 2026-08-05_214817 -->
 
 # cgd — Codex + DeepSeek + Qwen 統合スキル（Lv0〜8、Gemini はオプトイン）
 
@@ -19,7 +19,7 @@ Claude Code は司令塔。Codex / DeepSeek / Qwen を **役割分担** で使�
 ## 旧スキルとの関係
 
 - **旧 `/codex` 単体・`/gemini` 単体スキルは廃止**
-- `/codex` 起動でも本スキル `/cgd` と同じフローが動く（必ず Step 1 のレベル選択を求める・後方互換なし）
+- `/codex` 起動でも本スキル `/cgd` と同じフローが動く（必ず Step 1 のレベル決定から始まる・後方互換なし）
 - 旧 /codex の挙動（C+G 並列レビュー）が欲しい場合は **Lv2 + Gemini オプトイン**（「Geminiも」と明示）を選ぶ
 - `/generate-by-deepseek`（DS コード生成→Claude レビュー）とは目的が異なる（実装代行）
 
@@ -115,7 +115,21 @@ python C:/ClaudeCode/.claude/tools/cgd_doctor.py --probe    # 各 API に最小�
 
 ---
 
-## Step 1: レベル選択（必須・既定 Lv2）
+## Step 1: レベル決定（**Claude が自動選択する**・ユーザーに聞かない）
+
+> ### 🤖 選択はユーザーに投げず Claude が決める（2026-08-05 変更）
+>
+> レベル・Codex reasoning・Gemini 観点・critic 観点は **すべて Claude が推奨を自動選択**し、
+> **選んだ結果と理由を 1 行で宣言してから実行する**。`AskUserQuestion` で選ばせない。
+>
+> - **ユーザーの明示指示が最優先**。「Lv7 で最も深く」「軽くでいい」「Geminiも」等があれば無条件でそれに従う
+> - 宣言例:
+>   > `Lv7`（大規模 IIFE 内の関数間整合性が論点のため）／ Codex reasoning: `high` ／ critic: なし
+>   > — 強度を変えたい場合は言ってください
+> - **承認ゲートは引き続き聞く**（自動化するのは「好み・強度の選択」だけ）:
+>   実装許可（Step 2-XF）・Lv0 の委譲計画承認・外部 API 送信前の秘匿チェック・破壊的操作
+> - 判断に迷ったら **1 段軽い方**を選ぶ。ユーザーは後から「もっと深く」と言えるが、
+>   使いすぎたクォータは戻らない
 
 **直前指示にレベル明示があればスキップ**:
 - 「Lv0」「委譲」「scaffold」「量産」「DS で書かせる」「Qwen で書かせる」「テスト量産」「docstring 一括」「コスト節約」 → **Lv0**
@@ -129,46 +143,78 @@ python C:/ClaudeCode/.claude/tools/cgd_doctor.py --probe    # 各 API に最小�
 - 「Lv8」「批評も複数で」「Codex集中+批評」「技術も批評も最深掘り」「最重量級の批評込み」 → Lv8
 - 「Geminiも」「Gemini入れて」「C+G」「4者で」「5者フルで」「長文調査も」 → 選ばれたレベルに **Gemini を追加参加**（既定オフのオプトイン。単体ではレベルを決定しない・上記と組み合わせて解釈）
 
-それ以外は `AskUserQuestion` で 1 回聞く（既定 = Lv2）:
+明示指示がない場合は、**以下の判定基準で Claude が決める**（既定 = Lv2）:
+
+| こういう対象・状況なら | レベル |
+|---|---|
+| scaffold・量産・docstring/テストの一括生成・コスト節約したい | **Lv0** |
+| 小さな差分・低リスク・設定や文言の変更・軽い確認 | **Lv1** |
+| **通常開発（迷ったらこれ）** | **Lv2** |
+| 実装するか未定で、技術面と使い勝手の両方を先に見ておきたい | **Lv3** |
+| 高リスク変更・設計判断・本番影響が大きい | **Lv4** |
+| リリース直前・障害の再発防止・🔴 は自動で潰したい | **Lv5** |
+| 広範囲の変更で盲点が怖い・複眼で潰したい | **Lv6** |
+| 関数間の整合性・状態管理・大規模モジュール内のクロスリファレンスが論点 | **Lv7** |
+| 技術の最深掘りと使い勝手の批評を同時にやる必要がある | **Lv8** |
+
+**Lv6-8 を自動で選ぶときの歯止め**: 主 context とサブスククォータの消費が大きいので、**宣言に「なぜこの重さが要るか」を必ず添える**。理由が 1 行で書けないなら Lv2〜4 に落とす。
+
+<details>
+<summary>参考: 旧・ユーザー選択時の選択肢文言（宣言の言い回しに流用してよい）</summary>
 
 ```
-Q: 強度レベル（既定 Lv2）
 0. Lv0 — 委譲レーン: DS/Qwen にコード生成を任せ Claude は分解と検証に専念（scaffold / 量産 / コスト節約・実装の主体を切り替える）
 1. Lv1 — Codex のみ ×1（軽い差分チェック・小修正・低リスク）
 2. Lv2 — Codex + DeepSeek 並列 ×1（通常開発の標準・既定推奨。旧 /codex 等価の C+G 構成が欲しければ「Geminiも」と明示）
 3. Lv3 — Codex + DeepSeek「2社×2視点」4レビュー（技術×批評、実装なし・review専用）（実装するか未定だが技術面とユーザー視点/あるべき論の両方を見ておきたい時）
 4. Lv4 — [DS+Qwen 並列 advisor]→Codex 直列フル相談 + 実装後 Codex 再レビュー ×1（高リスク変更・設計判断・本番影響大。Gemini併用で先頭にGemini案出しが追加）
 5. Lv5 — Lv4 + 🔴 重大指摘の自動修正 1 周（Codex 再レビュー計 ×2、改善なしで停止）（リリース直前・障害再発防止）
-6. Lv6 — Codex + DS + Qwen の 3 者並列レビュー（全員 reviewer 役、advisor 段廃止） + 実装 + 検証 + Codex 再レビュー + 🔴 自動修正 1 周（最重量級・複眼レビューで盲点を潰したい・Lv4-5 で DS/Qwen 別案が機能しない対象の代替。Gemini併用で4者に拡張可）
-7. Lv7 — **Codex 多重（medium + high）** + DS + Qwen の **4 者並列「Codex 集中」レビュー** + 実装 + 検証 + Codex 再レビュー + 🔴 自動修正 1 周（最深掘り・integration バグ重視・関数間整合性・大規模 IIFE/モジュール内のクロスリファレンス検査。Gemini併用で5者に拡張可）
-8. Lv8 — Lv7 の技術構成そのまま + **Codex(high) と DeepSeek に批評視点を追加**した **6 者並列** + 実装 + 検証 + Codex 再レビュー + 🔴 自動修正 1 周（最重量級・技術の最深掘りと Lv3 相当の複眼批評を同時に欲しい時。Gemini併用で7者に拡張可）
+6. Lv6 — **【Workflow 実行必須】** Codex + DS + Qwen の 3 者並列レビュー（全員 reviewer 役、advisor 段廃止） + 実装 + 検証 + Codex 再レビュー + 🔴 自動修正 1 周（最重量級・複眼レビューで盲点を潰したい・Lv4-5 で DS/Qwen 別案が機能しない対象の代替。Gemini併用で4者に拡張可）
+7. Lv7 — **【Workflow 実行必須】** **Codex 多重（medium + high）** + DS + Qwen の **4 者並列「Codex 集中」レビュー** + 実装 + 検証 + Codex 再レビュー + 🔴 自動修正 2 周（最深掘り・integration バグ重視・関数間整合性・大規模 IIFE/モジュール内のクロスリファレンス検査。Gemini併用で5者に拡張可）
+8. Lv8 — **【Workflow 実行必須】** Lv7 の技術構成そのまま + **Codex(high) と DeepSeek に批評視点を追加**した **6 者並列** + 実装 + 検証 + Codex 再レビュー + 🔴 自動修正 2 周（最重量級・技術の最深掘りと Lv3 相当の複眼批評を同時に欲しい時。Gemini併用で7者に拡張可）
 ```
 
-Gemini を追加参加させたい場合は、この回答と同時に「Geminiも」等を添える（後述「Gemini オプトイン運用」参照）。
+</details>
+
+### Codex reasoning の自動選択（全 Lv 共通・ユーザーに聞かない）
+
+| こういう対象なら | reasoning |
+|---|---|
+| 差分 50 行未満・単一関数・設定/文言変更 | `low` |
+| **通常の差分レビュー（既定）** | `medium` |
+| 複数ファイル横断・状態管理/並行処理・本番データ書込・原因不明の障害調査 | `high` |
+
+Lv7 / Lv8 は `medium + high` の多重が構成の本質なので、この選択自体が不要（固定）。
+
+### Gemini 観点・critic 観点の自動選択
+
+- **Gemini**: 既定オフのまま。ユーザーが「Geminiも」等と明示した場合のみ参加させ、**観点（要約 / 原因特定 / 参考情報収集 / 比較評価）は Claude が対象から判断して決める**（聞かない）
+- **critic 観点**: 後述「critic 観点」節の自動判定基準に該当したら **聞かずに有効化**し、宣言に含める
 
 **Lv0 と Lv1-8 の使い分け**:
 - Lv0 = **実装主体を切り替える**（Claude が書く → DS/Qwen が書く）。コストレーン
 - Lv1-8 = **レビュー強度を選ぶ**（Claude が書いてレビューする）。品質レーン
 - 両者は直交。Lv0 の Step 2-0D の Codex 軽量レビューが「Lv0 内蔵の品質ゲート」
 
-選択後、対象（差分／ファイル／貼り付けテキスト）と検討テーマも同時に確認する。
-ユーザーが何も指定せず Enter / 空応答した場合は **Lv2 を採用**して進める。
+決定後、対象（差分／ファイル／貼り付けテキスト）と検討テーマが不明な場合のみ確認する（**強度は聞かない**）。
+判断材料が乏しく決めきれない場合は **Lv2 を採用**して進める。
 
-**critic 観点（任意・全 Lv 共通）**: レベル選択と同時に「**critic 観点（辛口ユーザー視点 / あるべき論）も追加するか**」を確認する（既定オフ）。「辛口で」「ユーザー視点で」「あるべき論で」「現場目線で」「critic」等の指示があれば自動で有効。技術レビューとは別軸で「使う人が困らないか・本来どうあるべきか」を Claude 本体 + DS critic で否定的に評価する。詳細は後述「**critic 観点**」セクション。
+**critic 観点（任意・全 Lv 共通）**: 後述の自動判定基準に該当したら **聞かずに有効化**し、宣言に含める（既定オフ）。「辛口で」「ユーザー視点で」「あるべき論で」「現場目線で」「critic」等の指示があれば自動で有効。技術レビューとは別軸で「使う人が困らないか・本来どうあるべきか」を Claude 本体 + DS critic で否定的に評価する。詳細は後述「**critic 観点**」セクション。
 
 **利用ログ記録（必須・省略禁止）**: レベル（+ Gemini オプトイン有無・critic 観点有無）が確定した時点で、Step 2 に入る前に1回だけ記録する:
 
 ```bash
-python "C:/ClaudeCode/.claude/tools/cgd_usage_log.py" record --level <0-7> [--gemini] [--critic]
+python "C:/ClaudeCode/.claude/tools/cgd_usage_log.py" record --level <0-8> [--gemini] [--critic]
 ```
 
 - `--gemini` は Gemini をオプトイン参加させた場合のみ付ける（既定=付けない）。`--critic` は critic 観点を併用する場合のみ
 - **本流を止めない**: このコマンドが失敗・エラーを返しても無視して Step 2 に進む（利用ログは副次的な計測であり cgd 本体の実行を左右しない）。stdout/stderrをユーザーに見せる必要もない
+- ⚠️ **Lv6 / Lv7 では副作用が1つある**: このコマンドが `.claude/hooks/cgd_wf_gate.py arm` を呼び、**inline の `codex exec` を遮断するゲート**を張る（`[cgd wf-gate] Lv7: WF 必須ゲートを張りました` が stderr に出る）。以後 `codex exec` を Bash で直接叩くと PreToolUse hook が deny する。**Lv6/Lv7 は Workflow で実行すること**（後述「Workflow 経由実行」）。ゲートは WF 起動を検知すると自動解除され、保険として 180 分で失効する
 - 目的: 「今のレベル構成が実際に使われているか」を後から検証するため（例: 特定レベルの使用回数が恒常的に0件なら、そのレベルの設計を見直す材料にする）。集計は `python "C:/ClaudeCode/.claude/tools/cgd_usage_log.py" report` で随時確認できる
 
 ---
 
-## 🔴 重大指摘の定義（Lv5 / Lv6 / Lv7 / Lv8 自動修正ループの対象）
+## 🔴 重大指摘の定義（Lv5〜Lv8 自動修正ループの対象）
 
 以下を満たす指摘のみ「🔴 重大」とし、Lv5 / Lv6 / Lv7 / Lv8 では自動修正ループの対象になる（Lv8 では技術レビュー表の指摘のみが対象。批評レビュー表の指摘は severity を持たないため対象外）:
 
@@ -178,7 +224,7 @@ python "C:/ClaudeCode/.claude/tools/cgd_usage_log.py" record --level <0-7> [--ge
 4. **明白な論理バグ** — テストで検出可能な失敗パス・既知の例外を握り潰す等
 5. **Integration バグ** (Lv7 / Lv8 で特に重視) — 関数間の暗黙の前提違反・スコープを跨いだ状態管理の整合性破綻・呼出経路ごとの副作用差異
 
-これら以外は 🟠 重要 / 🟡 注意とし、自動修正ループの対象外（Lv5 / Lv6 / Lv7 / Lv8 でもユーザー判断扱い。Lv8 の批評レビュー指摘は severity を持たないため常にこの扱い）。
+自動修正の周回上限は Lv5 / Lv6 が 1 周、**Lv7 / Lv8 は 2 周**（後述 Step C2）。これら以外は 🟠 重要 / 🟡 注意とし、自動修正ループの対象外（Lv5 / Lv6 / Lv7 / Lv8 でもユーザー判断扱い。Lv8 の批評レビュー指摘は severity を持たないため常にこの扱い）。
 
 ---
 
@@ -191,8 +237,8 @@ python "C:/ClaudeCode/.claude/tools/cgd_usage_log.py" record --level <0-7> [--ge
 | 4 | Step A に戻り 1 回まで自動修正→再検証 | 報告のみ（Step C2 自動修正なし） |
 | 5 | 同上 | Step C2 で 1 周まで自動修正→再レビュー（改善なしで停止＋ユーザー判断必須） |
 | 6 | 同上 | Step C2 で 1 周まで自動修正→再レビュー（Lv5 と同仕様） |
-| 7 | 同上 | Step C2 で 1 周まで自動修正→再レビュー（Lv5 と同仕様・再レビューは Codex 多重ではなく medium 単独） |
-| 8 | 同上 | Step C2 で 1 周まで自動修正→再レビュー（Lv7 と同仕様・対象は技術表の🔴のみ、批評レビューの指摘は対象外） |
+| 7 | 同上 | Step C2 で **2 周**まで自動修正→再レビュー（再レビューは Codex 多重ではなく medium 単独） |
+| 8 | 同上 | Step C2 で **2 周**まで自動修正→再レビュー（Lv7 と同仕様・対象は技術表の🔴のみ、批評レビューの指摘は対象外） |
 
 ---
 
@@ -334,7 +380,7 @@ done
 | diff +追加行数 | レビュー方針 |
 |---|---|
 | 100 行以上 | **Codex medium 1 回**で差分レビュー（Lv4-7 共通の Step C と同じ要領）・既定実行 |
-| 50〜99 行 | AskUserQuestion で任意（既定: **実行する**＝品質側に倒す） |
+| 50〜99 行 | **Claude が判断して既定は実行する**（品質側に倒す・聞かない） |
 | 50 行未満 | **省略**（Claude の品質チェックのみ） |
 
 （ちょうど 50 行 → 中段の任意レビュー、ちょうど 100 行 → 上段の Codex 実行）
@@ -400,10 +446,9 @@ cp <最終報告.md> "C:/tmp-ai/cgd_lv0_$(date +%Y%m%d_%H%M%S).md"
 
 ## Lv1: Codex のみ
 
-### Step 2-1A: Codex level 確認
+### Step 2-1A: Codex level 決定（自動・聞かない）
 
-`AskUserQuestion`:
-- Codex reasoning: low / medium（推奨） / high
+Step 1 の「Codex reasoning の自動選択」表で決める（既定 `medium`）。決めた値は宣言に含める。
 
 ### Step 2-1B: Codex 単独実行
 
@@ -425,12 +470,11 @@ mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="
 
 ## Lv2: Codex + DeepSeek 並列（既定。Gemini はオプトインで追加可）
 
-### Step 2-2A: Codex level を確認
+### Step 2-2A: Codex level 決定（自動・聞かない）
 
-`AskUserQuestion` で聞く:
-- Codex reasoning: low / medium（推奨） / high
+Step 1 の「Codex reasoning の自動選択」表で決める（既定 `medium`）。
 
-Gemini を追加参加させる指示（「Geminiも」「C+G」等）があれば、ここで Gemini 観点も同時に聞く: 要約 / 原因特定 / 参考情報収集 / 比較評価。指示がなければ聞かない。
+Gemini を追加参加させる指示（「Geminiも」「C+G」等）があった場合、**観点も Claude が対象から判断して決める**（要約 / 原因特定 / 参考情報収集 / 比較評価）。指示がなければ Gemini は呼ばない。
 
 ### Step 2-2B: 並列起動（既定は **1 メッセージで Bash 2 個**、Gemini併用時は3個）
 
@@ -481,10 +525,9 @@ Codex と DeepSeek の **2社それぞれに、技術レビューと批評レビ
 
 技術視点は severity（🔴/🟠/🟡）、批評視点は困り度（高/中/低）と、Lv2 / 既存の「critic 観点」セクションと同じ2つの評価軸をそのまま使う。**全 Lv 共通の「critic 観点」オプション（Claude本体+DS critic）とは別物**（Lv3 は Codex/DeepSeek 双方が技術・批評の両方を担う設計であり、Lv3 選択時は全 Lv 共通 critic 観点を重ねて追加する必要は薄い。同時に指示された場合のみ Claude 本体の critic 観点も追加してよい）。
 
-### Step 2-3A: Codex level を確認
+### Step 2-3A: Codex level 決定（自動・聞かない）
 
-`AskUserQuestion` で聞く:
-- Codex reasoning: low / medium（推奨） / high（技術レビュー・批評レビューの両方に適用）
+Step 1 の「Codex reasoning の自動選択」表で決める（既定 `medium`・技術レビューと批評レビューの両方に同じ値を適用）。
 
 ### Step 2-3B: 入力ファイル準備（先に1回だけ作る・4件で共有）
 
@@ -713,7 +756,7 @@ Step A（実装）→ Step B（検証）→ Step C（Codex 再レビュー・差
 
 Step 2-4A〜H までは Lv4 と同一。Step C の後に **Step C2** を追加。
 
-### Step C2: 🔴 重大指摘の自動修正ループ（Lv5 / Lv6 / Lv7 / Lv8 共通、最大 1 周）
+### Step C2: 🔴 重大指摘の自動修正ループ（Lv5〜Lv8・**上限はレベルで変わる**）
 
 Step C の表で **🔴 重大指摘**（前述定義に該当）が 1 つ以上 ✅採用 になった場合のみ実行:
 
@@ -721,16 +764,27 @@ Step C の表で **🔴 重大指摘**（前述定義に該当）が 1 つ以上
 2. Step B（検証）を再実行
 3. Step C（Codex 再レビュー）を再実行
 
-**安全弁**:
-- 自動で回す上限は **1 周まで**
-- 1 周回しても **同じ🔴指摘が再発した（改善なし）** 場合は **即座に停止**してユーザー判断を仰ぐ
-- 別の新しい🔴が出た場合も **2 周目には進まず**ユーザー判断を仰ぐ
-- 🟠 重要 / 🟡 注意のみの場合は自動ループせず、Step D の「未対応指摘」に記載
+**周回上限（レベル別）**:
 
-**ユーザー判断を仰ぐときの報告内容**（1〜3 行）:
-1. 何周回したか
+| Lv | 上限 | 理由 |
+|---|---|---|
+| Lv5 / Lv6 | **1 周** | 中量級。1 周で収束しないなら人が見るべき |
+| **Lv7 / Lv8** | **2 周** | 最深掘り構成。integration バグは 1 周目の修正で別の前提を崩し、2 周目で初めて収束することがある。ここまで重い構成を選んだ以上、1 周で人に投げ返すより自動で追い込む方が期待に合う |
+
+**安全弁（全レベル共通）**:
+- **同じ🔴指摘が再発した（改善なし）** 場合は、上限に達していなくても **即座に停止**してユーザー判断を仰ぐ（回しても直らないものは回数を増やしても直らない）
+- **新しい🔴が出た場合**は、上限内なら次の周に進んでよい（Lv7 / Lv8 のみ。Lv5 / Lv6 は 1 周で打ち止めなので停止）
+- 上限に達したら必ず停止。**3 周目以降は絶対に自動で回さない**
+- 🟠 重要 / 🟡 注意のみの場合は自動ループせず、Step D の「未対応指摘」に記載
+- Lv8 で自動修正の対象になるのは **技術レビュー表の 🔴 のみ**（批評レビュー表の指摘は困り度ベースで severity を持たないため対象外）
+
+**周回ごとにユーザーへ 1 行報告する**（黙って 2 周回さない）:
+> 例: `🔴 2 件のうち 1 件が解消。残り 1 件を 2 周目で修正します（Lv7・上限 2 周）`
+
+**停止時の報告内容**（1〜3 行）:
+1. 何周回したか（上限は何周だったか）
 2. どの🔴が解消され、どれが残ったか
-3. なぜ自動継続をやめたか（改善なし / 新規🔴 / 上限到達）
+3. なぜ自動継続をやめたか（改善なし / 上限到達）
 
 ---
 
@@ -740,16 +794,49 @@ Lv4-5 の DS / Qwen は **advisor 役（別案出し）** だが、実運用で�
 
 「複数の独立した目で同じコードを見る」をスケールアップさせた構成。同じ指摘が複数 AI から挙がれば信頼度が高い（収束シグナル）、1 者だけの指摘は false positive を疑う、という運用ができる。**既定は Codex+DS+Qwen の3者**。Gemini は「Geminiも」「4者で」等の明示指示があった時だけ4者目として追加する（2026-07 に API エラー多発のため既定から外した）。
 
-### Step 2-6A: レビュー観点を確認
+> ## 🚨 Lv6 のレビュー段は **Workflow 実行が必須**（inline 禁止）
+>
+> **Step 2-6A → 2-6A2（WF 起動）→ 2-6C の順で進む。** 下の「Step 2-6B（フォールバック）」の inline 手順は
+> **WF が使えない時だけ**の退避路であり、通常は読まなくてよい。
+>
+> - 手順の詳細は後述「**Workflow 経由実行（Lv6-WF / Lv7-WF）**」節（起動手順・raw 検証ガード・入力ファイルの罠）
+> - inline で `codex exec` を叩くと **PreToolUse hook (`cgd_wf_gate.py`) が deny する**。
+>   ゲートは Step 1 の `cgd_usage_log.py record --level 6` が自動で張っている
+> - 2026-08-05 に「WF があるのに 2 セッションが独立に inline を実行」した事故があり、機械的な強制を入れた
 
-`AskUserQuestion` で聞く:
-- Codex reasoning: low / medium（推奨） / high
+### Step 2-6A: レビュー観点を決定（自動・聞かない）
 
-Gemini オプトイン時はここで Gemini 観点も同時に聞く: 要約 / 原因特定 / 参考情報収集 / 比較評価。
+Codex reasoning は Step 1 の自動選択表で決める（既定 `medium`）。
+
+Gemini オプトイン時の観点も Claude が対象から判断して決める（要約 / 原因特定 / 参考情報収集 / 比較評価）。
 
 DS / Qwen は両者とも `--role reviewer` 固定で呼び出す（advisor との切替はしない・Lv6 の本質）。
 
-### Step 2-6B: 並列起動（既定は **1 メッセージで Bash 3 個**、Gemini併用時4個）
+### Step 2-6A2: Workflow 起動（**正規ルート・必須**）
+
+```bash
+RUN=$(date +%Y%m%d_%H%M%S)
+cat > "C:/tmp-ai/cgd_in_${RUN}.txt" <<'EOF'
+<差分 + 背景 + 評価観点 + 対象ファイル絶対パス>
+EOF
+```
+
+```
+Workflow({ scriptPath: "C:/ClaudeCode/.claude/skills/cgd/workflows/cgd_lv6_review.js",
+           args: { input_path: "C:/tmp-ai/cgd_in_<RUN>.txt", codex_reasoning: "<low|medium|high>",
+                   label: "<対象名>_<RUN>" } })       // Gemini オプトイン時は include_gemini: true を追加
+```
+
+完了後は戻り値の `label` を確認 → `table_md` を描画 → 🔴 は `raw_log_paths` で検証（後述ガード）→ **Step 2-6C へ**。
+実装（Step A）に進む前に、Step C の inline 再レビューが弾かれないようゲートを解除する:
+
+```bash
+python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" disarm
+```
+
+### Step 2-6B（フォールバック）: inline 並列起動 — ⚠️ 通常は使わない
+
+**この節は Workflow が使えない時の退避路。** 使う場合はコマンド先頭に `CGD_WF_RUN=1` を付けてゲートを意図的に迂回し、**迂回した理由をユーザーに必ず伝えること**。既定は **1 メッセージで Bash 3 個**（Gemini併用時4個）。
 
 入力データは参加者全員が **同じ原文（差分／ファイル絶対パス／貼り付けテキスト）** を受け取る。advisor 段でやっていた「Claude 検討要約」は **渡さない**（要約による情報損失を避け、各 AI が独自に原文を解釈する）。
 
@@ -837,18 +924,31 @@ Step C2 の自動修正ループは **Lv5 の Step C2 セクションをその�
 
 ---
 
-## Lv7: Codex 集中 (medium + high 多重) + 補助 (DS/Qwen) 4 者並列レビュー + 実装 + 検証 + Codex 再レビュー + 🔴 自動修正 1 周（Gemini はオプトインで5者化）
+## Lv7: Codex 集中 (medium + high 多重) + 補助 (DS/Qwen) 4 者並列レビュー + 実装 + 検証 + Codex 再レビュー + 🔴 自動修正 2 周（Gemini はオプトインで5者化）
 
 Lv6 動作テストの観察知見から派生した **最深掘り構成**。Lv6 は「横並びレビュー」だが、実運用で **Codex が integration バグ（関数間の暗黙の前提違反・スコープを跨いだ状態管理破綻）の単独検出に圧倒的に強い**（sandbox read-only でファイル全体を探索できる）一方、DS/Qwen の reviewer は diff だけだと表層的になりがちだった。Lv7 はこのアンバランスを **Codex を medium と high で多重化** して底上げし、DS/Qwen には **関連関数を Claude が事前抽出して** 渡して補助役の質を上げる。既定は Codex×2+DS+Qwen の4者。Gemini は「Geminiも」「5者で」等の明示指示があった時だけ5者目の補助として追加する。
 
 「複数の独立した目で同じコードを見る」（Lv6）より、「深い目 2 つ重ね + 補助で横から検査」（Lv7）のアプローチ。
+
+> ## 🚨 Lv7 のレビュー段は **Workflow 実行が必須**（inline 禁止）
+>
+> **Step 2-7A → 2-7B（関連関数抽出）→ 2-7C（入力準備）→ 2-7C2（WF 起動）→ 2-7E の順で進む。**
+> 下の「Step 2-7D（フォールバック）」の inline 手順は **WF が使えない時だけ**の退避路であり、通常は読まなくてよい。
+>
+> - 手順の詳細は後述「**Workflow 経由実行（Lv6-WF / Lv7-WF）**」節
+> - inline で `codex exec` を叩くと **PreToolUse hook (`cgd_wf_gate.py`) が deny する**。
+>   ゲートは Step 1 の `cgd_usage_log.py record --level 7` が自動で張っている
+> - **なぜ必須か**: Codex high の生出力は 1 回で 100KB〜1.2MB に達し、主 context を 1〜2 回で枯渇させる。
+>   WF は生出力を subagent に閉じ込め、主 context 流入を **約 94% 削減**する（実測）
+> - ⚠️ **WF は Codex のトークン／クォータ消費は減らさない**（1 回 5〜10 万 tok は WF でも同じ）。
+>   減るのは主 context の汚染だけ。トークン消費側の対策は別問題（対象ファイルを列挙して探索範囲を絞る等）
 
 ### Step 2-7A: レビュー観点を確認
 
 Codex は **medium + high の 2 並列固定**（Lv7 の本質なので reasoning level 確認は不要）。
 DS / Qwen は **`--role reviewer` 固定**。
 
-Gemini オプトイン時のみ `AskUserQuestion` で Gemini 観点を聞く: 要約 / 原因特定 / 参考情報収集 / 比較評価。
+Gemini オプトイン時の観点は Claude が対象から判断して決める（要約 / 原因特定 / 参考情報収集 / 比較評価）。聞かない。
 
 ### Step 2-7B: 関連関数の事前抽出（Claude 本体作業）
 
@@ -918,7 +1018,34 @@ EOF
 cat <diff-file> >> "C:/tmp-ai/lv7_aux_input.txt"
 ```
 
-### Step 2-7D: 並列起動（既定は **1 メッセージで Bash 4 個**、Gemini併用時5個）
+### Step 2-7C2: Workflow 起動（**正規ルート・必須**）
+
+Step 2-7C の入力ファイルは **ユニークサフィックス付き**で作る（固定名は他セッションに上書きされ、別プロジェクトをレビューする事故が実際に起きた）:
+
+```bash
+RUN=$(date +%Y%m%d_%H%M%S)
+# Codex 用 = lv7_codex_input.txt 相当 / aux 用 = lv7_aux_input.txt 相当をユニーク名で作る
+cp "C:/tmp-ai/lv7_codex_input.txt" "C:/tmp-ai/cgd_codex_${RUN}.txt"
+cp "C:/tmp-ai/lv7_aux_input.txt"   "C:/tmp-ai/cgd_aux_${RUN}.txt"
+```
+
+```
+Workflow({ scriptPath: "C:/ClaudeCode/.claude/skills/cgd/workflows/cgd_lv7_review.js",
+           args: { input_path: "C:/tmp-ai/cgd_codex_<RUN>.txt",
+                   aux_input_path: "C:/tmp-ai/cgd_aux_<RUN>.txt",
+                   label: "<対象名>_<RUN>" } })       // Gemini オプトイン時は include_gemini: true を追加
+```
+
+完了後は戻り値の `label` を確認（`target` ならパース失敗を疑う）→ `table_md` を描画 → 🔴 は `raw_log_paths` で検証 → **Step 2-7E へ**。
+実装（Step A）に進む前に、Step C の inline 再レビューが弾かれないようゲートを解除する:
+
+```bash
+python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" disarm
+```
+
+### Step 2-7D（フォールバック）: inline 並列起動 — ⚠️ 通常は使わない
+
+**この節は Workflow が使えない時の退避路。** 使う場合は各コマンド先頭に `CGD_WF_RUN=1` を付けてゲートを意図的に迂回し、**迂回した理由をユーザーに必ず伝えること**。既定は **1 メッセージで Bash 4 個**（Gemini併用時5個）。
 
 ```bash
 # Bash #1（Codex medium — バランス重視）
@@ -978,7 +1105,7 @@ cp <相談まとめ.md> "C:/tmp-ai/cgd_lv7_$(date +%Y%m%d_%H%M%S).md"
 
 ### Step 2-7G〜J: 共通フロー実行
 
-Step A（実装）→ Step B（検証）→ Step C（Codex 再レビュー・差分のみ・**medium 単独**）→ **Step C2（🔴 自動修正ループ最大 1 周・Lv5 と同仕様）** → Step D（最終まとめ）
+Step A（実装）→ Step B（検証）→ Step C（Codex 再レビュー・差分のみ・**medium 単独**）→ **Step C2（🔴 自動修正ループ最大 2 周）** → Step D（最終まとめ）
 
 **Step C を Codex 多重で回さない理由**:
 - 再レビュー段は差分のみで規模が小さく、medium で十分な深さが出る
@@ -987,7 +1114,7 @@ Step A（実装）→ Step B（検証）→ Step C（Codex 再レビュー・差
 
 ---
 
-## Lv8: Lv7 + Codex(high)/DeepSeek 批評パス追加 — 技術の最深掘り + 複眼批評（Gemini はオプトインで7者化）
+## Lv8: Lv7 + Codex(high)/DeepSeek 批評パス追加 — 技術の最深掘り + 複眼批評 + 🔴 自動修正 2 周（Gemini はオプトインで7者化）
 
 2026-07 新設。**Lv7（技術レビューの最深掘り）に、Lv3 で確立した批評視点（現場担当者の使い勝手 + あるべき論）を重ねた最重量級レベル**。技術面は Lv7 と完全に同一（Codex medium+high の多重 + DS/Qwen 補助）。そこに **Codex(high) と DeepSeek の2者だけ**、追加で批評レビューを依頼する。
 
@@ -999,11 +1126,22 @@ Step A（実装）→ Step B（検証）→ Step C（Codex 再レビュー・差
 **既定参加者(6者・呼出6本)**: Codex medium(技術) + Codex high(技術) + DeepSeek(技術補助) + Qwen(技術補助) + Codex high(批評) + DeepSeek(批評)
 **Gemini併用時(7者・呼出7本)**: 上記 + Gemini(技術補助)
 
+> ## 🚨 Lv8 のレビュー段は **Workflow 実行が必須**（inline 禁止）
+>
+> **Step 2-8A → 2-8B（関連関数抽出）→ 2-8C（入力準備）→ 2-8C2（WF 起動）→ 2-8E の順で進む。**
+> 下の「Step 2-8D（フォールバック）」の inline 手順は **WF が使えない時だけ**の退避路であり、通常は読まなくてよい。
+>
+> - **Lv8 は全レベル中いちばん Workflow が要る構成**。Codex を 3 回（med技術 + high技術 + high批評）呼ぶため
+>   生出力の合計が最大になり、inline で回すと主 context が 1 回で枯れる
+> - inline で `codex exec` を叩くと **PreToolUse hook (`cgd_wf_gate.py`) が deny する**。
+>   ゲートは Step 1 の `cgd_usage_log.py record --level 8` が自動で張っている
+> - ⚠️ WF が減らすのは主 context の汚染だけで、**Codex のトークン／クォータ消費は減らない**
+
 ### Step 2-8A: レビュー観点を確認
 
 Codex は **medium + high の 2 並列固定**（技術用、Lv7 と同じ）。DS / Qwen は **`--role reviewer` 固定**（技術用）。Codex(high) の批評パスと DeepSeek の `--role critic` は **常時固定**（reasoning level やロールの確認は不要）。
 
-Gemini オプトイン時のみ `AskUserQuestion` で Gemini 観点を聞く: 要約 / 原因特定 / 参考情報収集 / 比較評価（Lv7 と同じ）。
+Gemini オプトイン時の観点は Claude が対象から判断して決める（Lv7 と同じ）。聞かない。
 
 ### Step 2-8B: 関連関数の事前抽出（Claude 本体作業）
 
@@ -1058,7 +1196,34 @@ EOF
 cat <diff-file> >> "C:/tmp-ai/lv8_aux_input.txt"
 ```
 
-### Step 2-8D: 並列起動（既定は **1 メッセージで Bash 6 個**、Gemini併用時7個）
+### Step 2-8C2: Workflow 起動（**正規ルート・必須**）
+
+Step 2-8C の入力ファイルを **ユニークサフィックス付き**にしてから起動する（固定名は他セッションに上書きされる）:
+
+```bash
+RUN=$(date +%Y%m%d_%H%M%S)
+cp "C:/tmp-ai/lv8_codex_input.txt" "C:/tmp-ai/cgd_codex_${RUN}.txt"
+cp "C:/tmp-ai/lv8_aux_input.txt"   "C:/tmp-ai/cgd_aux_${RUN}.txt"
+```
+
+```
+Workflow({ scriptPath: "C:/ClaudeCode/.claude/skills/cgd/workflows/cgd_lv8_review.js",
+           args: { input_path: "C:/tmp-ai/cgd_codex_<RUN>.txt",
+                   aux_input_path: "C:/tmp-ai/cgd_aux_<RUN>.txt",
+                   label: "<対象名>_<RUN>" } })       // Gemini オプトイン時は include_gemini: true を追加
+```
+
+戻り値は **`tech_table_md` と `critic_table_md` の 2 表**（Lv6-WF / Lv7-WF は 1 表なのでここが違う）。批評パスの findings は severity ではなく **困り度（高/中/低）** を持つ。
+完了後は `label` を確認 → 2 表を描画 → 🔴 は `raw_log_paths` で検証 → **Step 2-8E へ**。
+実装（Step A）に進む前にゲートを解除する:
+
+```bash
+python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" disarm
+```
+
+### Step 2-8D（フォールバック）: inline 並列起動 — ⚠️ 通常は使わない
+
+**この節は Workflow が使えない時の退避路。** 使う場合は各コマンド先頭に `CGD_WF_RUN=1` を付けてゲートを意図的に迂回し、**迂回した理由をユーザーに必ず伝えること**。既定は **1 メッセージで Bash 6 個**（Gemini併用時7個）。
 
 ```bash
 # Bash #1（Codex medium — 技術・バランス重視）
@@ -1128,7 +1293,7 @@ cp <相談まとめ.md> "C:/tmp-ai/cgd_lv8_$(date +%Y%m%d_%H%M%S).md"
 
 ### Step 2-8G〜J: 共通フロー実行
 
-Step A（実装）→ Step B（検証）→ Step C（Codex 再レビュー・差分のみ・**medium 単独**）→ **Step C2（🔴 自動修正ループ最大1周・Lv5と同仕様・対象は技術表の🔴のみ）** → Step D（最終まとめ、批評レビュー表も含めて報告）
+Step A（実装）→ Step B（検証）→ Step C（Codex 再レビュー・差分のみ・**medium 単独**）→ **Step C2（🔴 自動修正ループ最大 2 周・対象は技術表の🔴のみ）** → Step D（最終まとめ、批評レビュー表も含めて報告）
 
 **Step C を Codex 多重・批評込みで回さない理由**（Lv7 と同じ判断）:
 - 再レビュー段は差分のみで規模が小さく、medium で十分な深さが出る
@@ -1137,11 +1302,27 @@ Step A（実装）→ Step B（検証）→ Step C（Codex 再レビュー・差
 
 ---
 
-## Workflow 経由実行（Lv6-WF / Lv7-WF）— 主 context 汚染回避の高速版
+## Workflow 経由実行（Lv6-WF / Lv7-WF / Lv8-WF）— **Lv6/Lv7/Lv8 の正規ルート（必須）**
 
-Lv6 / Lv7 の **レビュー段（Step 2-XB の並列レビュー）は Workflow ツールに委譲できる**。Codex high の巨大出力（160KB+）を subagent context に閉じ込め、主 context には構造化 findings + 統合表（数KB）だけ返す方式。
+Lv6 / Lv7 / Lv8 の **レビュー段は Workflow ツールに委譲する（2026-08-05 より必須化）**。Codex high の巨大出力（160KB+）を subagent context に閉じ込め、主 context には構造化 findings + 統合表（数KB）だけ返す方式。
 
-**Lv8-WF は未実装**（2026-07新設のため）。Lv8 は現状インライン実行のみ。Codex 呼出が3回・出力量も多いため主 context 圧迫が Lv7 以上に大きくなりやすく、Lv8-WF は優先度の高い follow-up 候補。
+### 🔒 機械的な強制（cgd_wf_gate.py）
+
+2026-08-05 以前は「WF もある」という任意運用だったが、**1 日で Lv7 が 3 件実行され WF は 0 件**（独立した 2 セッションが同じ間違い）という実績が出たため、hook で強制するようにした。同日、未実装だった **Lv8-WF も新規作成して必須化**した（Codex 3 回で最も出力が大きく、本来いちばん WF が要る構成だった）。
+
+| いつ | 何が起きるか |
+|---|---|
+| Step 1 で `cgd_usage_log.py record --level 6\|7\|8` | `cgd_wf_gate.py arm` が走り、ゲートが張られる（180 分 TTL） |
+| ゲート中に inline の `codex exec` | PreToolUse hook が **deny**。WF 起動コマンド付きの理由が返る |
+| WF 内の agent が codex 起動 | コマンドに `CGD_WF_RUN=1` が前置されているので通過し、**ゲートは自動解除** |
+| WF 完了後・Step A に進む前 | `python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" disarm` を明示実行（Step C の inline 再レビュー用） |
+| 意図的な迂回 | コマンド先頭に `CGD_WF_RUN=1` を付ける。**迂回理由をユーザーに必ず伝える** |
+
+状態確認は `python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" status`。ゲート機構は常に fail-open（不調でも cgd 本体は止めない）。
+
+### ⚠️ WF が減らすのは context であってトークンではない
+
+WF は **主 context への流入を約 94% 削減**するが、**Codex 側のトークン／クォータ消費は 1 円も減らない**。実測では入力 5.4KB のレビューでも 103,686 tokens 消費しており、**入力サイズとトークン消費に相関がない**（膨張の主因は `--sandbox read-only` での repo 探索）。トークン消費を抑えたい場合は WF ではなく、**対象ファイルを列挙して探索範囲を絞る**方向で手当てする。`.bak_*` が大量にあるディレクトリを読ませると特に膨張する。
 
 **実測効果**（pickorder ScanCheck 差分で検証済・当時は Gemini 込み4者構成での計測。3者既定でも縮小率の傾向は同様）:
 - 4者の生出力 計 **210KB**（うち Codex 198KB）が subagent 内に閉じ、主 context 流入は **約12KB**（**94%削減**）
@@ -1154,18 +1335,19 @@ Lv6 / Lv7 の **レビュー段（Step 2-XB の並列レビュー）は Workflow
 |---|---|---|
 | Lv6-WF | `.claude/skills/cgd/workflows/cgd_lv6_review.js` | 既定 Codex+DS+Qwen 3者並列 → 5列表（`include_gemini:true` で Gemini 追加・4者・6列表） |
 | Lv7-WF | `.claude/skills/cgd/workflows/cgd_lv7_review.js` | 既定 Codex(med)+Codex(high)+DS+Qwen 4者並列 → 収束/乖離判定 → 6列表（`include_gemini:true` で Gemini 追加・5者・7列表） |
+| Lv8-WF | `.claude/skills/cgd/workflows/cgd_lv8_review.js` | 既定 6者並列（技術4 = Lv7 と同一 + 批評2 = Codex(high)/DS critic）→ **技術表 + 批評表の2表**（`include_gemini:true` で7者）|
 
 ### 責務分割（重要）
 
 | 主 context が担当 | Workflow が担当 |
 |---|---|
-| Step 1 レベル選択（AskUserQuestion） | 並列レビュー段（agent が内部で codex/gemini/python 起動） |
+| Step 1 レベル決定（Claude が自動選択・宣言） | 並列レビュー段（agent が内部で codex/gemini/python 起動） |
 | レビュー入力ファイルの準備（差分+背景） | 生出力を subagent に閉じ込め → 構造化 findings に圧縮 |
 | Lv7: 関連関数の事前抽出（grep+Read） | 認証エラー/欠員チェック（全員成功で次段） |
 | 完了後の table_md 描画・🔴 採否判断 | 収束/乖離判定 + 統合表生成 |
 | 実装許可（AskUserQuestion）と **Step A〜D の実行** | 生ログを `C:/tmp-ai/cgd_raw_*.md` に保存しパス返却 |
 
-**AskUserQuestion は workflow 内で使えない**ため、レベル選択・実装許可・Step D 確認は主 context に残す。**Step A（実装）/B（検証）/C（再レビュー）/C2（自動修正）は当面 主 context 実行**（AGENTS.md 規約の対話的監査が必要なため。将来 implement_and_fix workflow 化を検討）。
+**AskUserQuestion は workflow 内で使えない**ため、レベル決定・実装許可・Step D 確認は主 context に残す（レベル決定は自動なので実質 AskUserQuestion は実装許可のみ）。**Step A（実装）/B（検証）/C（再レビュー）/C2（自動修正）は当面 主 context 実行**（AGENTS.md 規約の対話的監査が必要なため。将来 implement_and_fix workflow 化を検討）。
 
 ### 起動手順（ユニーク名方式・衝突回避）
 
@@ -1234,7 +1416,7 @@ Lv7-WF 実走で **3連鎖事故** が起きた。**起動前後の確認を怠�
 
 - **Lv1-3**: workflow 化しない（元々 30-50KB と軽量・overhead が見合わない）
 - **Lv4-5**: 当面インライン（直列相談段の pipeline 化は将来課題）
-- **Lv6-7**: review 段を workflow 化推奨（主 context 圧迫の主要因がここ）
+- **Lv6-8**: review 段の workflow 化は **必須**（主 context 圧迫の主要因がここ。Lv8 は Codex 3 回で最も重い）
 
 ---
 
@@ -1248,24 +1430,24 @@ critic は **Lv に組み込まず、Lv と直交するオプション**。技�
 
 **起動契機（3通り）**:
 - ユーザーが「辛口で」「ユーザー視点で」「あるべき論で」「現場目線で」「critic」等を指示 → 即有効
-- Step 1 のレベル選択時に「critic 観点も追加するか」を確認（既定オフ）
-- **Claude からの自動提案 → ユーザーが OK したら実行**（下記）。**勝手に実行しない・提案止まり**
+- Step 1 の強度決定と同時に **Claude が要否を判断して自動で有効化する**（既定オフ・**ユーザーに聞かない**）
+- 有効にした場合は宣言に含める（例: `Lv4 ／ critic: あり（現場担当者が触る画面のため）`）
 
-**Claude が critic を自動提案すべきタイミング**:
-以下を検知したら **AskUserQuestion で「技術面とは別に critic（辛口ユーザー視点+あるべき論）でも見ておきますか？」と一度だけ提案**する:
+**Claude が critic を自動で有効にするタイミング**:
+以下を検知したら **聞かずに critic 観点を追加**する:
 1. **実装前の仕様・設計の検討**（最重要 — 手戻り防止効果が最大。作る前に「使えるか/あるべきか」を潰す）
 2. **新機能・UI・画面・操作フローの追加/変更**（現場担当者・エンドユーザーが触る部分）
 3. **ユーザー向けメッセージ・エラー文言・確認ダイアログの追加/変更**
 4. 技術レビュー（Lv6/Lv7 等）が「ほぼ問題なし」だったが、ユーザーが実際に使う機能の場合（「動くが使えるか」の最終チェック）
 
-**自動提案しない（critic 不要）ケース**:
+**critic を追加しないケース**:
 - 純粋なバグ修正・内部リファクタ・ロジックのみの変更（UX に関わらない）
 - ライブラリ更新・設定変更・テスト追加など、ユーザー操作に影響しない作業
 
-**提案の作法**:
-- 提案は **AskUserQuestion でクリック選択**（例: 「critic も実行 / 不要」）。テキストで「やりますか？」と聞かない
-- ユーザーが OK → critic 実行（Claude 本体 + DS critic）。不要 → スキップして本来の作業を続行
-- **しつこく繰り返さない**（1 タスクにつき提案は原則 1 回。断られたら同一タスク中は再提案しない）
+**作法**:
+- 有効/無効どちらでも **宣言に 1 語で明示**する（黙って足さない・黙って省かない）
+- ユーザーが「critic は要らない」と言ったら **同一タスク中は二度と付けない**
+- 逆に「辛口で」「ユーザー視点で」等の明示指示があれば、上の基準に関係なく必ず付ける
 
 **使えるフェーズ**: 仕様評価（実装前）・コードレビュー（実装後）・単独、どこでも（Lv と直交）。最も価値が高いのは **実装前**。
 
@@ -1535,7 +1717,20 @@ Bash 並列起動の各段の `$?` を確認し、**1 つでも非 0 が出た�
 
 ## トラブルシュート
 
+> ### 📝 不具合に気づいたら「その場で直す」前に台帳へ 1 行
+>
+> Codex/DS/Qwen/Gemini・Claude Code ハーネス側の不具合は、**セッションごとにその場で対処すると知見が消える**（同じ日に別セッションが同じ罠を踏んでも気づけない）。緊急でなければ **記録だけして先へ進み**、後日 `/incidents` の専用セッションでまとめて解析する:
+>
+> ```bash
+> python "C:/ClaudeCode/.claude/tools/incident_log.py" add --tool codex --category token \
+>   --severity high --title "<1行要約>" --detail "<観測値・再現条件・仮説>" --evidence "<証拠パス>"
+> ```
+>
+> 外部 AI 呼出のトークン数・出力サイズは `ai_telemetry.py` hook が自動記録しているので、**数字は台帳に手写ししなくてよい**（`incident_log.py report` で突き合わせられる）。
+
 - **Lv2/4/6/7 で Gemini が呼ばれない/表に出てこない** → **意図的な既定動作**（2026-07にオプトイン化）。「Geminiも」等を明示すれば追加参加する
+- **`[cgd wf-gate] Lv7 は Workflow 実行が必須です` で codex が deny された** → 正常な動作。inline ではなく Workflow で実行する（「Workflow 経由実行」節）。WF 完了後に `cgd_wf_gate.py disarm` を忘れると Step C の再レビューも弾かれる
+- **codex を実行していないのに deny された** → ゲートは「コマンドとして起動される位置」（行頭 / `&&` `;` `|` の直後 / 環境変数代入の直後）の `codex exec` だけを見るので、`grep "codex exec"` やコミットメッセージ内の文字列では発火しない。ただし **heredoc の本文に `codex exec` で始まる行がある**（手順書を `cat > f <<'EOF'` で書く等）と発火しうる。その場合は `cgd_wf_gate.py disarm` するか、コマンド先頭に `CGD_WF_RUN=1` を付ける
 - **DS/Qwen が「本文が空です(finish_reason=length)」で exit 1** → 推論だけで出力予算を使い切った。
   `--max-tokens` を上げて再実行する(既定 32000 / API は 65536 まで受理を実測済み)。
   入力が大きいときは対象を分割する方が確実

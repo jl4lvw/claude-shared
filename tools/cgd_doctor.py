@@ -15,7 +15,7 @@ Antigravity の doctor コマンドに相当する位置づけ（Zenn 記事か�
     - advisor スクリプト存在
     - C:/tmp-ai 書込権限
     - SKILL.md の SKILL_VERSION スタンプ
-    - Lv6-WF / Lv7-WF workflow スクリプト存在
+    - Lv6-WF / Lv7-WF / Lv8-WF workflow スクリプト存在
 
 --probe 追加（実費発生・既定オフ）:
     - 各 API に 16 token 程度の最小プロンプトを送って exit code を確認
@@ -147,12 +147,12 @@ def check_skill_version() -> Result:
 
 def check_workflows() -> list[Result]:
     out: list[Result] = []
-    for name in ("cgd_lv6_review.js", "cgd_lv7_review.js"):
+    for name in ("cgd_lv6_review.js", "cgd_lv7_review.js", "cgd_lv8_review.js"):
         p = WORKFLOWS_DIR / name
         if p.exists():
             out.append((OK, f"workflows/{name}", "存在"))
         else:
-            out.append((WARN, f"workflows/{name}", "不在 (Lv6-WF / Lv7-WF 使用不可)"))
+            out.append((WARN, f"workflows/{name}", "不在 (該当レベルの WF 実行が不可)"))
     return out
 
 

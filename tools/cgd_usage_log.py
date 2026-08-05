@@ -11,6 +11,10 @@
 設計方針:
 - record は「本流を絶対に止めない」。DB 書込に失敗しても例外を投げず WARN を stderr に出して
   exit 0 で終わる（利用ログはあくまで副次的な計測であり、cgd 本体の実行を左右してはならない）。
+- ただし Lv6/Lv7/Lv8 のときだけは副作用が1つある: `.claude/hooks/cgd_wf_gate.py arm` を呼んで
+  「inline の codex exec を遮断するゲート」を張る（2026-08-05 追加）。Lv6/Lv7/Lv8 は Workflow 実行が
+  必須だが、SKILL.md の導線だけでは守られなかった実績があるため機械的に強制する。
+  ゲート設定の失敗も本流を止めない（fail-open）。
 - report は集計結果を人間可読テキストで stdout に返す（他ツールからの呼出しは想定しない・
   必要になれば --json を後で足せばよい、という程度の割り切り）。
 """
@@ -19,13 +23,42 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 
 DB_PATH: Path = Path(__file__).parent / "cgd_usage.sqlite3"
 
-VALID_LEVELS = tuple(range(0, 8))  # Lv0-7
+VALID_LEVELS = tuple(range(0, 9))  # Lv0-8
+
+# Workflow 実行が必須のレベル。record 時に inline 遮断ゲートを張る。
+# 2026-08-05: Lv8 も追加 (Codex 3 回・出力量が最大なので本来いちばん WF が要る)。
+WF_REQUIRED_LEVELS = (6, 7, 8)
+GATE_SCRIPT: Path = Path(__file__).parent.parent / "hooks" / "cgd_wf_gate.py"
+
+
+def _arm_wf_gate(level: int) -> None:
+    """Lv6/Lv7/Lv8 のとき inline codex 遮断ゲートを張る。失敗しても本流は止めない。"""
+    if level not in WF_REQUIRED_LEVELS:
+        return
+    if not GATE_SCRIPT.is_file():
+        print(f"[cgd usage] WARN: {GATE_SCRIPT.name} が見つからずゲート未設定（/g-dl 未実施か）", file=sys.stderr)
+        return
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(GATE_SCRIPT), "arm", "--level", str(level)],
+            capture_output=True,
+            # text=True だけだと Windows の既定ロケール (CP932) で子プロセスの
+            # 日本語出力をデコードして UnicodeDecodeError になる。必ず明示する。
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"[cgd usage] WARN: ゲート設定に失敗（本流には影響しません）: {exc}", file=sys.stderr)
+        return
+    print((proc.stdout or proc.stderr or "").strip(), file=sys.stderr)
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -57,6 +90,8 @@ def record_usage(
     if level not in VALID_LEVELS:
         print(f"[cgd usage] WARN: 未知の level '{level}' のため記録をスキップ", file=sys.stderr)
         return False
+    # ゲートは DB 書込より先に張る（DB が落ちていても強制は効かせる）
+    _arm_wf_gate(level)
     logged_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
         conn = _connect(db_path)

@@ -49,7 +49,7 @@ echo ""
 
 # ----- [1/3] .claude/ vs claude-shared/ (mirror gap) -----
 echo "--- [1/3] .claude/ vs claude-shared/ (ミラー差分) ---"
-TARGETS="skills commands tools rules memory hooks"
+TARGETS="skills commands tools rules memory hooks incidents"
 DIFF_FOUND=0
 # /g-ul / /g-dl と同じ除外パターンに揃える
 # robocopy /XD __pycache__ .bootstrap-bak-* .migrate-pending-*
@@ -74,7 +74,7 @@ for t in $TARGETS; do
         | grep -v '\.migrate-pending-' \
         | grep -v '\.bak_' \
         | grep -v '\.pyc' \
-        | grep -v 'deepseek_usage_session\.json')
+        | grep -v 'deepseek_usage_session\.json' \n        | grep -v 'telemetry\.jsonl')
     if [ -n "$diff_out" ]; then
         count=$(echo "$diff_out" | wc -l)
         echo "  $t : $count entries differ"
