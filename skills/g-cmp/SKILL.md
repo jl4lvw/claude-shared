@@ -224,3 +224,12 @@ fi
 - 差分検出は `diff -rq` + grep 除外で行う。robocopy `/L /MIR` と機能的に等価（`__pycache__`, `.bootstrap-bak-*`, `.migrate-pending-*`, `*.bak_*`, `*.pyc`, `.deepseek_usage_session.json` を除外）
 - `cygpath -u` が利用できない環境向けに sed フォールバックを用意
 - PowerShell ツールが exit code 1 で出力を返さない環境（Claude Code の特定セッション）が報告されているため、本スキルは Bash 単独運用に統一
+
+## 事後検証には verify_sync.py を使う
+
+本スキルは**目視確認用**の一覧表示。反映されたかどうかを機械判定したいときは
+`/g-ul` の Step 3 と同じツールを使う（不一致なら非0で落ちる）。
+
+```
+python "C:/ClaudeCode/.claude/tools/verify_sync.py"
+```

@@ -204,3 +204,11 @@ python "C:/ClaudeCode/.claude/tools/install_hooks.py"
 - 対策: すべてのスラッシュオプションを `//MIR //NFL //XD ...` のダブルスラッシュで escape する
 - パスは `cygpath -w` で Windows 形式（`C:\path\to`）に変換してから robocopy に渡す
 - 過去に PowerShell ツールが exit code 1 で出力ゼロになる環境が確認されたため、本スキルは Bash 単独運用に統一
+
+## 取り込み後の検証（推奨）
+
+`/g-dl` の後も、取り込みが実際に効いたかは `verify_sync.py` で確認できる。
+
+```
+python "C:/ClaudeCode/.claude/tools/verify_sync.py"
+```
