@@ -1,8 +1,8 @@
 ---
 name: cgd
-description: Codex+DeepSeek+Qwen の統合コードレビュー・設計相談・実装・委譲・検証スキル（**Gemini は2026-07にAPIエラー多発のため既定オフのオプトイン参加に格下げ済み**）。**9段階レベル（Lv0〜Lv8）**でトークン消費・所要時間・実装主体が決まる。**レベル・Codex reasoning(low/medium/high)・Gemini/critic観点はすべてClaudeが対象から自動選択して宣言する（ユーザーに選ばせない・明示指示が最優先）**。**Lv0=委譲レーン**（DS/Qwenにコード生成を任せClaudeは分解と検証に専念・scaffold/量産タスク/コスト節約・Antigravity Plugin相当） / Lv1=Codex単独 / Lv2=Codex+DeepSeek並列（既定推奨。旧/codex等価のC+G構成は「Geminiも」等の明示指示で再現可） / Lv3=Codex+DeepSeekの技術×批評「2社×2視点」4レビュー（実装なし・review専用） / Lv4=Claude初期案→[DS+Qwen並列advisor]→Codex直列フル相談+再レビュー（Gemini併用時は先頭にGemini案出しが直列で入る） / Lv5=Lv4+🔴重大指摘の自動修正1周 / Lv6=Codex+DS+Qwen 3者並列レビュー（全員reviewer役、Gemini併用で4者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周（**Workflow実行必須**） / Lv7=Codex多重(medium+high)+補助(DS/Qwen)の4者並列「Codex集中」構成（Gemini併用で5者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正**2周**（最深掘り・**Workflow実行必須**） / Lv8=Lv7の技術構成そのまま+Codex(high)とDeepSeekにLv3同様の批評視点を追加した6者並列（Gemini併用で7者）+実装+検証+Codex再レビュー+🔴自動修正**2周**（技術の最深掘り+複眼批評、最重量級・**Workflow実行必須**）。Lv0=実装主体の切替（コストレーン）、Lv1-8=レビュー強度の選択（品質レーン）で直交。Lv4-5はDS/Qwenをadvisor役で別案出し、Lv6は横並びreviewer、Lv7は深いintegrationバグ検出を狙ってCodex多重化+DS/Qwenに関連関数抜粋を渡して補助役を強化。差分レビュー、設計判断、別案出し、実装、委譲、検証まで一気通貫。**旧 `/codex` `/gemini` 単体スキルは廃止され、本スキル（`/cgd` または `/codex` 起動）が必ずレベル自動決定から始まる**。全Lv共通の任意オプションで『critic観点』（辛口ユーザー視点＝ITに疎い現場担当者の使い勝手の不満 + あるべき論＝本来この仕様はどうあるべきかの批判を Claude本体+DS criticで評価）を追加でき、技術的正しさとは別軸で使い勝手・仕様の妥当性を否定的にチェックする。環境チェックは `python C:/ClaudeCode/.claude/tools/cgd_doctor.py` で一括。「委譲」「scaffold」「量産」「DSで書かせる」「Qwenで書かせる」「コスト節約」「3者に相談」「フルパイプ」「4者レビュー」「Codex多重」「Codex集中」「辛口レビュー」「ユーザー視点」「あるべき論」「critic」「cgd」「Codexにレビュー」「セカンドオピニオン」「C+G」「cg」「Geminiも」などのキーワードで起動。重要な設計判断・難しいバグ・大きめのリファクタの検討時には積極的に提案すること。既存 /generate-by-deepseek（DS単発コード生成→Claudeレビュー）は薄い構成で並立。
+description: Codex+DeepSeek+Qwen の統合コードレビュー・設計相談・実装・委譲・検証スキル（**Gemini は2026-07にAPIエラー多発のため既定オフのオプトイン参加に格下げ済み**）。**9段階レベル（Lv0〜Lv8）**でトークン消費・所要時間・実装主体が決まる。**レベル・Codex reasoning(low/medium/high)・Gemini/critic観点はすべてClaudeが対象から自動選択して宣言する（ユーザーに選ばせない・明示指示が最優先）**。**Lv0=委譲レーン**（DS/Qwenにコード生成を任せClaudeは分解と検証に専念・scaffold/量産タスク/コスト節約・Antigravity Plugin相当） / Lv1=Codex単独 / Lv2=Codex+DeepSeek並列（既定推奨。旧/codex等価のC+G構成は「Geminiも」等の明示指示で再現可） / Lv3=Codex+DeepSeekの技術×批評「2社×2視点」4レビュー（実装なし・review専用） / Lv4=Claude初期案→[DS+Qwen並列advisor]→Codex直列フル相談+再レビュー（Gemini併用時は先頭にGemini案出しが直列で入る） / Lv5=Lv4+🔴重大指摘の自動修正1周 / Lv6=Codex+DS+Qwen 3者並列レビュー（全員reviewer役、Gemini併用で4者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周（**Workflow実行必須**） / Lv7=Codex多重(medium+high)+補助(DS/Qwen)の4者並列「Codex集中」構成（Gemini併用で5者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周（最深掘り・**Workflow実行必須**） / Lv8=Lv7の技術構成そのまま+Codex(high)とDeepSeekにLv3同様の批評視点を追加した6者並列（Gemini併用で7者）+実装+検証+Codex再レビュー+🔴自動修正1周（技術の最深掘り+複眼批評、最重量級・**Workflow実行必須**）。Lv0=実装主体の切替（コストレーン）、Lv1-8=レビュー強度の選択（品質レーン）で直交。Lv4-5はDS/Qwenをadvisor役で別案出し、Lv6は横並びreviewer、Lv7は深いintegrationバグ検出を狙ってCodex多重化+DS/Qwenに関連関数抜粋を渡して補助役を強化。差分レビュー、設計判断、別案出し、実装、委譲、検証まで一気通貫。**旧 `/codex` `/gemini` 単体スキルは廃止され、本スキル（`/cgd` または `/codex` 起動）が必ずレベル自動決定から始まる**。全Lv共通の任意オプションで『critic観点』（辛口ユーザー視点＝ITに疎い現場担当者の使い勝手の不満 + あるべき論＝本来この仕様はどうあるべきかの批判を Claude本体+DS criticで評価）を追加でき、技術的正しさとは別軸で使い勝手・仕様の妥当性を否定的にチェックする。環境チェックは `python C:/ClaudeCode/.claude/tools/cgd_doctor.py` で一括。「委譲」「scaffold」「量産」「DSで書かせる」「Qwenで書かせる」「コスト節約」「3者に相談」「フルパイプ」「4者レビュー」「Codex多重」「Codex集中」「辛口レビュー」「ユーザー視点」「あるべき論」「critic」「cgd」「Codexにレビュー」「セカンドオピニオン」「C+G」「cg」「Geminiも」などのキーワードで起動。重要な設計判断・難しいバグ・大きめのリファクタの検討時には積極的に提案すること。既存 /generate-by-deepseek（DS単発コード生成→Claudeレビュー）は薄い構成で並立。
 ---
-<!-- SKILL_VERSION: 2026-08-05_214817 -->
+<!-- SKILL_VERSION: 2026-08-05_223324 -->
 
 # cgd — Codex + DeepSeek + Qwen 統合スキル（Lv0〜8、Gemini はオプトイン）
 
@@ -112,6 +112,7 @@ python C:/ClaudeCode/.claude/tools/cgd_doctor.py --probe    # 各 API に最小�
 - `--probe` は数円程度の実費（DS/Qwen が従量課金）。鍵を初めて入れた直後 / 認証が怪しい時のみ推奨
 - doctor 自体が ❌ を 1 件でも出すと exit 1（OK は exit 0）。`/cgd` を回す前のヘルスチェックに使える
 - 通常運用ではスキップして Step 1 へ。「使えるはずなのに認証エラー」が出たら戻ってきて回す
+- ⚠️ **doctor は Step 1 より前に回すこと**。Lv6/7/8 を選ぶと WF 必須ゲートが張られ、doctor が叩く `codex login status` も遮断される（ゲート中は codex に触れるコマンドを一律止めるため）。ゲート中に回したい場合は先に `cgd_wf_gate.py disarm` する
 
 ---
 
@@ -170,8 +171,8 @@ python C:/ClaudeCode/.claude/tools/cgd_doctor.py --probe    # 各 API に最小�
 4. Lv4 — [DS+Qwen 並列 advisor]→Codex 直列フル相談 + 実装後 Codex 再レビュー ×1（高リスク変更・設計判断・本番影響大。Gemini併用で先頭にGemini案出しが追加）
 5. Lv5 — Lv4 + 🔴 重大指摘の自動修正 1 周（Codex 再レビュー計 ×2、改善なしで停止）（リリース直前・障害再発防止）
 6. Lv6 — **【Workflow 実行必須】** Codex + DS + Qwen の 3 者並列レビュー（全員 reviewer 役、advisor 段廃止） + 実装 + 検証 + Codex 再レビュー + 🔴 自動修正 1 周（最重量級・複眼レビューで盲点を潰したい・Lv4-5 で DS/Qwen 別案が機能しない対象の代替。Gemini併用で4者に拡張可）
-7. Lv7 — **【Workflow 実行必須】** **Codex 多重（medium + high）** + DS + Qwen の **4 者並列「Codex 集中」レビュー** + 実装 + 検証 + Codex 再レビュー + 🔴 自動修正 2 周（最深掘り・integration バグ重視・関数間整合性・大規模 IIFE/モジュール内のクロスリファレンス検査。Gemini併用で5者に拡張可）
-8. Lv8 — **【Workflow 実行必須】** Lv7 の技術構成そのまま + **Codex(high) と DeepSeek に批評視点を追加**した **6 者並列** + 実装 + 検証 + Codex 再レビュー + 🔴 自動修正 2 周（最重量級・技術の最深掘りと Lv3 相当の複眼批評を同時に欲しい時。Gemini併用で7者に拡張可）
+7. Lv7 — **【Workflow 実行必須】** **Codex 多重（medium + high）** + DS + Qwen の **4 者並列「Codex 集中」レビュー** + 実装 + 検証 + Codex 再レビュー + 🔴 自動修正 1 周（最深掘り・integration バグ重視・関数間整合性・大規模 IIFE/モジュール内のクロスリファレンス検査。Gemini併用で5者に拡張可）
+8. Lv8 — **【Workflow 実行必須】** Lv7 の技術構成そのまま + **Codex(high) と DeepSeek に批評視点を追加**した **6 者並列** + 実装 + 検証 + Codex 再レビュー + 🔴 自動修正 1 周（最重量級・技術の最深掘りと Lv3 相当の複眼批評を同時に欲しい時。Gemini併用で7者に拡張可）
 ```
 
 </details>
@@ -224,7 +225,7 @@ python "C:/ClaudeCode/.claude/tools/cgd_usage_log.py" record --level <0-8> [--ge
 4. **明白な論理バグ** — テストで検出可能な失敗パス・既知の例外を握り潰す等
 5. **Integration バグ** (Lv7 / Lv8 で特に重視) — 関数間の暗黙の前提違反・スコープを跨いだ状態管理の整合性破綻・呼出経路ごとの副作用差異
 
-自動修正の周回上限は Lv5 / Lv6 が 1 周、**Lv7 / Lv8 は 2 周**（後述 Step C2）。これら以外は 🟠 重要 / 🟡 注意とし、自動修正ループの対象外（Lv5 / Lv6 / Lv7 / Lv8 でもユーザー判断扱い。Lv8 の批評レビュー指摘は severity を持たないため常にこの扱い）。
+自動修正の周回上限は **Lv5〜Lv8 とも 1 周**（後述 Step C2）。これら以外は 🟠 重要 / 🟡 注意とし、自動修正ループの対象外（Lv5 / Lv6 / Lv7 / Lv8 でもユーザー判断扱い。Lv8 の批評レビュー指摘は severity を持たないため常にこの扱い）。
 
 ---
 
@@ -237,8 +238,8 @@ python "C:/ClaudeCode/.claude/tools/cgd_usage_log.py" record --level <0-8> [--ge
 | 4 | Step A に戻り 1 回まで自動修正→再検証 | 報告のみ（Step C2 自動修正なし） |
 | 5 | 同上 | Step C2 で 1 周まで自動修正→再レビュー（改善なしで停止＋ユーザー判断必須） |
 | 6 | 同上 | Step C2 で 1 周まで自動修正→再レビュー（Lv5 と同仕様） |
-| 7 | 同上 | Step C2 で **2 周**まで自動修正→再レビュー（再レビューは Codex 多重ではなく medium 単独） |
-| 8 | 同上 | Step C2 で **2 周**まで自動修正→再レビュー（Lv7 と同仕様・対象は技術表の🔴のみ、批評レビューの指摘は対象外） |
+| 7 | 同上 | Step C2 で 1 周まで自動修正→再レビュー（再レビューは Codex 多重ではなく medium 単独） |
+| 8 | 同上 | Step C2 で 1 周まで自動修正→再レビュー（Lv7 と同仕様・対象は技術表の🔴のみ、批評レビューの指摘は対象外） |
 
 ---
 
@@ -756,7 +757,7 @@ Step A（実装）→ Step B（検証）→ Step C（Codex 再レビュー・差
 
 Step 2-4A〜H までは Lv4 と同一。Step C の後に **Step C2** を追加。
 
-### Step C2: 🔴 重大指摘の自動修正ループ（Lv5〜Lv8・**上限はレベルで変わる**）
+### Step C2: 🔴 重大指摘の自動修正ループ（Lv5〜Lv8 共通・**最大 1 周**）
 
 Step C の表で **🔴 重大指摘**（前述定義に該当）が 1 つ以上 ✅採用 になった場合のみ実行:
 
@@ -764,27 +765,30 @@ Step C の表で **🔴 重大指摘**（前述定義に該当）が 1 つ以上
 2. Step B（検証）を再実行
 3. Step C（Codex 再レビュー）を再実行
 
-**周回上限（レベル別）**:
+> **周回数の経緯（2026-08-05）**: 一度 Lv7 / Lv8 を 2 周に引き上げたが、Lv8 セルフレビューの批評パスから
+> 「**1 周で足りないというデータが無いまま決めている**」「収束条件も安全弁も無いまま周回だけ増やすと事故が 2 倍になる」
+> と指摘され、**1 周に差し戻した**。テレメトリで実測できる状態になったので、
+> 「1 周で収束しなかった回」が積み上がってから上げ直す。
 
-| Lv | 上限 | 理由 |
-|---|---|---|
-| Lv5 / Lv6 | **1 周** | 中量級。1 周で収束しないなら人が見るべき |
-| **Lv7 / Lv8** | **2 周** | 最深掘り構成。integration バグは 1 周目の修正で別の前提を崩し、2 周目で初めて収束することがある。ここまで重い構成を選んだ以上、1 周で人に投げ返すより自動で追い込む方が期待に合う |
-
-**安全弁（全レベル共通）**:
-- **同じ🔴指摘が再発した（改善なし）** 場合は、上限に達していなくても **即座に停止**してユーザー判断を仰ぐ（回しても直らないものは回数を増やしても直らない）
-- **新しい🔴が出た場合**は、上限内なら次の周に進んでよい（Lv7 / Lv8 のみ。Lv5 / Lv6 は 1 周で打ち止めなので停止）
-- 上限に達したら必ず停止。**3 周目以降は絶対に自動で回さない**
+**安全弁**:
+- 自動で回す上限は **1 周まで**。**2 周目以降は絶対に自動で回さない**
+- 1 周回しても **同じ🔴指摘が再発した（改善なし）** 場合は **即座に停止**してユーザー判断を仰ぐ
+- 別の新しい🔴が出た場合も **2 周目には進まず**ユーザー判断を仰ぐ
 - 🟠 重要 / 🟡 注意のみの場合は自動ループせず、Step D の「未対応指摘」に記載
 - Lv8 で自動修正の対象になるのは **技術レビュー表の 🔴 のみ**（批評レビュー表の指摘は困り度ベースで severity を持たないため対象外）
 
-**周回ごとにユーザーへ 1 行報告する**（黙って 2 周回さない）:
-> 例: `🔴 2 件のうち 1 件が解消。残り 1 件を 2 周目で修正します（Lv7・上限 2 周）`
+**「同じ🔴か」の判定**: 指摘文の表現一致で判定しない（言い回しが変わるだけで別物扱いになり安全弁が効かない）。
+**`location`（file:line）+ 指摘の対象箇所**で同一性を見る。
 
-**停止時の報告内容**（1〜3 行）:
-1. 何周回したか（上限は何周だったか）
-2. どの🔴が解消され、どれが残ったか
-3. なぜ自動継続をやめたか（改善なし / 上限到達）
+**周回の記録（省略禁止）**: 自動修正を回したら、Step D の報告に必ず次を書く:
+
+| 項目 | 例 |
+|---|---|
+| 1 周目で解消した 🔴 | 2 件中 1 件 |
+| 残った 🔴 | 1 件（location 付き） |
+| 停止理由 | 改善なし / 新規🔴 / 上限到達 |
+
+この記録が「1 周で足りているのか」を後から判断する材料になる。**周回数を上げ直すのはこのデータが溜まってから。**
 
 ---
 
@@ -816,6 +820,7 @@ DS / Qwen は両者とも `--role reviewer` 固定で呼び出す（advisor と�
 
 ```bash
 RUN=$(date +%Y%m%d_%H%M%S)
+NONCE=$(python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" nonce)   # ゲート通過用（必須）
 cat > "C:/tmp-ai/cgd_in_${RUN}.txt" <<'EOF'
 <差分 + 背景 + 評価観点 + 対象ファイル絶対パス>
 EOF
@@ -824,7 +829,7 @@ EOF
 ```
 Workflow({ scriptPath: "C:/ClaudeCode/.claude/skills/cgd/workflows/cgd_lv6_review.js",
            args: { input_path: "C:/tmp-ai/cgd_in_<RUN>.txt", codex_reasoning: "<low|medium|high>",
-                   label: "<対象名>_<RUN>" } })       // Gemini オプトイン時は include_gemini: true を追加
+                   label: "<対象名>_<RUN>", wf_nonce: "<nonce>" } })       // Gemini オプトイン時は include_gemini: true を追加
 ```
 
 完了後は戻り値の `label` を確認 → `table_md` を描画 → 🔴 は `raw_log_paths` で検証（後述ガード）→ **Step 2-6C へ**。
@@ -847,6 +852,9 @@ cat > "C:/tmp-ai/review_input.txt" <<'EOF'
 以下の差分／実装をレビューしてください。
 バグ・設計上の懸念・セキュリティ・副作用・既存仕様との整合性を厳密に評価してください。
 日本語で回答。AGENTS.md / CLAUDE.md がある場合はそれに従う。
+
+[探索の上限 — 必須]
+追加で開いてよい実ファイルは**最大5個まで**。超えるなら読まずに「情報不足: <欲しいファイル>」と書いて終えること（探索1回で約3,000トークン消費するため）。
 
 [対象（絶対パスまたは内容）]
 <差分内容または絶対パス>
@@ -924,7 +932,7 @@ Step C2 の自動修正ループは **Lv5 の Step C2 セクションをその�
 
 ---
 
-## Lv7: Codex 集中 (medium + high 多重) + 補助 (DS/Qwen) 4 者並列レビュー + 実装 + 検証 + Codex 再レビュー + 🔴 自動修正 2 周（Gemini はオプトインで5者化）
+## Lv7: Codex 集中 (medium + high 多重) + 補助 (DS/Qwen) 4 者並列レビュー + 実装 + 検証 + Codex 再レビュー + 🔴 自動修正 1 周（Gemini はオプトインで5者化）
 
 Lv6 動作テストの観察知見から派生した **最深掘り構成**。Lv6 は「横並びレビュー」だが、実運用で **Codex が integration バグ（関数間の暗黙の前提違反・スコープを跨いだ状態管理破綻）の単独検出に圧倒的に強い**（sandbox read-only でファイル全体を探索できる）一方、DS/Qwen の reviewer は diff だけだと表層的になりがちだった。Lv7 はこのアンバランスを **Codex を medium と high で多重化** して底上げし、DS/Qwen には **関連関数を Claude が事前抽出して** 渡して補助役の質を上げる。既定は Codex×2+DS+Qwen の4者。Gemini は「Geminiも」「5者で」等の明示指示があった時だけ5者目の補助として追加する。
 
@@ -979,19 +987,37 @@ cat > "C:/tmp-ai/lv7_codex_input.txt" <<'EOF'
 バグ・設計上の懸念・セキュリティ・副作用・既存仕様との整合性、特に
 **関数間の integration バグ**（暗黙の前提違反・スコープを跨いだ状態管理破綻・
 呼出経路ごとの副作用差異・catch ブロックでの throw 握り潰し等）を重点的に評価してください。
-必要に応じて対象ファイルを直接読んで確認してください。
 日本語で回答。AGENTS.md / CLAUDE.md がある場合はそれに従う。
 
+[探索の上限 — 必須]
+**関連関数の抜粋は下に同梱済みです。** 追加で開いてよい実ファイルは **最大 5 個まで**。
+それを超えて必要になったら、読み進めずに「**情報不足: <欲しいファイル/関数>**」と書いて
+その指摘を終えてください（Claude 側が次のラウンドで抜粋を追加します）。
+
+理由（実測）: Codex の消費は `14,000 + 0.75×入力バイト + 約3,000×探索回数` で近似できます。
+入力 5.4KB のレビューで 29 回探索し 103,686 トークン使った実例があり、
+探索が全体の 8 割を占めていました。上限に達したら「足りない」と言う方が、
+黙って読み続けるより有用です。
+
 [対象ファイル絶対パス]
-<絶対パス>  ← 関数定義は自分で grep+Read してよい
+<絶対パス>
 
 [変更概要]
 <1〜3 行>
+
+[関連関数抜粋 (Claude が事前抽出・Step 2-7B の成果物)]
+EOF
+cat "C:/tmp-ai/lv7_related_funcs.txt" >> "C:/tmp-ai/lv7_codex_input.txt"
+cat >> "C:/tmp-ai/lv7_codex_input.txt" <<'EOF'
 
 [差分内容 — unified diff]
 EOF
 cat <diff-file> >> "C:/tmp-ai/lv7_codex_input.txt"
 ```
+
+> **変更点（2026-08-05）**: 以前は Codex にパスだけ渡して「自分で grep+Read してよい」と
+> 広く探索させていた。実測でこれが消費の主因（8 割）と判明したため、
+> **DS/Qwen 用に既に抽出している抜粋を Codex にも同梱し、追加探索に上限を設ける**方式に変えた。
 
 **DS / Qwen 用入力**（差分 + 関連関数抜粋・API なのでファイルアクセス不可）:
 
@@ -1024,6 +1050,7 @@ Step 2-7C の入力ファイルは **ユニークサフィックス付き**で�
 
 ```bash
 RUN=$(date +%Y%m%d_%H%M%S)
+NONCE=$(python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" nonce)   # ゲート通過用（必須）
 # Codex 用 = lv7_codex_input.txt 相当 / aux 用 = lv7_aux_input.txt 相当をユニーク名で作る
 cp "C:/tmp-ai/lv7_codex_input.txt" "C:/tmp-ai/cgd_codex_${RUN}.txt"
 cp "C:/tmp-ai/lv7_aux_input.txt"   "C:/tmp-ai/cgd_aux_${RUN}.txt"
@@ -1033,7 +1060,7 @@ cp "C:/tmp-ai/lv7_aux_input.txt"   "C:/tmp-ai/cgd_aux_${RUN}.txt"
 Workflow({ scriptPath: "C:/ClaudeCode/.claude/skills/cgd/workflows/cgd_lv7_review.js",
            args: { input_path: "C:/tmp-ai/cgd_codex_<RUN>.txt",
                    aux_input_path: "C:/tmp-ai/cgd_aux_<RUN>.txt",
-                   label: "<対象名>_<RUN>" } })       // Gemini オプトイン時は include_gemini: true を追加
+                   label: "<対象名>_<RUN>", wf_nonce: "<nonce>" } })       // Gemini オプトイン時は include_gemini: true を追加
 ```
 
 完了後は戻り値の `label` を確認（`target` ならパース失敗を疑う）→ `table_md` を描画 → 🔴 は `raw_log_paths` で検証 → **Step 2-7E へ**。
@@ -1105,7 +1132,7 @@ cp <相談まとめ.md> "C:/tmp-ai/cgd_lv7_$(date +%Y%m%d_%H%M%S).md"
 
 ### Step 2-7G〜J: 共通フロー実行
 
-Step A（実装）→ Step B（検証）→ Step C（Codex 再レビュー・差分のみ・**medium 単独**）→ **Step C2（🔴 自動修正ループ最大 2 周）** → Step D（最終まとめ）
+Step A（実装）→ Step B（検証）→ Step C（Codex 再レビュー・差分のみ・**medium 単独**）→ **Step C2（🔴 自動修正ループ最大 1 周）** → Step D（最終まとめ）
 
 **Step C を Codex 多重で回さない理由**:
 - 再レビュー段は差分のみで規模が小さく、medium で十分な深さが出る
@@ -1114,7 +1141,7 @@ Step A（実装）→ Step B（検証）→ Step C（Codex 再レビュー・差
 
 ---
 
-## Lv8: Lv7 + Codex(high)/DeepSeek 批評パス追加 — 技術の最深掘り + 複眼批評 + 🔴 自動修正 2 周（Gemini はオプトインで7者化）
+## Lv8: Lv7 + Codex(high)/DeepSeek 批評パス追加 — 技術の最深掘り + 複眼批評 + 🔴 自動修正 1 周（Gemini はオプトインで7者化）
 
 2026-07 新設。**Lv7（技術レビューの最深掘り）に、Lv3 で確立した批評視点（現場担当者の使い勝手 + あるべき論）を重ねた最重量級レベル**。技術面は Lv7 と完全に同一（Codex medium+high の多重 + DS/Qwen 補助）。そこに **Codex(high) と DeepSeek の2者だけ**、追加で批評レビューを依頼する。
 
@@ -1157,14 +1184,28 @@ cat > "C:/tmp-ai/lv8_codex_input.txt" <<'EOF'
 バグ・設計上の懸念・セキュリティ・副作用・既存仕様との整合性、特に
 **関数間の integration バグ**（暗黙の前提違反・スコープを跨いだ状態管理破綻・
 呼出経路ごとの副作用差異・catch ブロックでの throw 握り潰し等）を重点的に評価してください。
-必要に応じて対象ファイルを直接読んで確認してください。
 日本語で回答。AGENTS.md / CLAUDE.md がある場合はそれに従う。
 
+[探索の上限 — 必須]
+**関連関数の抜粋は下に同梱済みです。** 追加で開いてよい実ファイルは **最大 5 個まで**。
+それを超えて必要になったら、読み進めずに「**情報不足: <欲しいファイル/関数>**」と書いて
+その指摘を終えてください（Claude 側が次のラウンドで抜粋を追加します）。
+
+理由（実測）: Codex の消費は `14,000 + 0.75×入力バイト + 約3,000×探索回数` で近似できます。
+入力 5.4KB のレビューで 29 回探索し 103,686 トークン使った実例があり、
+探索が全体の 8 割を占めていました。上限に達したら「足りない」と言う方が、
+黙って読み続けるより有用です。
+
 [対象ファイル絶対パス]
-<絶対パス>  ← 関数定義は自分で grep+Read してよい
+<絶対パス>
 
 [変更概要]
 <1〜3 行>
+
+[関連関数抜粋 (Claude が事前抽出・Step 2-8B の成果物)]
+EOF
+cat "C:/tmp-ai/lv8_related_funcs.txt" >> "C:/tmp-ai/lv8_codex_input.txt"
+cat >> "C:/tmp-ai/lv8_codex_input.txt" <<'EOF'
 
 [差分内容 — unified diff]
 EOF
@@ -1202,6 +1243,7 @@ Step 2-8C の入力ファイルを **ユニークサフィックス付き**に�
 
 ```bash
 RUN=$(date +%Y%m%d_%H%M%S)
+NONCE=$(python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" nonce)   # ゲート通過用（必須）
 cp "C:/tmp-ai/lv8_codex_input.txt" "C:/tmp-ai/cgd_codex_${RUN}.txt"
 cp "C:/tmp-ai/lv8_aux_input.txt"   "C:/tmp-ai/cgd_aux_${RUN}.txt"
 ```
@@ -1210,7 +1252,7 @@ cp "C:/tmp-ai/lv8_aux_input.txt"   "C:/tmp-ai/cgd_aux_${RUN}.txt"
 Workflow({ scriptPath: "C:/ClaudeCode/.claude/skills/cgd/workflows/cgd_lv8_review.js",
            args: { input_path: "C:/tmp-ai/cgd_codex_<RUN>.txt",
                    aux_input_path: "C:/tmp-ai/cgd_aux_<RUN>.txt",
-                   label: "<対象名>_<RUN>" } })       // Gemini オプトイン時は include_gemini: true を追加
+                   label: "<対象名>_<RUN>", wf_nonce: "<nonce>" } })       // Gemini オプトイン時は include_gemini: true を追加
 ```
 
 戻り値は **`tech_table_md` と `critic_table_md` の 2 表**（Lv6-WF / Lv7-WF は 1 表なのでここが違う）。批評パスの findings は severity ではなく **困り度（高/中/低）** を持つ。
@@ -1293,7 +1335,7 @@ cp <相談まとめ.md> "C:/tmp-ai/cgd_lv8_$(date +%Y%m%d_%H%M%S).md"
 
 ### Step 2-8G〜J: 共通フロー実行
 
-Step A（実装）→ Step B（検証）→ Step C（Codex 再レビュー・差分のみ・**medium 単独**）→ **Step C2（🔴 自動修正ループ最大 2 周・対象は技術表の🔴のみ）** → Step D（最終まとめ、批評レビュー表も含めて報告）
+Step A（実装）→ Step B（検証）→ Step C（Codex 再レビュー・差分のみ・**medium 単独**）→ **Step C2（🔴 自動修正ループ最大 1 周・対象は技術表の🔴のみ）** → Step D（最終まとめ、批評レビュー表も含めて報告）
 
 **Step C を Codex 多重・批評込みで回さない理由**（Lv7 と同じ判断）:
 - 再レビュー段は差分のみで規模が小さく、medium で十分な深さが出る
@@ -1310,15 +1352,26 @@ Lv6 / Lv7 / Lv8 の **レビュー段は Workflow ツールに委譲する（202
 
 2026-08-05 以前は「WF もある」という任意運用だったが、**1 日で Lv7 が 3 件実行され WF は 0 件**（独立した 2 セッションが同じ間違い）という実績が出たため、hook で強制するようにした。同日、未実装だった **Lv8-WF も新規作成して必須化**した（Codex 3 回で最も出力が大きく、本来いちばん WF が要る構成だった）。
 
+**初版は「強制」になっていなかった**（同日の Lv8 セルフレビューで実証）: `bash -c "codex exec ..."` `env X=1 codex exec` `$(codex exec)` `time` `eval` の **6 形式中 5 つが素通り**し、`CGD_WF_RUN=1` という文字列がコマンドのどこかに含まれるだけでゲートが解除され、WF の 1 本目が通った瞬間に以後が無防備になり、単一グローバルファイルなので並行セッションが互いのゲートを破壊していた。
+
+その後、シェル構文を正規表現で解析する方向で 3 周修正したが、**塞ぐたびに Codex 再レビューが新しい構文を見つけた**（`sudo`/`if`/`while` → 単一引用符 → `!` / `{ }`）。Lv8 批評の「**正規表現ゲートは迂回と誤検知を構造的に同時に抱える**」という指摘どおりだったので、解析をやめる方式に切り替えた。
+
 | いつ | 何が起きるか |
 |---|---|
-| Step 1 で `cgd_usage_log.py record --level 6\|7\|8` | `cgd_wf_gate.py arm` が走り、ゲートが張られる（180 分 TTL） |
-| ゲート中に inline の `codex exec` | PreToolUse hook が **deny**。WF 起動コマンド付きの理由が返る |
-| WF 内の agent が codex 起動 | コマンドに `CGD_WF_RUN=1` が前置されているので通過し、**ゲートは自動解除** |
-| WF 完了後・Step A に進む前 | `python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" disarm` を明示実行（Step C の inline 再レビュー用） |
-| 意図的な迂回 | コマンド先頭に `CGD_WF_RUN=1` を付ける。**迂回理由をユーザーに必ず伝える** |
+| Step 1 で `cgd_usage_log.py record --level 6\|7\|8 --session <SID>` | ゲートが張られ、**バイパス用の `wf_nonce` が発行**される（90 分 TTL）。失敗したら ❌ ERROR で目立つように出る |
+| ゲート中に **`codex` という語を含む Bash** | PreToolUse hook が **一律 deny**。シェルを解析しないので迂回構文が存在しない |
+| WF 内の codex（`CGD_WF_RUN=<nonce> ... codex ...`） | nonce がその起動に束縛されている時だけ通過。**通過しても解除しない** |
+| WF 完了後・Step A に進む前 | `python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" disarm` を**明示実行**（自動解除はしない） |
+| 意図的な迂回 | 正しい nonce を付ける。**迂回理由をユーザーに必ず伝える** |
 
-状態確認は `python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" status`。ゲート機構は常に fail-open（不調でも cgd 本体は止めない）。
+**設計の要点**:
+- **シェルを解析しない**: `codex` の語が入っていれば起動でなくても止める。`bash -lc '...'` も heredoc も `!` も `{ }` も関係なく遮断される。**見逃すより過剰に止める方を選んでいる**
+- ⚠️ **副作用**: ゲート中は `grep "codex exec" SKILL.md` や **`codex login status`（`cgd_doctor` が叩く）も止まる**。doctor は Step 1 より前に回すか、`disarm` してから回す。deny メッセージにこの旨と逃げ道が書いてある
+- **nonce 照合**: `CGD_WF_RUN=<nonce> [他の代入] codex ...` の形のみ有効。文字列の混入や `echo` での先出しでは通らない
+- **セッション単位**: `--session <SID>` を付ければ自セッションだけを止める。省略時は全体ゲート（全セッションを止める）。**所有権の移動（claim）はしない** — レースと「claim 後に disarm できないデッドロック」の原因だった
+- **fail-closed は限定**: ゲートファイルが「在るのに壊れている」場合だけ遮断する。ファイルが無い場合と hook 自体の例外は通す（例外はトレースを stderr に出す）
+
+状態確認は `cgd_wf_gate.py status`、nonce の取得は `cgd_wf_gate.py nonce`。
 
 ### ⚠️ WF が減らすのは context であってトークンではない
 
@@ -1355,7 +1408,8 @@ WF は **主 context への流入を約 94% 削減**するが、**Codex 側の�
 
 ```bash
 # 1. 主context: ユニークサフィックス生成 (Workflow 内は Date.now 禁止なので主context側で date)
-RUN=$(date +%Y%m%d_%H%M%S)   # 例 20260529_185800
+RUN=$(date +%Y%m%d_%H%M%S)
+NONCE=$(python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" nonce)   # ゲート通過用（必須）   # 例 20260529_185800
 
 # Lv6-WF: 入力をユニーク名で配置
 cat > "C:/tmp-ai/cgd_in_${RUN}.txt" <<'EOF'
@@ -1523,7 +1577,12 @@ Python 以外（JS / TS / シェル等）の場合は、その言語の実行可
 
 ---
 
-## Step C: Codex 再レビュー（Lv4-8 共通、差分のみ・Lv7/Lv8 も medium 単独で OK）
+## Step C: Codex 再レビュー
+
+> **探索は禁止（2026-08-05）**: 再レビューは差分だけを見る段なので、Codex に実ファイルを
+> 探索させない。プロンプトに「**実ファイルは読まないこと。差分と同梱情報だけで判断すること**」
+> を必ず入れる。実測で探索は 1 回約 3,000 トークン、初回レビューでは消費の 8 割を占めた。
+> 差分レビューでこれを払う価値はない。（Lv4-8 共通、差分のみ・Lv7/Lv8 も medium 単独で OK）
 
 実装した差分を **Codex 単独**でレビューする。Gemini は呼ばない（トークン節約）。
 
@@ -1543,10 +1602,12 @@ mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="
 
 🔴 が検出された場合の扱いは **Lv による**:
 - Lv4: 報告のみ（Step C2 は走らない）
-- Lv5: Step C2 へ進む（自動修正ループ最大 1 周）
+- Lv5: Step C2 へ進む（自動修正ループ **最大 1 周**）
 - Lv6: Step C2 へ進む（Lv5 と同仕様）
 - Lv7: Step C2 へ進む（Lv5 と同仕様・再レビューも medium 単独）
-- Lv8: Step C2 へ進む（Lv5 と同仕様・再レビューも medium 単独・対象は技術表の🔴のみ）
+- Lv8: Step C2 へ進む（Lv5 と同仕様・再レビューも medium 単独・**対象は技術表の🔴のみ**）
+
+周回上限は全レベル 1 周で統一されている。**レベルごとに違うのは「Step C2 に入るか否か」だけ**（Lv4 は入らない）。
 
 ---
 
@@ -1556,7 +1617,8 @@ mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="
 
 1. **実装した内容** — 変更ファイル（絶対パス）と主要な変更点を箇条書き
 2. **検証結果** — Step B の表
-3. **再レビュー結果**（Lv4-8）— Step C の 3 列レビュー表 + 修正ループ周回数（Lv5・Lv6・Lv7・Lv8 のみ、0 / 1 / 中断理由）
+3. **再レビュー結果**（Lv4-8）— Step C の 3 列レビュー表 + 修正ループの記録（Lv5-Lv8 のみ）
+   — **周回数（0 / 1）・解消した🔴の件数・残った🔴（location 付き）・停止理由**を必ず書く（Step C2 参照）
 4. **未対応指摘**（あれば） — 🟠 / 🟡 で残ったもの・Lv4 で残った 🔴・Lv8 の批評レビュー表の指摘（採否はユーザー判断）
 5. **残課題・申し送り事項**（あれば）
 6. **💰 費用集計**（**全 Lv 必須・省略禁止**） — 後述「費用集計の出力フォーマット」に従う

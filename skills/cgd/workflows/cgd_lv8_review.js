@@ -39,11 +39,15 @@ if (!_args || typeof _args !== 'object') _args = {}
 const codexInput = _args.input_path || 'C:/tmp-ai/lv8_codex_input.txt'
 const auxInput = _args.aux_input_path || 'C:/tmp-ai/lv8_aux_input.txt'
 const label = _args.label || 'target'
+// PreToolUse ゲート(cgd_wf_gate.py)のバイパス nonce。主 context が
+//   python cgd_wf_gate.py nonce
+// で取得して args.wf_nonce に渡す。合致しない値では codex 起動が deny される。
+const wfNonce = _args.wf_nonce || ''
 const includeGemini = _args.include_gemini === true
 
 // ドライラン: args パース + パス解決の確認用 (agent を呼ばず即 return)。
 if (_args.dry_run === true) {
-  log('[dry-run] codexInput=' + codexInput + ' / auxInput=' + auxInput + ' / label=' + label + ' / includeGemini=' + includeGemini)
+  log('[dry-run] codexInput=' + codexInput + ' / auxInput=' + auxInput + ' / label=' + label + ' / includeGemini=' + includeGemini + ' / wfNonce=' + (wfNonce ? 'あり' : '**未指定**'))
   return { dry_run: true, resolved_input_path: codexInput, resolved_aux_input_path: auxInput, resolved_label: label, resolved_include_gemini: includeGemini }
 }
 
@@ -117,13 +121,13 @@ const CRITIC_PROMPT =
 const reviewers = [
   {
     name: 'codex_med', kind: 'tech',
-    cmd: `mkdir -p /c/tmp-ai && cd /c/tmp-ai && CGD_WF_RUN=1 codex exec -c model_reasoning_effort="medium" --sandbox read-only --skip-git-repo-check "まず ${codexInput} の全文を読み、記載の差分・対象・評価観点に従ってコードレビュー。必要なら対象実ファイルも読んでよい。日本語で回答。" < /dev/null`,
+    cmd: `mkdir -p /c/tmp-ai && cd /c/tmp-ai && CGD_WF_RUN=${wfNonce} codex exec -c model_reasoning_effort="medium" --sandbox read-only --skip-git-repo-check "まず ${codexInput} の全文を読み、記載の差分・対象・評価観点に従ってコードレビュー。関連関数の抜粋は入力に同梱済み。追加で開くのは最大5ファイルまでとし、超えるなら読まずに『情報不足: <欲しいファイル>』と書いて終えること。日本語で回答。" < /dev/null`,
     timeout: 300000, usage: false, isCodex: true,
     authSignals: 'Not logged in / 401 / unauthorized',
   },
   {
     name: 'codex_high', kind: 'tech',
-    cmd: `mkdir -p /c/tmp-ai && cd /c/tmp-ai && CGD_WF_RUN=1 codex exec -c model_reasoning_effort="high" --sandbox read-only --skip-git-repo-check "まず ${codexInput} の全文を読み、記載の差分・対象・評価観点に従ってコードレビュー。必要なら対象実ファイルも読んでよい。日本語で回答。" < /dev/null`,
+    cmd: `mkdir -p /c/tmp-ai && cd /c/tmp-ai && CGD_WF_RUN=${wfNonce} codex exec -c model_reasoning_effort="high" --sandbox read-only --skip-git-repo-check "まず ${codexInput} の全文を読み、記載の差分・対象・評価観点に従ってコードレビュー。関連関数の抜粋は入力に同梱済み。追加で開くのは最大5ファイルまでとし、超えるなら読まずに『情報不足: <欲しいファイル>』と書いて終えること。日本語で回答。" < /dev/null`,
     timeout: 600000, usage: false, isCodex: true,
     authSignals: 'Not logged in / 401 / unauthorized',
   },
@@ -147,7 +151,7 @@ const reviewers = [
   },
   {
     name: 'codex_critic', kind: 'critic',
-    cmd: `mkdir -p /c/tmp-ai && cd /c/tmp-ai && CGD_WF_RUN=1 codex exec -c model_reasoning_effort="high" --sandbox read-only --skip-git-repo-check "${CRITIC_PROMPT}" < /dev/null`,
+    cmd: `mkdir -p /c/tmp-ai && cd /c/tmp-ai && CGD_WF_RUN=${wfNonce} codex exec -c model_reasoning_effort="high" --sandbox read-only --skip-git-repo-check "${CRITIC_PROMPT}" < /dev/null`,
     timeout: 600000, usage: false, isCodex: true,
     authSignals: 'Not logged in / 401 / unauthorized',
   },

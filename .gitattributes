@@ -1,0 +1,41 @@
+# 改行コードの固定 (2026-08-06)
+#
+# なぜ必要か（実害が出た）:
+#   このリポジトリは core.autocrlf=true の Windows 端末で扱うため、
+#   .gitattributes が無いと **チェックアウトのたびにテキストが CRLF 化** する。
+#   2026-08-05、cgd の Workflow スクリプト 3 本 (cgd_lv6/7/8_review.js) が
+#   CRLF になり、Workflow ツールが「script contains control characters」で
+#   起動を拒否するようになった。同時に Lv6-8 は WF 必須ゲートで inline も
+#   塞がれていたため、**Lv6 以上が実質使用不能**という詰み状態になっていた
+#   (INC-20260806-0946454d20fc)。
+#
+#   手元で LF に直しても、次に /g-dl した端末で再び CRLF に戻る。
+#   ここで固定しないと直らない種類の不具合。
+#
+# 方針:
+#   - スクリプト・設定・文書は LF に固定（ツールが CR を嫌うため）
+#   - Windows ネイティブのバッチ/PowerShell だけ CRLF を維持
+#     （AGENTS.md の「bat は CP932・ASCII」規約と整合させる）
+
+*.js    text eol=lf
+*.mjs   text eol=lf
+*.cjs   text eol=lf
+*.json  text eol=lf
+*.py    text eol=lf
+*.md    text eol=lf
+*.sh    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.txt   text eol=lf
+
+# Windows のシェルは CRLF が前提
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# バイナリは変換しない
+*.sqlite3 binary
+*.db      binary
+*.png     binary
+*.jpg     binary
+*.zip     binary

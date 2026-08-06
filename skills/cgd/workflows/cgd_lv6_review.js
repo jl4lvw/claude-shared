@@ -40,12 +40,16 @@ if (!_args || typeof _args !== 'object') _args = {}
 const inputPath = _args.input_path || 'C:/tmp-ai/review_input.txt'
 const reasoning = _args.codex_reasoning || 'medium'
 const label = _args.label || 'target'
+// PreToolUse ゲート(cgd_wf_gate.py)のバイパス nonce。主 context が
+//   python cgd_wf_gate.py nonce
+// で取得して args.wf_nonce に渡す。合致しない値では codex 起動が deny される。
+const wfNonce = _args.wf_nonce || ''
 const includeGemini = _args.include_gemini === true
 
 // ドライラン: args パース + パス解決の確認用 (agent を呼ばず即 return)。dry_run=true 時のみ。
 // 起動例: Workflow({scriptPath, args:{input_path:"...", label:"...", dry_run:true}}) → 課金0
 if (_args.dry_run === true) {
-  log('[dry-run] inputPath=' + inputPath + ' / reasoning=' + reasoning + ' / label=' + label + ' / includeGemini=' + includeGemini)
+  log('[dry-run] inputPath=' + inputPath + ' / reasoning=' + reasoning + ' / label=' + label + ' / includeGemini=' + includeGemini + ' / wfNonce=' + (wfNonce ? 'あり' : '**未指定**'))
   return { dry_run: true, resolved_input_path: inputPath, resolved_reasoning: reasoning, resolved_label: label, resolved_include_gemini: includeGemini }
 }
 
@@ -81,7 +85,7 @@ const FINDING_SCHEMA = {
 const reviewers = [
   {
     name: 'codex',
-    cmd: `mkdir -p /c/tmp-ai && cd /c/tmp-ai && CGD_WF_RUN=1 codex exec -c model_reasoning_effort="${reasoning}" --sandbox read-only --skip-git-repo-check "まず ${inputPath} の全文を読み、記載の差分・対象・評価観点に従ってコードレビュー。必要なら対象実ファイルも読んでよい。日本語で回答。" < /dev/null`,
+    cmd: `mkdir -p /c/tmp-ai && cd /c/tmp-ai && CGD_WF_RUN=${wfNonce} codex exec -c model_reasoning_effort="${reasoning}" --sandbox read-only --skip-git-repo-check "まず ${inputPath} の全文を読み、記載の差分・対象・評価観点に従ってコードレビュー。関連関数の抜粋は入力に同梱済み。追加で開くのは最大5ファイルまでとし、超えるなら読まずに『情報不足: <欲しいファイル>』と書いて終えること。日本語で回答。" < /dev/null`,
     timeout: reasoning === 'high' ? 600000 : 300000,
     usage: false,
     authSignals: 'Not logged in / 401 / unauthorized',

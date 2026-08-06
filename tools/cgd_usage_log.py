@@ -38,16 +38,29 @@ WF_REQUIRED_LEVELS = (6, 7, 8)
 GATE_SCRIPT: Path = Path(__file__).parent.parent / "hooks" / "cgd_wf_gate.py"
 
 
-def _arm_wf_gate(level: int) -> None:
-    """Lv6/Lv7/Lv8 のとき inline codex 遮断ゲートを張る。失敗しても本流は止めない。"""
+def _arm_wf_gate(level: int, session: str | None = None) -> None:
+    """Lv6/Lv7/Lv8 のとき inline codex 遮断ゲートを張る。
+
+    失敗しても本流(cgd の実行)は止めないが、**黙って素通りさせない**。
+    ゲートが張られていないと「WF 必須」が無効化されるので、失敗は WARN ではなく
+    はっきりした ERROR として出す (Lv8 レビューの fail-open 指摘への対応)。
+    """
     if level not in WF_REQUIRED_LEVELS:
         return
+
+    def _fail(msg: str) -> None:
+        print(f"[cgd usage] ❌ ERROR: Lv{level} の WF 必須ゲートを張れませんでした: {msg}", file=sys.stderr)
+        print("[cgd usage]    → inline の codex が遮断されません。**Workflow を使うことを自分で守ること**", file=sys.stderr)
+
     if not GATE_SCRIPT.is_file():
-        print(f"[cgd usage] WARN: {GATE_SCRIPT.name} が見つからずゲート未設定（/g-dl 未実施か）", file=sys.stderr)
+        _fail(f"{GATE_SCRIPT} が見つかりません（/g-dl 未実施の可能性）")
         return
+    cmd = [sys.executable, str(GATE_SCRIPT), "arm", "--level", str(level)]
+    if session:
+        cmd += ["--session", session]
     try:
         proc = subprocess.run(
-            [sys.executable, str(GATE_SCRIPT), "arm", "--level", str(level)],
+            cmd,
             capture_output=True,
             # text=True だけだと Windows の既定ロケール (CP932) で子プロセスの
             # 日本語出力をデコードして UnicodeDecodeError になる。必ず明示する。
@@ -56,9 +69,13 @@ def _arm_wf_gate(level: int) -> None:
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        print(f"[cgd usage] WARN: ゲート設定に失敗（本流には影響しません）: {exc}", file=sys.stderr)
+        _fail(str(exc))
         return
-    print((proc.stdout or proc.stderr or "").strip(), file=sys.stderr)
+    out = (proc.stdout or "").strip()
+    if proc.returncode != 0 or "wf_nonce" not in out:
+        _fail((proc.stderr or out or f"exit={proc.returncode}").strip())
+        return
+    print(out, file=sys.stderr)
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -85,13 +102,14 @@ def record_usage(
     critic_used: bool = False,
     note: str | None = None,
     db_path: Path = DB_PATH,
+    session: str | None = None,
 ) -> bool:
     """利用ログを1件記録する。成功したら True、失敗しても例外は投げず False を返す。"""
     if level not in VALID_LEVELS:
         print(f"[cgd usage] WARN: 未知の level '{level}' のため記録をスキップ", file=sys.stderr)
         return False
     # ゲートは DB 書込より先に張る（DB が落ちていても強制は効かせる）
-    _arm_wf_gate(level)
+    _arm_wf_gate(level, session=session)
     logged_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
         conn = _connect(db_path)
@@ -176,6 +194,9 @@ def main() -> None:
     p_record.add_argument("--gemini", action="store_true", help="Gemini をオプトイン参加させた場合")
     p_record.add_argument("--critic", action="store_true", help="critic 観点を併用した場合")
     p_record.add_argument("--note", default=None, help="任意メモ（起動キーワード等）")
+    p_record.add_argument("--session", default=None,
+                          help="セッションID（scratchpad ディレクトリ名）。Lv6/7/8 のゲートを"
+                               "自セッション限定にする。省略すると最初に codex を叩いたセッションが所有者になる")
 
     p_report = sub.add_parser("report", help="集計を表示する")
     p_report.add_argument("--since", default=None, help="YYYY-MM-DD 以降のみ集計")
@@ -183,7 +204,8 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "record":
-        record_usage(args.level, gemini_opted_in=args.gemini, critic_used=args.critic, note=args.note)
+        record_usage(args.level, gemini_opted_in=args.gemini, critic_used=args.critic,
+                     note=args.note, session=args.session)
         return
 
     if args.command == "report":
