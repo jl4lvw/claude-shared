@@ -28,7 +28,10 @@ except Exception:  # pragma: no cover
     pass
 
 _API = "http://127.0.0.1:8088/r"
+# 末尾 1 個のみマッチ (R4c: 本文中への注入対策はクライアント側で無害化済みだが、
+# hook 側でも「タグは 1 個だけ・必ず末尾」を強制して二重防御にする)
 _TAG_RE = re.compile(r"<!--\s*r-consume:(\d{2,4})\s*-->\s*\Z")
+_TAG_ANY_RE = re.compile(r"<!--\s*r-consume:\d{2,4}\s*-->")
 _TIMEOUT_SEC = 3.0
 
 
@@ -69,6 +72,11 @@ def main() -> int:
     prompt = str(payload.get("prompt") or "")
     m = _TAG_RE.search(prompt)
     if not m:
+        return 0
+
+    # R4c: タグが本文中に複数あれば注入の疑い → consume しない (fail-closed)
+    if len(_TAG_ANY_RE.findall(prompt)) != 1:
+        sys.stderr.write("[r-consume] multiple tags detected — skipping (injection guard)\n")
         return 0
 
     code = m.group(1)
