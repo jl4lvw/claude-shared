@@ -48,11 +48,19 @@ EXCLUDE_DIRS: tuple[str, ...] = ("__pycache__", ".bootstrap-bak-*", ".migrate-pe
 EXCLUDE_FILES: tuple[str, ...] = (
     "*.bak_*",
     "*.pyc",
+    "*.migrated",
     ".deepseek_usage_session.json",
     ".qwen_usage_session.json",
     ".gemini_usage_session.json",
     # 端末ローカルの自動計測 (量が多く共有しない)。incidents.jsonl だけを共有する
     "telemetry.jsonl",
+    # 端末ごとの使用量 DB。//MIR に載せると /g-dl していない端末が
+    # 他端末の記録を消すため robocopy 側で除外している (2026-08-12)。
+    # **こちらへ追随させ忘れていて、/g-ul が構造的に exit 0 へ到達できなくなっていた。**
+    # 上のコメントが警告しているとおりの形骸化が実際に起きたので、
+    # test_verify_sync_excludes.py で SKILL.md の //XF と機械照合するようにした。
+    "pv_usage_*.sqlite3",
+    "cgd_usage*.sqlite3",
 )
 
 
