@@ -209,6 +209,29 @@ _COLUMNS = ("ts", "event", "run", "level", "depth", "engine", "task", "ok",
             "reason", "exit_code", "bytes", "duration_ms", "skill_version", "detail")
 
 
+def _expand_mode(rec: dict) -> None:
+    """`detail` の中の mode をイベント辞書のトップレベルへ出す。
+
+    mode は専用カラムではなく detail JSON に入れている（既存 DB を ALTER せずに
+    済ませるため・tasks や engines と同じ扱い）。集計側で毎回 JSON を開くのは
+    読みにくいので、読み込み時に一度だけ展開する。
+    記録が無い古い行は None のままにして、`levels` が「未記録」として表示する。
+    """
+    rec.setdefault("mode", None)
+    detail = rec.get("detail")
+    if not detail:
+        return
+    if isinstance(detail, str):
+        try:
+            detail = json.loads(detail)
+        except (TypeError, ValueError):
+            return
+    if isinstance(detail, dict):
+        mode = detail.get("mode")
+        if isinstance(mode, str) and mode:
+            rec["mode"] = mode
+
+
 def load_all_events() -> list[dict]:
     """全端末のファイルから event を読み集める。
 
@@ -227,6 +250,7 @@ def load_all_events() -> list[dict]:
         for r in rows:
             rec = dict(zip(_COLUMNS, r))
             rec["host"] = host
+            _expand_mode(rec)
             out.append(rec)
     # DB へ書けずに退避された分も読む。残っているのに集計へ出ないと、
     # 「落ちた事実」を残した意味が無い（2026-08-12 cgd Lv8・DS の条件付き賛成）。
@@ -241,6 +265,7 @@ def load_all_events() -> list[dict]:
                 except json.JSONDecodeError:
                     continue
                 rec["host"] = host + "(退避)"
+                _expand_mode(rec)
                 out.append(rec)
         except OSError:
             continue
@@ -425,6 +450,17 @@ def _cmd_levels(args: argparse.Namespace) -> int:
     depths = _tally(evs, "depth", lambda e: e["event"] == "build")
     if depths:
         print("\n  depth 別:", "  ".join(f"{d or '?'}={n}" for d, n in sorted(depths.items(), key=lambda x: str(x[0]))))
+    # mode も直交軸。レベル番号は mode 間で共有なので、混ぜたままだと
+    # 「review モードが使われているか」が分からない（2026-08-12 に記録追加）。
+    modes = _tally(evs, "mode", lambda e: e["event"] == "build")
+    if modes:
+        known = {k: v for k, v in modes.items() if k}
+        unknown = modes.get(None, 0)
+        parts = [f"{k}={v}" for k, v in sorted(known.items())]
+        if unknown:
+            # mode を記録する前の run。0 件にはならないので黙って落とさない。
+            parts.append(f"未記録={unknown}")
+        print("  mode 別:", "  ".join(parts))
     hosts = _tally(evs, "host", lambda e: e["event"] == "build")
     if len(hosts) > 1:
         print("  端末別  :", "  ".join(f"{h}={n}" for h, n in sorted(hosts.items())))

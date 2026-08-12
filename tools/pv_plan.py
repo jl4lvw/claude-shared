@@ -961,6 +961,10 @@ def cmd_build(args: argparse.Namespace) -> int:
     _usage("build", run=run, level=args.level, depth=args.depth, ok=True,
            skill_version=plan.get("skill_version"),
            detail={
+               # mode を残さないと「review モードが実際に使われたか」を後から
+               # データで判断できない（2026-08-12 まで記録が漏れていた）。
+               # レベル番号は mode 間で共有なので、mode 抜きの集計は両者を混ぜてしまう。
+               "mode": run_mode,
                "tasks": [t["id"] for t in tasks],
                "engines": sorted({t["engine"] for t in tasks}),
                "attachments": len(attachments),
@@ -1042,6 +1046,26 @@ def _build_cmd(task: dict) -> list[str]:
 # 切り出しが恒久的に無効化されていた（pv review が予測し、テストで確定した）。
 _CODEX_ANSWER_MARK = "codex"
 _CODEX_TOKENS_RE = re.compile(r"^tokens used\s*$\r?\n\s*([\d,]+)\s*$", re.MULTILINE)
+
+
+# usage 行は各ツールが**行頭から**出す (deepseek_coder.py / qwen_advisor.py /
+# _postprocess の Codex 生成分すべて "[... Usage]" で始まる)。
+#
+# 以前は「"Usage]" を含み、かつ "今回" を含む行」で拾っていたが、
+# **添付やプロンプトが stderr に echo されると誤検出する** (INC-20260812-0728179d7054)。
+# 実際に cgd の依頼テキストの一節
+#   「stderr の [DS Usage] / [Qwen Usage] / [Gemini Usage] の「今回:」行を…」
+# が usage_line に入り、費用集計に紛れ込んだ。この 1 行は両方の条件を満たしてしまう。
+# 行頭アンカーにすれば、引用された文中のマーカーは構造上ぶつからない。
+_USAGE_LINE_RE = re.compile(r"^\s*\[[A-Za-z0-9 _-]+ Usage\]\s*\S")
+
+
+def extract_usage_line(stderr: str) -> str:
+    """stderr から usage 行を 1 本取り出す。見つからなければ空文字。"""
+    for line in stderr.splitlines():
+        if _USAGE_LINE_RE.match(line) and "今回" in line:
+            return line.strip()
+    return ""
 
 
 def _postprocess(engine: str, text: str) -> tuple[str, str]:
@@ -1138,10 +1162,7 @@ def cmd_exec(args: argparse.Namespace) -> int:
             body, encoding="utf-8", newline="")
 
     if not usage:
-        for line in (proc.stderr or "").splitlines():
-            if "Usage]" in line and "今回" in line:
-                usage = line.strip()
-                break
+        usage = extract_usage_line(proc.stderr or "")
 
     size = raw.stat().st_size if raw.is_file() else 0
     result = {
@@ -1215,8 +1236,8 @@ def _inspect(plan: dict, include_merge: bool = False) -> list[dict]:
             else:
                 # 「降参文を含むか」ではなく「降参文が支配的か」で見る。
                 # 一部だけ不明と書いてある正当な回答を弾かないため。
-                content = [l for l in body.splitlines() if l.strip()]
-                give_up = [l for l in content if _SURRENDER_RE.search(l)]
+                content = [ln for ln in body.splitlines() if ln.strip()]
+                give_up = [ln for ln in content if _SURRENDER_RE.search(ln)]
                 if content and len(give_up) / len(content) >= SURRENDER_LINE_RATIO:
                     ok = False
                     reason = (f"降参文が支配的（{len(give_up)}/{len(content)} 行 "
@@ -1371,6 +1392,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
            reason=None if ok_all else ("artifacts_incomplete" if bad else
                    ("review_unverified" if review and not review.get("ok") else "merge_unverified")),
            detail={
+               "mode": plan.get("mode") or "deliberate",
                "include_merge": bool(args.include_merge),
                "ng": [{"id": r["id"], "reason": r.get("reason"), "bytes": r["bytes"]} for r in bad],
                "total_bytes": sum(r["bytes"] for r in rows),
@@ -1385,7 +1407,8 @@ def cmd_collect(args: argparse.Namespace) -> int:
         _usage("result", run=args.run, level=plan.get("level"), ok=True, reason="ok",
                engine=verify.get("merge_model"), size_bytes=merge_bytes,
                skill_version=plan.get("skill_version"),
-               detail={"cites": verify.get("cites"), "auto": True})
+               detail={"mode": plan.get("mode") or "deliberate",
+                       "cites": verify.get("cites"), "auto": True})
 
     if ok_all and args.include_merge and not args.no_clear_pending:
         # 印を消せるのは主 context が自分で叩いたときだけ。
@@ -1411,6 +1434,89 @@ def cmd_collect(args: argparse.Namespace) -> int:
             print(f"     - {msg}", file=sys.stderr)
         print("     統合をやり直すか、raw を直接読んで内容を確認してください。", file=sys.stderr)
         return 1
+    return 0
+
+
+# 外部エンジンの概算トークン。バイト単価は実測 (AGENTS/memory の Codex 実測モデル)。
+# Codex は起動時の固定オーバーヘッドが大きいので別に足す。
+TOK_PER_BYTE = 0.75
+CODEX_FIXED_TOKENS = 14_000
+
+
+def cmd_estimate(args: argparse.Namespace) -> int:
+    """**build する前に**送信量を出す (INC-20260812-00405995245b / -004007ace10d)。
+
+    なぜ要るか:
+        添付は **全担当のプロンプトに丸ごと複製される**。Lv3 なら同じ実体が
+        4 担当ぶん作られ、うち DeepSeek と Codex は外部へ実送信される。
+        162KB の添付で feasible (Codex) だけで約 14 万トークンに達した実例がある。
+        これまでは**上限を超えたときしか**数字が出ず、超えなければ静かに大量送信していた。
+
+    上限超過時は build と同じく非 0 で終わる。ここで止まる／止まらないが
+    build と一致していないと事前チェックとして意味を成さない。
+    """
+    level_map = REVIEW_LEVELS if args.mode == "review" else LEVELS
+    if args.level not in level_map:
+        raise SystemExit(f"[pv] Lv{args.level} は mode={args.mode} にはありません"
+                         f"（実装済み: {sorted(level_map)}）")
+    tasks = level_map[args.level]["tasks"]
+
+    rows: list[tuple[str, int]] = []
+    total = 0
+    for raw in (args.attach or []):
+        p = Path(raw)
+        if not p.is_file():
+            raise SystemExit(f"[pv] 添付が見つかりません: {p}")
+        n = len(p.read_text(encoding="utf-8", errors="replace").encode("utf-8"))
+        rows.append((str(p).replace("\\", "/"), n))
+        total += n
+
+    topic = 0
+    if args.topic_file:
+        tp = Path(args.topic_file)
+        if not tp.is_file():
+            raise SystemExit(f"[pv] テーマファイルが見つかりません: {tp}")
+        topic = len(tp.read_text(encoding="utf-8", errors="replace").encode("utf-8"))
+
+    diff = 0
+    if args.diff:
+        dp = Path(args.diff)
+        if not dp.is_file():
+            raise SystemExit(f"[pv] 差分が見つかりません: {dp}")
+        diff = len(dp.read_text(encoding="utf-8", errors="replace").encode("utf-8"))
+
+    print(f"[pv] estimate  Lv{args.level} / mode={args.mode} / 担当 {len(tasks)} 名")
+    if rows:
+        print("  添付:")
+        for path, n in rows:
+            print(f"    {n:>9,} B  {path}")
+    print(f"  添付 合計 : {total:>9,} B  (上限 {MAX_ATTACH_BYTES:,} B)")
+    print(f"  テーマ    : {topic:>9,} B")
+    if diff:
+        print(f"  差分      : {diff:>9,} B")
+
+    per_task = total + topic + diff
+    print(f"\n  1 担当あたりの本文 = 添付 + テーマ + 差分 = {per_task:,} B"
+          "\n  （添付は担当ごとに複製されるので、担当数だけ倍になる）")
+    print("\n  担当           エンジン    送信 B      概算トークン")
+    ext_tokens = 0
+    for t in tasks:
+        eng = t["engine"]
+        tok = int(per_task * TOK_PER_BYTE)
+        if eng == "codex":
+            tok += CODEX_FIXED_TOKENS
+        if eng != "claude":
+            ext_tokens += tok
+        print(f"  {t['id']:<14} {eng:<10} {per_task:>9,}  {tok:>13,}")
+    print(f"  {'merge':<14} {'fable':<10} {'(統合は各回答のみ)':>9}")
+    print(f"\n  外部エンジンへの実送信 合計トークン(概算): {ext_tokens:,}")
+
+    # **build と同じ条件で止める。** ここで通って build で落ちると事前チェックの意味がない。
+    if total > MAX_ATTACH_BYTES:
+        raise SystemExit(
+            f"[pv] 添付の合計が上限を超えました: {total:,} > {MAX_ATTACH_BYTES:,} bytes"
+            "\n     外部エンジンは 0.75 tok/byte 程度消費します。対象を絞ってください。"
+        )
     return 0
 
 
@@ -1582,6 +1688,13 @@ def main() -> int:
 
     sub.add_parser("env", help="環境チェック（鍵・CLI・テンプレート・WF スクリプト）")
 
+    es = sub.add_parser("estimate", help="build する前に送信バイト数と概算トークンを出す")
+    es.add_argument("--level", type=int, required=True)
+    es.add_argument("--mode", default="deliberate", choices=MODES)
+    es.add_argument("--attach", action="append")
+    es.add_argument("--topic-file", default=None)
+    es.add_argument("--diff", default=None)
+
     ex = sub.add_parser("exec", help="外部エンジンを起動して raw に保存 (mode=exec の task 用)")
     ex.add_argument("--run", required=True)
     ex.add_argument("--task", required=True)
@@ -1592,7 +1705,7 @@ def main() -> int:
     handler = {
         "build": cmd_build, "plan": cmd_plan, "prompt": cmd_prompt,
         "exec": cmd_exec, "collect": cmd_collect, "doctor": cmd_doctor,
-        "env": cmd_env,
+        "env": cmd_env, "estimate": cmd_estimate,
     }[args.command]
     try:
         return handler(args)

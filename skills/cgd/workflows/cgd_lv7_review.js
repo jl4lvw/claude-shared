@@ -404,15 +404,23 @@ if (_gateDoc.armed && !_nonce) {
 // 各 codex コマンドに実際の nonce を差し込む (reviewers は Preflight より前に組み立てるため
 // プレースホルダにしてある)。
 for (const r of reviewers) {
-  if (typeof r.cmd !== 'string') continue
-  r.cmd = r.cmd.split('__WF_NONCE__').join(_nonce)
-  // 入力パスも **検証を通した値** を差し込む。
-  // reviewers は Preflight より前に組み立てるため、以前は生の _args.input_path を
-  // 埋め込んでいた。正規化(_toPosix)前の値なので、バックスラッシュ入りパスでは
-  // 「検証した文字列」と「実行に使う文字列」が別物になり、
-  // 検証を通ったのに別ファイルを読む余地があった (pv Lv3 の棚卸し担当が指摘)。
-  r.cmd = r.cmd.split('__INPUT_0__').join(_normalized[0] || '')
-  r.cmd = r.cmd.split('__INPUT_1__').join(_normalized[1] || _normalized[0] || '')
+  // **cmd と prompt の両方に差し込む (2026-08-12 実走で判明)。**
+  // args で prompt を渡す経路 (Python の cgd_prompts が生成する本番経路) では、
+  // agent が実際に実行するのは **prompt 本文に埋め込まれたコマンド文字列**であって
+  // r.cmd ではない。cmd だけ置換していたため prompt 側に __WF_NONCE__ が残り、
+  // **ゲートを張った本来の運用で** hook が codex を deny → 毎回 exec_failed で停止していた。
+  // ゲート未使用の実験では nonce の値が無関係なので、この不具合は素通りしていた。
+  for (const key of ['cmd', 'prompt']) {
+    if (typeof r[key] !== 'string') continue
+    r[key] = r[key].split('__WF_NONCE__').join(_nonce)
+    // 入力パスも **検証を通した値** を差し込む。
+    // reviewers は Preflight より前に組み立てるため、以前は生の _args.input_path を
+    // 埋め込んでいた。正規化(_toPosix)前の値なので、バックスラッシュ入りパスでは
+    // 「検証した文字列」と「実行に使う文字列」が別物になり、
+    // 検証を通ったのに別ファイルを読む余地があった (pv Lv3 の棚卸し担当が指摘)。
+    r[key] = r[key].split('__INPUT_0__').join(_normalized[0] || '')
+    r[key] = r[key].split('__INPUT_1__').join(_normalized[1] || _normalized[0] || '')
+  }
 }
 
 phase('Review')

@@ -126,3 +126,44 @@ def test_halt_reason_classifies_known_messages():
     assert P._halt_reason("[pv] Lv4 は pv にはありません（実装済み: ...）") == "level_unimplemented"
     assert P._halt_reason("[pv] --keep-raw は使えません: 前回と mode が違います") == "keep_raw_mode_changed"
     assert P._halt_reason("何にも当てはまらない文言") == "other"
+
+
+# --------------------------------------------------------------------------
+# extract_usage_line — 引用された usage マーカーを費用集計に混ぜない
+# --------------------------------------------------------------------------
+# INC-20260812-0728179d7054: 添付やプロンプトが stderr に echo されると、
+# 旧実装 (`"Usage]" in line and "今回" in line`) が本文の一節を拾っていた。
+# 実際に audit.jsonl の usage_line に cgd の依頼テキストが入った。
+def test_usage_line_is_picked_when_emitted_at_line_start():
+    for line in [
+        "[DS Usage] 今回: 入力 1,234 + 出力 567 = 合計 3.2 円",
+        "  [Qwen Usage] 今回: 100 tokens",
+        "[Gemini Usage] 今回: 5,000 tokens",
+    ]:
+        assert P.extract_usage_line(line) == line.strip()
+
+
+def test_quoted_usage_marker_in_prompt_is_not_picked():
+    """誤検出の実物。両方の条件を満たすが、行頭ではないので拾ってはいけない。"""
+    quoted = ("4. stderr の [DS Usage] / [Qwen Usage] / [Gemini Usage] の"
+              "「今回:」行を usage_line に転記する。")
+    assert P.extract_usage_line(quoted) == ""
+
+
+def test_usage_line_requires_konkai():
+    """WARN 行は費用ではないので拾わない。"""
+    assert P.extract_usage_line("[DS Usage] WARN: usage 情報がありません") == ""
+
+
+def test_usage_line_picks_first_and_skips_noise():
+    stderr = "\n".join([
+        "何かのログ",
+        "  - 説明中に [DS Usage] と今回の話が出てくる行",
+        "[DS Usage] 今回: 合計 12 円",
+        "[DS Usage] 今回: 合計 99 円",
+    ])
+    assert P.extract_usage_line(stderr) == "[DS Usage] 今回: 合計 12 円"
+
+
+def test_usage_line_empty_input():
+    assert P.extract_usage_line("") == ""

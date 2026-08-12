@@ -21,6 +21,11 @@ nonce だけは実行時にしか決まらないため `__WF_NONCE__` のまま�
 from __future__ import annotations
 
 import shlex
+from pathlib import Path
+
+# 生ログを「agent に見せる用」に圧縮するフィルタ。wrap() の表示側だけで使う。
+# 自分の隣に置く前提。posix 形式にするのは Git Bash 上で python に渡すため。
+LOGFILTER = (Path(__file__).resolve().parent / "cgd_logfilter.py").as_posix()
 
 CODEX_PROMPT = (
     "まず {input} の全文を読み、記載の差分・対象・評価観点に従ってコードレビュー。"
@@ -118,10 +123,22 @@ def wrap(cmd: str, raw_path: str) -> str:
 
     - 末尾の `__CGD_EXIT__=<n>` は agent に**転記させるだけ**の補助表示。
       判定の権威はあくまで Python が読む .exit ファイル側にある。
-      本文と衝突しないよう printf で行頭を保証する。
+      本文と衝突しないよう `printf '\\n%s\\n'` で**行頭を保証する**
+      (生ログが改行で終わらないとき echo では前の行に連結する)。
+
+    - **Git Bash (MSYS) 前提**。`trap` / `set -o pipefail` / `$(dirname ...)` /
+      `shlex.quote` の単一引用符は POSIX シェルの構文であって cmd.exe では動かない。
+      cgd は Bash tool 経由でしか起動しないので実害は無いが、前提として明記しておく。
 
     - **ラッパ全体の終了コードは常に 0 になる**（末尾の printf が成功するため）。
       これは意図どおり。成否は .exit だけを根拠にする。
+
+    - **表示は cgd_logfilter.py を通す (2026-08-12 追加)。**
+      codex の生ログが 7.2MB に達し、その 94.7% が 39 行の巨大行だった
+      (codex がモデル一覧 JSON 190KB を stderr へ繰り返し吐く不具合)。
+      生ログ本体はフル保存のままで、**agent が読む側だけ**要約する。
+      `|| cat` を付けてあるので、フィルタが動かない環境でも従来どおり動く。
+      rc は表示より前に確定しているため、フィルタは成否判定に触れない。
     """
     q = shlex.quote(raw_path)
     qe = shlex.quote(raw_path + ".exit")
@@ -138,8 +155,14 @@ def wrap(cmd: str, raw_path: str) -> str:
         'trap \'echo "$__cgd_rc" > "$__cgd_exit"\' EXIT ; '
         f"( {cmd} ) > " + '"$__cgd_out"' + " 2>&1 ; "
         "__cgd_rc=$? ; "
-        'cat "$__cgd_out" ; '
-        'echo "__CGD_EXIT__=$__cgd_rc"'
+        # 表示は要約版に通す。**rc はこの 1 行前で確定済み**なので、
+        # フィルタが落ちても成否判定には影響しない。落ちたら素の cat に戻る。
+        "python " + shlex.quote(LOGFILTER) + ' "$__cgd_out" || cat "$__cgd_out" ; '
+        # **先頭に改行を置いて行頭を保証する。** 生ログが改行で終わっていないと
+        # echo ではマーカーが直前の行に連結し、agent が最終行を読み取れない
+        # (Lv6 で DS が指摘)。docstring は以前から printf を前提に書いてあったが、
+        # 実装は echo のままで一致していなかった。
+        "printf '\\n%s\\n' \"__CGD_EXIT__=$__cgd_rc\""
     )
 
 

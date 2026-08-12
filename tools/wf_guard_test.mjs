@@ -463,6 +463,32 @@ const CASES = {
       }
     },
   },
+  args_prompt_gets_nonce_substituted: {
+    // **本番経路の再現 (2026-08-12 実走で判明した停止の原因)。**
+    // Python が生成した prompt には、実行すべきコマンドが本文として埋め込まれている。
+    // agent が実際に叩くのはこの prompt の中身であって r.cmd ではない。
+    // 以前は r.cmd にしか nonce / 入力パスを差し込んでおらず、
+    // **ゲートを張った本来の運用で** hook が codex を deny → 毎回 exec_failed で停止した。
+    // 既存の nonce_self_fetched は内蔵文面しか見ていないため、この経路を素通りさせていた。
+    args: {
+      input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x',
+      reviewers: [{ name: 'r1', kind: 'tech', timeout: 1000, usage: false,
+                    isCodex: true, authSignals: 'a',
+                    cmd: 'CGD_WF_RUN=__WF_NONCE__ run __INPUT_0__',
+                    prompt: '次を実行: CGD_WF_RUN=__WF_NONCE__ run __INPUT_0__' }],
+    },
+    expect: undefined,
+    agent: () => preflightEcho(
+      '{"armed":true,"count":1,"gates":[{"key":"s","corrupt":false,"level":8,"nonce":"deadbeef"}]}',
+    ),
+    assert: ({ reviewPrompts }) => {
+      const p = reviewPrompts[0]
+      if (p.includes('__WF_NONCE__')) throw new Error('prompt 側の __WF_NONCE__ が残っている')
+      if (!p.includes('CGD_WF_RUN=deadbeef')) throw new Error('prompt に nonce が入っていない')
+      if (p.includes('__INPUT_0__')) throw new Error('prompt 側の __INPUT_0__ が残っている')
+      if (!p.includes('C:/tmp-ai/a.txt')) throw new Error('prompt に検証済みの入力パスが入っていない')
+    },
+  },
   prompt_absent_falls_back_to_builtin: {
     args: {
       ...GOOD, label: 'x',

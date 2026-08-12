@@ -2,7 +2,7 @@
 name: pv
 description: 並列検討・検証スキル（parallel verify）。**必ず Workflow を使い、取りまとめは必ず Fable 5 が行う**。依頼テキストは Python (`pv_plan.py`) が決定論的に生成するため、AI が毎回文言を作り直すことによる揺らぎ・引数取り違えが起きない。レベルに応じて呼び出すエンジン（Claude / DeepSeek / Codex）と数が変わり、思考の深さは `--depth` で直交して指定する。コードレビューは `/cgd` の担当で、本スキルは**仕様・設計・方針の検討と検証**を担う。「並列で検討」「多視点で検証」「反証も出して」「pv」などで起動。
 ---
-<!-- SKILL_VERSION: 2026-08-12_111803 -->
+<!-- SKILL_VERSION: 2026-08-12_171326 -->
 
 # pv — 並列検討・検証（parallel verify）
 
@@ -98,6 +98,19 @@ python "C:/ClaudeCode/.claude/tools/pv_plan.py" build --level 3 --topic-file "C:
 添付は Python が読んで依頼文へ埋め込む。**外部エンジン（DeepSeek / Codex）はファイルに
 アクセスできないので、埋め込む以外に実体を渡す手段が無い。** 添付が無いと担当は
 テーマ本文の抽象論しか扱えず、実体との食い違いを検出できない。
+
+**添付は全担当のプロンプトに丸ごと複製される。** Lv3 なら同じ実体が 4 担当ぶん作られ、
+うち DeepSeek と Codex は外部へ実送信される。162KB の添付で Codex 担当だけで
+約 14 万トークンに達した実測例がある。回す前に送信量を見ておくこと:
+
+```bash
+python "C:/ClaudeCode/.claude/tools/pv_plan.py" estimate --level 3 --topic-file "C:/tmp-ai/pv_topic.txt" --attach "C:/path/to/target.py"
+```
+
+担当ごとの送信バイト数・概算トークン・外部への合計を出す。
+**合計 200KB を超えたら build も estimate も非 0 で止まる**（切り捨てはしない）。
+実コードを渡すと単一モジュールで上限に達することがあるので、
+関数単位に絞るなどして事前に削る。
 
 出力の 2 行目 `WORKFLOW_ARGS ` の後ろの JSON が、そのまま Workflow の args になる。
 
