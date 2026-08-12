@@ -232,5 +232,49 @@ def test_corrupt_gate_is_fail_closed(armed_gate) -> None:
     assert "deny" in out
 
 
+# --------------------------------------------------------------------------
+# nonce が「付いているが古い」ケースの診断 (INC-20260812-172431c53929)
+# --------------------------------------------------------------------------
+# Workflow の resume は Preflight agent の結果を再生するので、ゲートを張り直した
+# 後だと**前回の nonce** がコマンドへ差し込まれ、必ず deny される。
+# WF 側では防げない (args も script も同じなら再生は避けられない) ため、
+# 弾く側が原因を名指しする。これが無いと「修正が効いていない」と誤診する
+# —— 実際に 2026-08-12 に誤診して時間を溶かした。
+def test_stale_nonce_is_named_in_the_deny_message(armed_gate) -> None:
+    out = _hook_in({"tool_name": "Bash", "session_id": armed_gate["sid"],
+                    "tool_input": {"command": f'CGD_WF_RUN=deadbeefdeadbeef {CX} exec x'}},
+                   armed_gate["dir"])
+    assert "deny" in out
+    assert "resume" in out, "resume が原因だと書かれていない"
+    assert "deadbeef" in out, "実際に付いていた値が示されていない"
+    assert armed_gate["nonce"][:8] in out, "現在のゲートの値が示されていない"
+
+
+def test_deny_message_does_not_leak_the_full_nonce(armed_gate) -> None:
+    """deny の理由文に**そのまま使える値**を書かない。
+
+    ここは「止めた理由」であって迂回の手引きではない。同定には先頭 8 文字で足りる。
+    """
+    out = _hook_in({"tool_name": "Bash", "session_id": armed_gate["sid"],
+                    "tool_input": {"command": f'CGD_WF_RUN=deadbeefdeadbeef {CX} exec x'}},
+                   armed_gate["dir"])
+    assert armed_gate["nonce"] not in out, "現在の nonce が全文で漏れている"
+
+
+def test_no_stale_note_when_nonce_is_absent(armed_gate) -> None:
+    """nonce を付けていないだけの通常の deny に、resume の話を混ぜない。"""
+    out = _hook_in({"tool_name": "Bash", "session_id": armed_gate["sid"],
+                    "tool_input": {"command": f'{CX} exec x'}}, armed_gate["dir"])
+    assert "deny" in out
+    assert "resume" not in out
+
+
+def test_correct_nonce_still_passes(armed_gate) -> None:
+    """診断を足したせいで正規の迂回まで塞がっていないこと。"""
+    out = _hook_in({"tool_name": "Bash", "session_id": armed_gate["sid"],
+                    "tool_input": {"command": f'CGD_WF_RUN={armed_gate["nonce"]} {CX} exec x'}},
+                   armed_gate["dir"])
+    assert out.strip() == "", f"正しい nonce なのに止められた: {out[:200]}"
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

@@ -327,7 +327,37 @@ def read_gate(session: str | None = None) -> tuple[dict | None, bool]:
 # --------------------------------------------------------------------------
 # hook 本体
 # --------------------------------------------------------------------------
-def _deny_reason(gate: dict) -> str:
+def _stale_nonce_note(presented: str, current: str) -> str:
+    """**nonce は付いているが値が違う**ときだけ出す診断 (2026-08-12)。
+
+    この状態になる原因はほぼ 1 つに絞れる: **Workflow の resume**。
+    resume は `(prompt, opts)` が同じ agent の結果を再生するので、
+    ゲート状態を取ってくる Preflight agent も再生される。
+    その結果、**前回実行時の nonce** がコマンドへ差し込まれ、
+    ゲートを張り直した後だと必ず照合に外れる。
+
+    実際に 2026-08-12、修正が正しく入っているのに resume したせいで
+    再び全 deny になり、「修正が効いていない」と誤診して時間を溶かした
+    (INC-20260812-172431c53929)。**WF 側では防げない**
+    (args も script も同じなら再生は避けられない) ので、
+    弾く側が「何が起きたか」を名指しする。
+
+    値の全文は出さない。ここは deny の理由文で、そのまま貼り付けて
+    迂回に使われるのは意図と逆になる。先頭 8 文字で同定には足りる。
+    """
+    return (
+        "\n**このコマンドには nonce が付いていますが、現在のゲートの値と違います。**\n"
+        f"  付いていた値 : {presented[:8]}…\n"
+        f"  現在のゲート : {current[:8]}…\n"
+        "最も多い原因は **Workflow の resume** です。resume は Preflight の結果を\n"
+        "再生するため、ゲートを張り直した後だと**前回の nonce** が差し込まれます。\n"
+        "→ `resumeFromRunId` を外して**新規実行**してください。\n"
+        "  (どうしても resume したい場合は args.wf_nonce に現在の値を明示する:\n"
+        '   python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" nonce)\n'
+    )
+
+
+def _deny_reason(gate: dict, presented_nonce: str | None = None) -> str:
     # 案内するコマンドは「そのまま打てば通る 1 行」にする。
     # --session の指定や nonce の手動取得を案内に含めない (2026-08-11):
     #   disarm は残り 1 件なら --session 不要、nonce は WF が自分で取得する。
@@ -342,6 +372,9 @@ def _deny_reason(gate: dict) -> str:
         "※ ゲート中は `grep \"codex ...\"` や `codex login status` など"
         "**起動でないコマンドもまとめて止まります**（シェルを解析せず安全側に倒すため）。\n"
     )
+    # nonce の食い違いは原因が特定できるので、他の案内より先に出す。
+    if presented_nonce and presented_nonce != gate.get("nonce"):
+        head += _stale_nonce_note(presented_nonce, str(gate.get("nonce") or ""))
     if used:
         return (
             head
@@ -450,7 +483,7 @@ def handle_hook(payload: dict) -> dict | None:
                 )
         return None
 
-    return _deny(_deny_reason(gate))
+    return _deny(_deny_reason(gate, presented_nonce=nonce))
 
 
 def _run_hook() -> int:
