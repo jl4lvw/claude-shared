@@ -145,14 +145,57 @@ def check_skill_version() -> Result:
     return (WARN, "SKILL_VERSION", "スタンプ無し（更新忘れの可能性）")
 
 
+def _scan_control_bytes(path: Path) -> dict[int, int]:
+    """制御バイトの出現数を数える。**判定ロジックは ensure_lf.scan に一本化する**。
+
+    以前はここに同じ処理を書き写していたが、写経した側にはテストが無く、
+    片方だけ直したときに気づけない（2026-08-11 の 6 観点監査 tests 観点）。
+    read_text() は universal newlines で CR を隠すため、テキストとして走査すると
+    常に 0 件になる点は ensure_lf 側の docstring に集約してある
+    （INC-20260811-144157bce8d2）。
+    """
+    sys.path.insert(0, str(TOOLS_DIR))
+    from ensure_lf import scan  # noqa: PLC0415 — doctor 起動時のみ読む
+
+    return scan(path)
+
+
 def check_workflows() -> list[Result]:
+    """WF スクリプトを「存在」ではなく「起動できる状態か」で判定する。
+
+    存在チェックだけでは不十分だった: ファイルは在るのに CRLF 化していて
+    Workflow の承認ダイアログが「control characters」で起動を拒否し、
+    Lv6/7/8 が使用不能になる事故が 2 回起きている。
+    AGENTS.md「『ファイルがある＝成功』で判定しない」に沿ってバイト検査する。
+    """
     out: list[Result] = []
     for name in ("cgd_lv6_review.js", "cgd_lv7_review.js", "cgd_lv8_review.js"):
         p = WORKFLOWS_DIR / name
-        if p.exists():
-            out.append((OK, f"workflows/{name}", "存在"))
-        else:
+        if not p.exists():
             out.append((WARN, f"workflows/{name}", "不在 (該当レベルの WF 実行が不可)"))
+            continue
+        try:
+            size = p.stat().st_size
+            counts = _scan_control_bytes(p)
+        except OSError as exc:
+            out.append((NG, f"workflows/{name}", f"読めません: {exc}"))
+            continue
+        # 0 バイトは「制御バイト 0 件」なので、中身を見ないと『起動可』に化ける。
+        if size == 0:
+            out.append((NG, f"workflows/{name}", "0 バイト (中身がありません。WF は起動できません)"))
+            continue
+        if counts:
+            detail = ", ".join(f"{hex(b)} x{n}" for b, n in sorted(counts.items()))
+            cr = counts.get(0x0D)
+            hint = "CRLF 化しています。" if cr else ""
+            out.append((
+                NG,
+                f"workflows/{name}",
+                f"{hint}制御バイト検出 ({detail}) — Workflow の承認ダイアログが起動を拒否します。"
+                f" 修正: python .claude/tools/ensure_lf.py --fix --preset cgd-wf",
+            ))
+        else:
+            out.append((OK, f"workflows/{name}", "存在 / LF (起動可)"))
     return out
 
 

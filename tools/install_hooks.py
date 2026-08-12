@@ -67,11 +67,22 @@ _HOOKS: tuple[tuple[str, str | None, str, int, str], ...] = (
         "ctx: 圧縮直後に制約・承認・状態を注入(ctx/SKILL.md 184-186)",
     ),
     (
+        "UserPromptSubmit",
+        None,
+        ".claude/hooks/pv_verify_reminder.py",
+        5,
+        "pv: Step4 の collect 検証が済んでいない run を毎ターン提示する",
+    ),
+    (
+        # 実際の登録は matcher="Bash|PowerShell" / command は `python -X utf8 ...`。
+        # ここが実態とズレていると、登録済みなのに [ADD] と判定して**二重登録**する
+        # (2026-08-12 に --check で検出)。PowerShell 経由の codex 起動も塞ぐ必要が
+        # あるので matcher は 2 つとも要る。
         "PreToolUse",
-        "Bash",
+        "Bash|PowerShell",
         ".claude/hooks/cgd_wf_gate.py",
         5,
-        "cgd Lv6/Lv7 で inline の codex exec を遮断し Workflow 実行を強制",
+        "cgd Lv6/Lv7/Lv8 で inline の codex exec を遮断し Workflow 実行を強制",
     ),
     (
         "PostToolUse",
@@ -148,7 +159,11 @@ def main() -> int:
             continue
         cmd = _command_for(rel)
         label = f"{event}" + (f"[{matcher}]" if matcher else "")
-        if cmd in _existing_commands(settings, event, matcher):
+        # 既存判定はコマンド文字列の完全一致だと弱い。`python -X utf8 ...` のように
+        # 手で足したオプションがあるだけで「未登録」と誤判定し、二重登録になる
+        # (2026-08-12 に cgd_wf_gate で実際に発生)。**スクリプトのパスで見る**。
+        existing = _existing_commands(settings, event, matcher)
+        if cmd in existing or any(rel in c for c in existing):
             print(f"  [OK]   登録済: {label} <- {rel}")
             continue
         print(f"  [ADD]  未登録: {label} <- {rel}  ({note})")
