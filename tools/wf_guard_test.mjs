@@ -446,6 +446,40 @@ const CASES = {
     },
   },
 
+  // --- args.reviewers（Python 側を単一の出所にする経路） ---
+  reviewers_from_args: {
+    // build が渡した定義をそのまま使うこと。
+    args: {
+      ...GOOD, label: 'x',
+      reviewers: [{ name: 'only_one', kind: 'tech', cmd: 'echo hi',
+                    timeout: 1000, usage: false, isCodex: false, authSignals: 'x' }],
+    },
+    expect: undefined,
+    agent: () => preflightEcho(),
+    assert: ({ opts, reviewPrompts }) => {
+      const reviews = opts.filter((o) => o && String(o.label || '').startsWith('review:'))
+      if (reviews.length !== 1) throw new Error(`args の定義が使われていない (${reviews.length} 者)`)
+      if (!reviewPrompts.join('\n').includes('echo hi')) throw new Error('args の cmd が使われていない')
+    },
+  },
+  reviewers_from_args_rejects_bad_shape: {
+    // 形式が不正なら黙って内蔵定義に落ちず、止まること。
+    args: { ...GOOD, label: 'x', reviewers: [{ name: 'x', cmd: 'y', timeout: 0 }] },
+    expect: 'bad_reviewers',
+    agent: () => preflightEcho(),
+  },
+  reviewers_absent_falls_back_to_builtin: {
+    // build を経由しない起動を壊さない（後方互換）。
+    args: { ...GOOD, label: 'x' },
+    expect: undefined,
+    agent: () => preflightEcho(),
+    assert: ({ opts, file }) => {
+      const reviews = opts.filter((o) => o && String(o.label || '').startsWith('review:'))
+      const want = isLv6(file) ? 3 : (file.includes('lv7') ? 4 : 6)
+      if (reviews.length !== want) throw new Error(`内蔵定義の人数が違う: ${reviews.length} != ${want}`)
+    },
+  },
+
   // --- 取りまとめ(判断)のモデル指定 ---
   merge_uses_top_model: {
     // オーケストレーション(指示と判断)は Claude の最上位モデルで行う。

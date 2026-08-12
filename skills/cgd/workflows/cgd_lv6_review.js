@@ -115,7 +115,7 @@ const FINDING_SCHEMA = {
 // ---- レビュアー定義 (Bash コマンドと timeout) ----
 // 既定は Codex+DeepSeek+Qwen の3者。Gemini は includeGemini のときだけ追加（Codexの次に挿入し、
 // SKILL.md の統合表の列順「Codex | (Gemini) | DS | Qwen」と揃える）。
-const reviewers = [
+let reviewers = [
   {
     name: 'codex',
     cmd: `mkdir -p /c/tmp-ai && cd /c/tmp-ai && CGD_WF_RUN=__WF_NONCE__ codex exec -c model_reasoning_effort="${reasoning}" --sandbox read-only --skip-git-repo-check "まず __INPUT_0__ の全文を読み、記載の差分・対象・評価観点に従ってコードレビュー。関連関数の抜粋は入力に同梱済み。追加で開くのは最大5ファイルまでとし、超えるなら読まずに『情報不足: <欲しいファイル>』と書いて終えること。日本語で回答。" < /dev/null`,
@@ -126,25 +126,55 @@ const reviewers = [
   ...(includeGemini ? [{
     name: 'gemini',
     cmd: `python "C:/ClaudeCode/.claude/tools/gemini_advisor.py" --role reviewer "__INPUT_0__"`,
-    timeout: 180000,
+    timeout: 600000,
     usage: true,
     authSignals: 'AuthenticationError / 401 / invalid api key / GEMINI_API_KEY が設定されていません',
   }] : []),
   {
     name: 'deepseek',
     cmd: `python "C:/ClaudeCode/.claude/tools/deepseek_coder.py" --role reviewer "__INPUT_0__"`,
-    timeout: 180000,
+    timeout: 600000,
     usage: true,
     authSignals: 'AuthenticationError / 401 / invalid api key / DEEPSEEK_API_KEY が設定されていません',
   },
   {
     name: 'qwen',
     cmd: `python "C:/ClaudeCode/.claude/tools/qwen_advisor.py" --role reviewer "__INPUT_0__"`,
-    timeout: 180000,
+    timeout: 600000,
     usage: true,
     authSignals: 'AuthenticationError / 401 / InvalidApiKey / DASHSCOPE_API_KEY が設定されていません',
   },
 ]
+
+// args.reviewers が渡されていればそれを使う (2026-08-12)。
+// 同じ定義が lv6/lv7/lv8 に 3 重複製されており、片方だけ直す事故を何度も踏んだ。
+// Python (cgd_reviewers.py) を単一の出所にし、cgd_plan.py build が args に載せる。
+// **Workflow はファイルを読めない**ので、LLM を介さずに届く経路は args しかない。
+// 渡されなければ上の内蔵定義をそのまま使う（後方互換・build を経由しない起動を壊さない）。
+if (Array.isArray(_args.reviewers) && _args.reviewers.length > 0) {
+  const _bad = _args.reviewers.filter(
+    (r) => !r || typeof r.name !== 'string' || typeof r.cmd !== 'string'
+      || !Number.isSafeInteger(r.timeout) || r.timeout <= 0
+  )
+  if (_bad.length > 0) {
+    return {
+      halt: 'bad_reviewers',
+      given: _args.reviewers.length,
+      message: 'args.reviewers の形式が不正です (name/cmd は文字列・timeout は正の整数が必須)。'
+        + ' cgd_plan.py build が出力した WORKFLOW_ARGS をそのまま渡してください。',
+    }
+  }
+  reviewers = _args.reviewers.map((r) => ({
+    name: r.name,
+    kind: r.kind === 'critic' ? 'critic' : 'tech',
+    cmd: r.cmd,
+    timeout: r.timeout,
+    usage: r.usage === true,
+    isCodex: r.isCodex === true,
+    authSignals: typeof r.authSignals === 'string' ? r.authSignals : '',
+  }))
+  log(`[preflight] レビュアー定義を args から採用しました (${reviewers.length} 者)`)
+}
 
 
 // ---- B + D: 入力の実在確認と内容の可視化 (2026-08-11 追加) ----

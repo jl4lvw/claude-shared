@@ -75,17 +75,28 @@ try {
   }
 }
 
-// Review 段のプロンプトから「reviewer 名」と「生ログの保存先」を拾う。
+// Review 段のプロンプトから「reviewer 名」「生ログの保存先」「実行コマンド」を拾う。
 const out = {}
+const cmds = {}
+const timeouts = {}
 for (const p of prompts.slice(1)) {
   const name = (p.match(/reviewer フィールドに "([^"]+)"/)
     || p.match(/外部レビュアー「([^」]+)」/) || [])[1]
   const raw = (p.match(/(C:\/tmp-ai\/cgd_raw_[^\s"'`]+\.md)/) || [])[1]
   if (name && raw) out[name] = raw
+  // 「次のコマンドを実行する:」の次の行が実行コマンド。
+  // 正規表現にエスケープを書くと生成時に化けるので、行分割で取り出す。
+  const lines = p.split(String.fromCharCode(10))
+  const at = lines.findIndex((l) => l.indexOf('次のコマンドを実行する:') !== -1)
+  if (name && at !== -1 && lines[at + 1]) cmds[name] = lines[at + 1]
+  // timeout も拾う。cmd だけ比べていたせいで、WF 側の timeout が
+  // 180000 -> 600000 に変わったのに契約テストが素通りした (2026-08-12)。
+  const tm = at !== -1 ? lines[at].match(/timeout=(\d+)/) : null
+  if (name && tm) timeouts[name] = Number(tm[1])
 }
 
 if (Object.keys(out).length === 0) {
   console.error('[dump] 生ログのパスを 1 件も拾えませんでした（プロンプトの書式が変わった可能性）')
   process.exit(1)
 }
-console.log(JSON.stringify({ paths: out }, null, 1))
+console.log(JSON.stringify({ paths: out, cmds, timeouts }, null, 1))

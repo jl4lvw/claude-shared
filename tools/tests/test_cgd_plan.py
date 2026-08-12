@@ -211,7 +211,10 @@ def test_cli_build_prints_workflow_args(sandbox) -> None:
     line = [l for l in r.stdout.splitlines() if l.startswith("WORKFLOW_ARGS ")]
     assert line, "WORKFLOW_ARGS が出力されていない"
     payload = json.loads(line[0][len("WORKFLOW_ARGS "):])
-    assert set(payload) == {"input_path", "aux_input_path", "label"}
+    assert set(payload) == {"input_path", "aux_input_path", "label", "reviewers"}
+    # reviewers は Python 側を単一の出所にするために載せている（2026-08-12）。
+    assert [r["name"] for r in payload["reviewers"]] == cgd_plan.REVIEWERS[8]
+    assert all(isinstance(r["timeout"], int) and r["timeout"] > 0 for r in payload["reviewers"])
 
 
 # ------------------------------------------------------- WF との契約テスト
@@ -260,6 +263,70 @@ def test_expected_paths_match_with_gemini(level: int) -> None:
         f"参加者が食い違う\n  予測: {sorted(predicted)}\n  実際: {sorted(actual)}"
     )
     assert predicted == actual
+
+
+def _wf_cmds(level: int, include_gemini: bool = False) -> dict:
+    args = {"input_path": "C:/tmp-ai/a.txt", "label": "L", "wf_nonce": "NONCE"}
+    if level in (7, 8):
+        args["aux_input_path"] = "C:/tmp-ai/b.txt"
+    if include_gemini:
+        args["include_gemini"] = True
+    r = subprocess.run(
+        ["node", str(DUMP_MJS), f"cgd_lv{level}_review.js", json.dumps(args)],
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    assert r.returncode == 0, f"dump に失敗: {r.stderr}"
+    return json.loads(r.stdout)["cmds"]
+
+
+def _wf_timeouts(level: int, include_gemini: bool = False) -> dict:
+    args = {"input_path": "C:/tmp-ai/a.txt", "label": "L", "wf_nonce": "NONCE"}
+    if level in (7, 8):
+        args["aux_input_path"] = "C:/tmp-ai/b.txt"
+    if include_gemini:
+        args["include_gemini"] = True
+    r = subprocess.run(
+        ["node", str(DUMP_MJS), f"cgd_lv{level}_review.js", json.dumps(args)],
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    assert r.returncode == 0, f"dump に失敗: {r.stderr}"
+    return json.loads(r.stdout)["timeouts"]
+
+
+@pytest.mark.parametrize("level", [6, 7, 8])
+@pytest.mark.parametrize("gemini", [False, True])
+def test_python_reviewers_match_workflow_builtin(level: int, gemini: bool) -> None:
+    """cgd_reviewers.py の定義 == WF 内蔵の reviewers、であること。
+
+    同じ定義が 3 本の WF に複製されており、片方だけ直す事故を何度も踏んでいる。
+    Python 側を単一の出所にする前提として、**両者が一致していること**を固定する。
+    ここが落ちたら、どちらかを直したときにもう片方が取り残されている。
+    """
+    import cgd_reviewers  # noqa: PLC0415
+    aux = "C:/tmp-ai/b.txt" if level in (7, 8) else None
+    py = {r["name"]: r["cmd"].replace("__WF_NONCE__", "NONCE")
+          for r in cgd_reviewers.build_reviewers(level, "C:/tmp-ai/a.txt", aux, gemini)}
+    wf = _wf_cmds(level, gemini)
+    assert set(py) == set(wf), f"参加者が不一致: {sorted(set(py) ^ set(wf))}"
+    for name in py:
+        assert py[name] == wf[name], (
+            f"{name} のコマンドが食い違う\n  py: {py[name]}\n  wf: {wf[name]}"
+        )
+
+    # **cmd だけ比べていては足りない。** 実際に、別セッションが WF 側の timeout を
+    # 180000 -> 600000 に上げたのに、cmd が同じだったのでこのテストが素通りした
+    # (2026-08-12)。値を持つ項目は全部突き合わせる。
+    py_to = {r["name"]: r["timeout"]
+             for r in cgd_reviewers.build_reviewers(level, "C:/tmp-ai/a.txt", aux, gemini)}
+    wf_to = _wf_timeouts(level, gemini)
+    assert py_to == wf_to, f"timeout が食い違う\n  py: {py_to}\n  wf: {wf_to}"
+
+
+@pytest.mark.parametrize("level", [6, 7, 8])
+def test_python_reviewer_names_match_cgd_plan(level: int) -> None:
+    """cgd_reviewers と cgd_plan.REVIEWERS が同じ参加者を指していること。"""
+    import cgd_reviewers  # noqa: PLC0415
+    assert cgd_reviewers.reviewer_names(level) == cgd_plan.REVIEWERS[level]
 
 
 def test_label_sanitization_is_consistent_with_workflow() -> None:

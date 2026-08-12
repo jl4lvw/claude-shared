@@ -48,6 +48,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cgd_reviewers import build_reviewers  # noqa: E402
+
 try:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
@@ -163,9 +166,22 @@ def cmd_build(args: argparse.Namespace) -> int:
     # 検証忘れの印。消せるのは collect が成功したときだけ。
     pending_path(run).write_text(run, encoding="utf-8", newline="")
 
+    # レビュアー定義は **Python を単一の出所**にして args で渡す。
+    # Workflow はファイルを読めないので、LLM を介さず届く経路は args だけ。
+    # WF 側は受け取った定義を検証してから使い、無ければ内蔵定義に落ちる(後方互換)。
+    reviewers = build_reviewers(
+        args.level, plan["input_path"], plan["aux_input_path"],
+        include_gemini=bool(args.include_gemini),
+        reasoning=getattr(args, "codex_reasoning", None) or "medium",
+    )
+    plan["reviewers"] = reviewers
+    (d / "plan.json").write_text(json.dumps(plan, ensure_ascii=False, indent=1),
+                                 encoding="utf-8", newline="")
+
     wf_args = {
         "input_path": plan["input_path"],
         "label": label,
+        "reviewers": reviewers,
     }
     if aux:
         wf_args["aux_input_path"] = plan["aux_input_path"]
@@ -317,6 +333,9 @@ def main() -> int:
     p_build.add_argument("--input", required=True)
     p_build.add_argument("--aux")
     p_build.add_argument("--include-gemini", action="store_true")
+    p_build.add_argument("--codex-reasoning", default="medium",
+                         choices=["low", "medium", "high"],
+                         help="Lv6 の codex reasoning (Lv7/Lv8 は med+high 固定)")
 
     for name, helptext in (("collect", "生ログの実在・サイズ・構造を判定する"),
                            ("doctor", "run の状態を表示する")):

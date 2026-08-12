@@ -53,7 +53,7 @@ TARGETS="skills commands tools rules memory hooks incidents"
 DIFF_FOUND=0
 # /g-ul / /g-dl と同じ除外パターンに揃える
 # robocopy /XD __pycache__ .bootstrap-bak-* .migrate-pending-*
-# robocopy /XF *.bak_* *.pyc .deepseek_usage_session.json
+# robocopy /XF *.bak_* *.pyc .deepseek_usage_session.json .qwen_usage_session.json telemetry.jsonl
 for t in $TARGETS; do
     src="$CLAUDE_DIR/$t"
     dst="$SHARED_BASH/$t"
@@ -74,7 +74,8 @@ for t in $TARGETS; do
         | grep -v '\.migrate-pending-' \
         | grep -v '\.bak_' \
         | grep -v '\.pyc' \
-        | grep -v 'deepseek_usage_session\.json' \n        | grep -v 'telemetry\.jsonl')
+        | grep -v 'deepseek_usage_session\.json' \
+        | grep -v 'telemetry\.jsonl')
     if [ -n "$diff_out" ]; then
         count=$(echo "$diff_out" | wc -l)
         echo "  $t : $count entries differ"
@@ -221,7 +222,7 @@ fi
 
 ## 実装メモ
 
-- 差分検出は `diff -rq` + grep 除外で行う。robocopy `/L /MIR` と機能的に等価（`__pycache__`, `.bootstrap-bak-*`, `.migrate-pending-*`, `*.bak_*`, `*.pyc`, `.deepseek_usage_session.json` を除外）
+- 差分検出は `diff -rq` + grep 除外で行う。robocopy `/L /MIR` と機能的に等価（`__pycache__`, `.bootstrap-bak-*`, `.migrate-pending-*`, `*.bak_*`, `*.pyc`, `.deepseek_usage_session.json`, `.qwen_usage_session.json`, `telemetry.jsonl` を除外）
 - `cygpath -u` が利用できない環境向けに sed フォールバックを用意
 - PowerShell ツールが exit code 1 で出力を返さない環境（Claude Code の特定セッション）が報告されているため、本スキルは Bash 単独運用に統一
 

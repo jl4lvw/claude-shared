@@ -46,6 +46,8 @@ except Exception:  # pragma: no cover
     pass
 
 ROOT = Path(os.environ.get("PV_ROOT", r"C:/tmp-ai/pv"))
+# 実ファイルを探す基準。collect をどこから叩いても同じ結果になるようにする。
+_PROJECT_ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR", r"C:/ClaudeCode"))
 TEMPLATE_DIR = Path(__file__).parent / "pv_templates"
 TEMPLATE_VERSION = "1"
 
@@ -93,6 +95,14 @@ _HALT_PATTERNS: tuple[tuple[str, str], ...] = (
     ("添付が前回と違います", "keep_raw_attach_changed"),
     ("トピックのハッシュがありません", "keep_raw_no_hash"),
     ("level/depth が違います", "keep_raw_level_changed"),
+    ("前回と mode が違います", "keep_raw_mode_changed"),
+    ("差分が前回と違います", "keep_raw_diff_changed"),
+    ("--mode review には --diff が必須", "review_diff_missing"),
+    ("--diff は --mode review", "diff_without_review"),
+    ("差分ファイルがありません", "diff_missing"),
+    ("差分が空です", "diff_empty"),
+    ("差分としてファイルを 1 つも読めません", "diff_unparsable"),
+    ("未知の mode です", "bad_mode"),
     ("添付の合計が上限を超えました", "attach_too_large"),
     ("添付が見つかりません", "attach_missing"),
     ("不正な run 名", "bad_run_name"),
@@ -117,6 +127,160 @@ def _forward_incident(title: str, *, category: str, detail: str,
             print(f"[pv] 不具合台帳に記録しました: {inc_id}", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001
         print(f"[pv] 不具合台帳への転記に失敗（本処理は継続）: {exc}", file=sys.stderr)
+
+
+# --- review モードの照合ヘルパ ----------------------------------------------
+# 差分パースと finding 検証の実体は pv_review.py（純関数・pytest 済み）にある。
+# ここは「ファイルを読む / plan.json へ落とす」という I/O の橋渡しだけを持つ。
+def _pv_review():
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import pv_review  # type: ignore
+
+    return pv_review
+
+
+def _review_index(diff_text: str):
+    return _pv_review().parse_unified_diff(diff_text)
+
+
+def _index_to_json(index) -> dict:
+    """DiffIndex を plan.json に載せられる形にする。"""
+    return {
+        "files": [
+            {
+                "new_path": f.new_path, "old_path": f.old_path, "status": f.status,
+                "is_binary": f.is_binary,
+                "new_hunks": [list(h) for h in f.new_hunks],
+                "old_hunks": [list(h) for h in f.old_hunks],
+            }
+            for f in index.files
+        ],
+        "parse_warnings": list(index.parse_warnings),
+    }
+
+
+def _index_from_json(data: dict):
+    """plan.json の内容から DiffIndex を復元する（差分ファイルを読み直さない）。
+
+    差分ファイルは build 後に書き換えられうるので、**build 時点の索引**で照合する。
+    これで「レビュー中に差分が変わって判定がぶれる」経路を塞ぐ。
+    """
+    mod = _pv_review()
+    index = mod.DiffIndex()
+    for f in (data or {}).get("files", []):
+        index.files.append(mod.DiffFile(
+            new_path=f.get("new_path"), old_path=f.get("old_path"),
+            status=f.get("status", "modified"), is_binary=bool(f.get("is_binary")),
+            new_hunks=[tuple(h) for h in f.get("new_hunks", [])],
+            old_hunks=[tuple(h) for h in f.get("old_hunks", [])],
+        ))
+    index.parse_warnings = list((data or {}).get("parse_warnings", []))
+    return index
+
+
+# 折り返して複数行に書かれることがある。search で 1 行だけ読むと
+# 正しい統合でも「取りこぼし」と誤判定して弾きすぎる（pv review が指摘）。
+_ADOPTED_RE = re.compile(r"^\[pv-adopted\]\s*(.+)$", re.MULTILINE)
+# 採用 id として妥当な形（担当id:連番）。装飾や説明文を拾わないため。
+_FINDING_ID_RE = re.compile(r"([a-z_]+:\d+)")
+
+
+def verify_review(plan: dict, with_coverage: bool = True) -> dict:
+    """review モードの finding を機械照合する。
+
+    NG にするのは「構造的に不可能」なものだけ、という方針は pv_review 側と揃える。
+    ここで run 全体を NG にするのは次の 3 つに限る:
+      - findings を出したのに **1 件も有効でない**担当がいる（成果ゼロと同じ）
+      - 統合結果が **有効な finding を取りこぼしている**
+      - 統合結果が **無効な finding を採用している**
+    1 件の幻覚で 10 件の正当な指摘を捨てないための線引き。
+    """
+    mod = _pv_review()
+    index = _index_from_json(plan.get("diff_index") or {})
+    result: dict = {"ok": True, "problems": [], "tasks": {}, "coverage": None}
+
+    # 実ファイルが手元にあるなら総行数を数えて渡す（無ければ超過判定はしない）
+    counts: dict[str, int] = {}
+    uncounted: list[str] = []
+    for f in index.files:
+        if not f.new_path or f.is_binary:
+            continue
+        # CWD 相対だと collect をどこから叩いたかで当たり外れが変わり、
+        # 外れたときは無言で行数チェックが無効になる（pv review 3 者一致）。
+        # プロジェクト root からも探し、**見つからなかった事実を残す**。
+        candidates = [Path(f.new_path), _PROJECT_ROOT / f.new_path]
+        for p in candidates:
+            if p.is_file():
+                try:
+                    counts[f.new_path] = len(
+                        p.read_text(encoding="utf-8", errors="replace").splitlines())
+                except OSError:
+                    pass
+                break
+        else:
+            uncounted.append(f.new_path)
+
+    if uncounted:
+        result["uncounted_files"] = uncounted   # 行数超過チェックが効かなかったファイル
+
+    raw_checks: dict[str, list] = {}
+    for t in plan.get("tasks", []):
+        raw_path = Path(t["raw_path"])
+        if not raw_path.is_file():
+            continue
+        text = raw_path.read_text(encoding="utf-8", errors="replace")
+        findings, parse_errors = mod.parse_findings(text)
+        checks = mod.validate_findings(findings, index, file_line_counts=counts)
+        raw_checks[t["id"]] = checks
+        valid = [c for c in checks if c.ok]
+        result["tasks"][t["id"]] = {
+            "findings": len(findings),
+            "valid": len(valid),
+            "invalid": len(checks) - len(valid),
+            "scopes": {s: sum(1 for c in valid if c.scope == s)
+                       for s in ("in_diff", "out_of_diff", "file_level")},
+            "parse_errors": parse_errors,
+            "errors": [f"{c.finding_id}: {e}" for c in checks for e in c.errors],
+            "warnings": [f"{c.finding_id}: {w}" for c in checks for w in c.warnings],
+        }
+        if findings and not valid:
+            result["problems"].append(
+                f"{t['id']}: {len(findings)} 件すべてが無効（成果ゼロ扱い）")
+
+    merge_path = Path((plan.get("merge") or {}).get("raw_path", ""))
+    if with_coverage and merge_path.is_file():
+        merged_text = merge_path.read_text(encoding="utf-8", errors="replace")
+        # 行が折り返されることがあるので **全部の [pv-adopted] 行**を拾い、
+        # そこから id の形をしたものだけを抜く。1 行だけ読むと、正しい統合でも
+        # 「取りこぼし」と誤判定して弾きすぎる（pv review 自身が指摘）。
+        matches = _ADOPTED_RE.findall(merged_text)
+        if not matches:
+            result["problems"].append("[pv-adopted] の行が統合結果にありません")
+        else:
+            adopted = sorted({x for line in matches for x in _FINDING_ID_RE.findall(line)})
+            if not adopted:
+                result["problems"].append(
+                    "[pv-adopted] はありますが、id の形（担当id:連番）を 1 つも読めません")
+            cov = mod.check_merge_coverage(raw_checks, adopted)
+            result["coverage"] = cov
+            if cov["missing"]:
+                result["problems"].append(
+                    "統合結果が有効な指摘を取りこぼしています: " + ", ".join(cov["missing"]))
+            all_ids = {c.finding_id for cs in raw_checks.values() for c in cs}
+            invalid_ids = {c.finding_id for cs in raw_checks.values() for c in cs if not c.ok}
+            bad_adopted = sorted(set(adopted) & invalid_ids)
+            if bad_adopted:
+                result["problems"].append(
+                    "無効な指摘を採用しています: " + ", ".join(bad_adopted))
+            # どの担当も出していない id を採用している = 出典不明。統合由来なら
+            # `merge:` 接頭辞を使う約束なので、それ以外は捏造を疑う（通しすぎ防止）。
+            unknown = sorted(x for x in set(adopted) - all_ids if not x.startswith("merge:"))
+            if unknown:
+                result["problems"].append(
+                    "どの担当も出していない id を採用しています: " + ", ".join(unknown))
+
+    result["ok"] = not result["problems"]
+    return result
 
 
 def _halt_reason(message: str) -> str:
@@ -234,6 +398,41 @@ _DEPTH_PARAMS: dict[str, dict] = {
 
 # レベル定義。「レベル番号 + 目的ラベル」を併記するのは、
 # 番号だけでは選べないという批評指摘への対応。
+# --- モード（レベルと直交する軸）-------------------------------------------
+# 2026-08-12 追加。cgd Lv2 レビューで「レベル番号の意味を変えると cgd と混同する」
+# と指摘されたため、**レベル番号の意味は変えず**、役割テンプレートだけ差し替える。
+#   deliberate … 仕様・方針の検討（従来の pv）
+#   review     … 差分（コード）レビュー。--diff 必須
+MODES = ("deliberate", "review")
+
+# review モードのレベル定義。人数と engine の割り当ては deliberate と同じ構造。
+REVIEW_LEVELS: dict[int, dict] = {
+    1: {
+        "label": "軽量レビュー — Claude 2 視点（バグ / 結合）+ Fable 統合",
+        "tasks": [
+            {"id": "bug", "engine": "claude", "role": "review_bug"},
+            {"id": "integration", "engine": "claude", "role": "review_integration"},
+        ],
+    },
+    2: {
+        "label": "標準レビュー — Claude 2 視点 + DeepSeek（外部視点）+ Fable 統合",
+        "tasks": [
+            {"id": "bug", "engine": "claude", "role": "review_bug"},
+            {"id": "integration", "engine": "claude", "role": "review_integration"},
+            {"id": "outside_review", "engine": "deepseek", "role": "review_outside"},
+        ],
+    },
+    3: {
+        "label": "深掘りレビュー — Claude 2 視点 + DeepSeek + Codex（周辺探索）+ Fable 統合",
+        "tasks": [
+            {"id": "bug", "engine": "claude", "role": "review_bug"},
+            {"id": "integration", "engine": "claude", "role": "review_integration"},
+            {"id": "outside_review", "engine": "deepseek", "role": "review_outside"},
+            {"id": "deep", "engine": "codex", "role": "review_deep"},
+        ],
+    },
+}
+
 LEVELS: dict[int, dict] = {
     1: {
         "label": "軽量 — Claude 2 視点 + Fable 統合",
@@ -381,8 +580,22 @@ def cmd_build(args: argparse.Namespace) -> int:
     skill_warnings = check_skill_version(getattr(args, "skill_version", None))
     for w in skill_warnings:
         print(w, file=sys.stderr)
-    if args.level not in LEVELS:
-        impl = ", ".join(f"Lv{k}" for k in sorted(LEVELS))
+    run_mode = getattr(args, "mode", "deliberate") or "deliberate"
+    if run_mode not in MODES:
+        raise SystemExit(f"[pv] 未知の mode です: {run_mode}（{' / '.join(MODES)}）")
+    # review モードで差分が無いと、全 finding が「差分に存在しないファイル」で
+    # NG になり実質全滅する。**早期に止める**（cgd Lv2 レビュー 🟠）。
+    if run_mode == "review" and not getattr(args, "diff", None):
+        raise SystemExit(
+            "[pv] --mode review には --diff が必須です。\n"
+            "     差分が無いと finding の位置を照合できず、全件 NG になります。"
+        )
+    if run_mode != "review" and getattr(args, "diff", None):
+        raise SystemExit("[pv] --diff は --mode review のときだけ使えます。")
+
+    levels = REVIEW_LEVELS if run_mode == "review" else LEVELS
+    if args.level not in levels:
+        impl = ", ".join(f"Lv{k}" for k in sorted(levels))
         # 2026-08-12 ユーザー決定: pv は Lv1-3（検討）まで。実装が要る Lv4 以降は
         # cgd へ引き継ぐ。cgd Lv3 の 4 者レビューで「pv に実装を持たせると
         # cgd と責務が重複し、同じ Lv 番号で意味が違って選べなくなる」と全員が反対した。
@@ -399,11 +612,12 @@ def cmd_build(args: argparse.Namespace) -> int:
     if len(topic.encode("utf-8")) < 20:
         raise SystemExit("[pv] トピックが短すぎます（20 バイト以上必要）")
 
-    spec_check = LEVELS[args.level]
+    spec_check = levels[args.level]
     # ディレクトリを作る前にテンプレートの存在を確認する。
     # 途中で落ちると plan.json の無い run ディレクトリが残り、
     # doctor が「build がまだ」と誤案内する（自己レビュー指摘）。
-    for t in spec_check["tasks"] + [{"role": "merge"}]:
+    merge_role = "merge_review" if run_mode == "review" else "merge"
+    for t in spec_check["tasks"] + [{"role": merge_role}]:
         tpl = TEMPLATE_DIR / f"{t['role']}.txt"
         if not tpl.is_file():
             raise SystemExit(f"[pv] テンプレートがありません: {tpl}")
@@ -415,7 +629,30 @@ def cmd_build(args: argparse.Namespace) -> int:
     # ファイルを読んだ場合にしか実体を見られない (自己レビュー指摘 A-1)。
     # 内容は Python が読んで依頼文へ埋め込む。exec エンジン (DS/Codex) は
     # ファイルにアクセスできないので、埋め込み以外に渡す手段が無い。
-    attachments, attach_block, attach_sha = _load_attachments(args.attach or [])
+    # review モードでは差分そのものを添付の先頭に置く。外部エンジンはファイルへ
+    # アクセスできないので、埋め込む以外に差分を渡す手段が無い。
+    attach_paths = list(args.attach or [])
+    diff_sha = None
+    diff_summary: dict | None = None
+    if run_mode == "review":
+        diff_path = Path(args.diff)
+        if not diff_path.is_file():
+            raise SystemExit(f"[pv] 差分ファイルがありません: {diff_path}")
+        diff_text = diff_path.read_text(encoding="utf-8", errors="replace")
+        if not diff_text.strip():
+            raise SystemExit(f"[pv] 差分が空です: {diff_path}")
+        diff_sha = hashlib.sha256(diff_text.encode("utf-8")).hexdigest()[:16]
+        index = _review_index(diff_text)
+        if not index.files:
+            raise SystemExit(
+                f"[pv] 差分としてファイルを 1 つも読めませんでした: {diff_path}\n"
+                "     unified diff 形式か確認してください（git diff / diff -u）。")
+        diff_summary = _index_to_json(index)
+        for w in index.parse_warnings:
+            print(f"[pv] 差分の注意: {w}", file=sys.stderr)
+        attach_paths.insert(0, str(diff_path))
+
+    attachments, attach_block, attach_sha = _load_attachments(attach_paths)
 
     # 既定の run 名は秒精度だった。複数セッションが同じ秒に build すると
     # plan/prompts を静かに上書きし合う（2026-08-12 自己レビュー M-10）。
@@ -445,6 +682,18 @@ def cmd_build(args: argparse.Namespace) -> int:
                 _prev = json.loads(prev.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
                 _prev = {}
+            # mode と差分が違えば、前回の回答は「別のものへのレビュー」になる。
+            # ここを甘くすると別 diff のレビューが混入する（cgd Lv2 レビュー 🟠）。
+            if _prev and (_prev.get("mode") or "deliberate") != run_mode:
+                raise SystemExit(
+                    "[pv] --keep-raw は使えません: 前回と mode が違います"
+                    f"\n     前回 {_prev.get('mode') or 'deliberate'} → 今回 {run_mode}"
+                    "\n     --force で作り直してください。")
+            if _prev and run_mode == "review" and _prev.get("diff_sha256") != diff_sha:
+                raise SystemExit(
+                    "[pv] --keep-raw は使えません: 差分が前回と違います"
+                    f"\n     前回 sha={_prev.get('diff_sha256')} / 今回 sha={diff_sha}"
+                    "\n     別 diff のレビューが混ざるため止めました。--force で作り直してください。")
             if _prev and (_prev.get("level") != args.level or _prev.get("depth") != args.depth):
                 raise SystemExit(
                     "[pv] --keep-raw は使えません: 前回と level/depth が違います"
@@ -494,7 +743,7 @@ def cmd_build(args: argparse.Namespace) -> int:
     for x in stale:
         x.unlink()
 
-    spec = LEVELS[args.level]
+    spec = levels[args.level]
     params = _DEPTH_PARAMS[args.depth]
     tasks: list[dict] = []
     for t in spec["tasks"]:
@@ -546,7 +795,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         })
 
     merge_raw = str(d / "raw" / "merge.md").replace("\\", "/")
-    merge_prompt = render("merge", {
+    merge_prompt = render(merge_role, {
         "TOPIC": topic,
         "ATTACHMENTS": attach_block,
         "RAW_LIST": "\n".join(f"  - {t['id']}: {t['raw_path']}" for t in tasks),
@@ -571,6 +820,10 @@ def cmd_build(args: argparse.Namespace) -> int:
         "level": args.level,
         "level_label": spec["label"],
         "depth": args.depth,
+        "mode": run_mode,
+        "diff_file": str(Path(args.diff)).replace("\\", "/") if run_mode == "review" else None,
+        "diff_sha256": diff_sha,
+        "diff_index": diff_summary,
         "template_version": TEMPLATE_VERSION,
         # どの版の手順で回した run かを残す。後から結果を読み返すとき、
         # 手順が変わっていれば結果の意味も変わるため。
@@ -724,7 +977,7 @@ def _postprocess(engine: str, text: str) -> tuple[str, str]:
     usage = f"[Codex Usage] 今回: {tokens[-1]} tokens (サブスク・実費 ¥0)" if tokens else ""
 
     lines = text.splitlines()
-    marks = [i for i, ln in enumerate(lines) if ln.strip() == "codex"]
+    marks = [i for i, ln in enumerate(lines) if ln.strip() == _CODEX_ANSWER_MARK]
     if len(marks) != 1:
         # 0 個 = マーカーが無い / 2 個以上 = 本文にも現れている。
         # どちらも「どこが最終回答か機械的に決められない」ので切らない。
@@ -852,6 +1105,7 @@ def cmd_exec(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------
 def _inspect(plan: dict, include_merge: bool = False) -> list[dict]:
     out = []
+    review_mode = (plan.get("mode") or "deliberate") == "review"
     items = list(plan.get("tasks", []))
     if include_merge:
         m = plan.get("merge") or {}
@@ -866,6 +1120,11 @@ def _inspect(plan: dict, include_merge: bool = False) -> list[dict]:
         if ok:
             body = p.read_text(encoding="utf-8", errors="replace")
             structure = len(_STRUCTURE_RE.findall(body))
+            # review モードの回答は JSON が主体なので、箇条書きが 3 行に満たない
+            # ことがある（指摘ゼロの `[]` はまず落ちる）。JSON フェンスがあれば
+            # 「構造がある」とみなす。判定は verify_review 側が担う。
+            if review_mode and "```" in body and '"finding_id"' in body:
+                structure = max(structure, MIN_STRUCTURE_LINES)
             if structure < MIN_STRUCTURE_LINES:
                 ok, reason = False, f"構造が薄い（箇条書き/見出し {structure} < {MIN_STRUCTURE_LINES}）"
             else:
@@ -1006,22 +1265,33 @@ def cmd_collect(args: argparse.Namespace) -> int:
     bad = [r for r in rows if not r["ok"]]
 
     verify: dict = {}
+    review: dict = {}
+    # review モードの finding 照合は **--include-merge を付けなくても行う**。
+    # 内側に置くと、付けずに collect したときに幻覚 finding が 100% 素通りし、
+    # review_verify が null のまま ok:true になる（pv review 自身が指摘した穴）。
+    if not bad and (plan.get("mode") or "deliberate") == "review":
+        review = verify_review(plan, with_coverage=args.include_merge)
     if args.include_merge and not bad:
         verify = verify_merge(plan)
 
-    ok_all = (not bad) and (verify.get("ok", True) if args.include_merge else True)
+    ok_all = (not bad) and (verify.get("ok", True) if args.include_merge else True) \
+        and (review.get("ok", True) if review else True)
     print(json.dumps({"run": args.run, "tasks": rows, "ok": ok_all,
-                      "merge_verify": verify or None}, ensure_ascii=False))
+                      "merge_verify": verify or None,
+                      "review_verify": review or None}, ensure_ascii=False))
 
     # 記録は **pending を消す前**に行う。逆順だと、記録に失敗したときに
     # 「印だけ消えて痕跡が無い」状態になる（Lv8 で Codex(high) が指摘）。
     _usage("collect", run=args.run, level=plan.get("level"), ok=ok_all,
-           reason=None if ok_all else ("artifacts_incomplete" if bad else "merge_unverified"),
+           reason=None if ok_all else ("artifacts_incomplete" if bad else
+                   ("review_unverified" if review and not review.get("ok") else "merge_unverified")),
            detail={
                "include_merge": bool(args.include_merge),
                "ng": [{"id": r["id"], "reason": r.get("reason"), "bytes": r["bytes"]} for r in bad],
                "total_bytes": sum(r["bytes"] for r in rows),
                "merge_problems": verify.get("problems") if verify else None,
+               "review_problems": review.get("problems") if review else None,
+               "review_tasks": review.get("tasks") if review else None,
            })
     if args.include_merge and ok_all:
         # 統合フェーズの実績。従来は Python を一度も通らず手動 record 頼みで、
@@ -1044,6 +1314,11 @@ def cmd_collect(args: argparse.Namespace) -> int:
     if bad:
         for r in bad:
             print(f"[pv] NG {r['id']}: {r.get('reason') or '判定 NG'} -> {r['raw_path']}", file=sys.stderr)
+        return 1
+    if review and not review.get("ok"):
+        print("[pv] NG レビュー結果の照合に失敗しました:", file=sys.stderr)
+        for msg in review["problems"]:
+            print(f"     - {msg}", file=sys.stderr)
         return 1
     if verify and not verify.get("ok"):
         print("[pv] NG 統合結果の検証に失敗しました（raw を開いた証拠が確認できません）:", file=sys.stderr)
@@ -1194,6 +1469,10 @@ def main() -> int:
                    help="いま読み込んでいる pv/SKILL.md 冒頭のスタンプ。"
                         "ディスク上の値と一致しなければ build を止める（版ずれ検出）")
     b.add_argument("--depth", default="mid", choices=DEPTHS)
+    b.add_argument("--mode", default="deliberate", choices=MODES,
+                   help="deliberate=仕様・方針の検討（既定） / review=差分レビュー（--diff 必須）")
+    b.add_argument("--diff", default=None,
+                   help="レビュー対象の unified diff。--mode review のときのみ")
     b.add_argument("--attach", action="append",
                    help="検証対象の実体を渡す（複数可）。内容を依頼文へ埋め込む。合計 200KB まで")
     b.add_argument("--run", default=None, help="省略時は現在時刻から生成")
