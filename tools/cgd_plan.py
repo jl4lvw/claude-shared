@@ -303,10 +303,43 @@ def cmd_collect(args: argparse.Namespace) -> int:
         return EXIT_NG
     plan = json.loads(plan_file.read_text(encoding="utf-8"))
 
-    results = [_inspect_raw(p) for p in plan["expected_raw"].values()]
-    names = list(plan["expected_raw"])
-    for name, r in zip(names, results):
+    # WF 内蔵のレビュアー定義で走った場合（args に reviewers を渡さない起動）は、
+    # 生ログが**旧形式のパス**に出る。expected_raw_paths_v2 の docstring が
+    # 「旧形式も残してあるのは WF 内蔵定義がそれを使うため」と書いているとおり、
+    # これは想定内の起動経路。にもかかわらず collect は新形式しか見ていなかったため、
+    # **4 者が完走していても「レビュアーが実際には走っていない可能性」と誤報**していた
+    # （2026-08-12 実際に踏んだ）。ゲートが狼少年になるのが一番まずいので、
+    # 見つからなければ旧形式も見に行き、どちらで見つかったかを明示する。
+    try:
+        builtin = expected_raw_paths(
+            plan["level"], plan["label"], plan["run_tag"],
+            bool(plan.get("include_gemini", False)),
+        )
+    except (KeyError, TypeError):
+        builtin = {}      # 古い plan.json。フォールバックはできないが collect は続ける
+
+    # 見つかっても **合格にはしない**。旧形式の生ログは agent が Write ツールで
+    # 保存したもので、隣に .exit（シェルが書いた終了コード）が無い。
+    # .exit があることこそがこのゲートを「非 LLM」たらしめているので、
+    # 弱い証拠で通すとゲートの意味が消える。
+    # 変えるのは**診断の正確さ**だけ:「走っていない可能性」→「旧形式に在るが完走未確認」。
+    results = []
+    fell_back: list[str] = []
+    for name, p in plan["expected_raw"].items():
+        r = _inspect_raw(p)
+        if not r["ok"] and not r["exists"] and name in builtin:
+            alt = _inspect_raw(builtin[name])
+            if alt["exists"] and alt["bytes"] >= 200 and alt["structure_lines"] >= 3:
+                fell_back.append(name)
+                r["builtin_log"] = {"path": builtin[name], "bytes": alt["bytes"],
+                                    "structure_lines": alt["structure_lines"]}
+                r["reason"] = (
+                    f"登録先には無いが、**旧形式のパスに生ログがある**"
+                    f"（{alt['bytes']} bytes）。ただし .exit が無いため完走は確認できない。"
+                    "WF に args.reviewers を渡しておらず内蔵定義で走った可能性が高い"
+                )
         r["reviewer"] = name
+        results.append(r)
     ok = all(r["ok"] for r in results)
 
     # **ここが成否の権威**であることを出力にも明示する。
@@ -322,7 +355,21 @@ def cmd_collect(args: argparse.Namespace) -> int:
             "WF の戻り値にある executed は agent の転記なので、食い違ったらこちらを採る"
         ),
         "failed": [r["reviewer"] for r in results if not r["ok"]],
+        "fell_back_to_builtin": fell_back,
     }, ensure_ascii=False))
+
+    if fell_back:
+        print(
+            f"[cgd plan] ⚠️ {len(fell_back)} 者の生ログが**旧形式のパス**に見つかりました: "
+            f"{', '.join(fell_back)}\n"
+            "  → 原因: Workflow に `args.reviewers` を渡していないため、WF が内蔵の\n"
+            "     レビュアー定義にフォールバックしています。レビュー自体は走っています。\n"
+            "  → ただし .exit が無く完走を機械的に確認できないので、**ゲートは通しません**。\n"
+            "     内容を使う場合は、上の path の生ログを人が確認してください。\n"
+            "  → 次回は `cgd_plan.py build` が出力した WORKFLOW_ARGS の JSON を\n"
+            "     **丸ごと** args に渡してください（キーを手で選ばない）。",
+            file=sys.stderr,
+        )
 
     if ok:
         # 印を消せるのはここだけ。WF 内から消してはいけない

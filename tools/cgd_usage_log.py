@@ -57,35 +57,63 @@ _LEGACY_DB: Path = _TOOLS_DIR / "cgd_usage.sqlite3"
 
 
 def _migrate_legacy() -> None:
-    """旧 `cgd_usage.sqlite3` を自端末のファイルへ引き継ぐ（pv と同じ手順）。
+    """旧 `cgd_usage.sqlite3` を自端末のファイルへ引き継ぐ。
 
-    コピー → 原子的な os.replace で確定する。移動だけだと途中で落ちたとき記録を失い、
-    ロックファイルは stale で恒久ブロックするので使わない。
+    **確定は os.link（存在したら FileExistsError）で行う。** `is_file()` で確認してから
+    `os.replace` する書き方は不可分ではなく、確認と置換の間に別プロセスの record が
+    DB を作って 1 行 INSERT すると、`os.replace` がそれを**無条件で上書きして消す**
+    （2026-08-12 cgd Lv7 で Codex med/high + DS + Qwen の 4 者が収束指摘）。
+    os.link は「無ければ作る」を不可分に行い、既にあれば必ず失敗するので、
+    ロックファイル（stale で恒久ブロックする）を使わずに単一勝者を決められる。
+
+    引き継げなかった場合でも記録は失われない。`all_db_paths()` が旧 DB を
+    読み取り対象に含めるので、集計からは見え続ける。
     """
     if not _LEGACY_DB.is_file() or DB_PATH.is_file() or DB_PATH == _LEGACY_DB:
         return
     tmp = DB_PATH.with_name(DB_PATH.name + f".migrating.{os.getpid()}")
     try:
         shutil.copy2(_LEGACY_DB, tmp)
-        if DB_PATH.is_file():
-            tmp.unlink(missing_ok=True)   # 競合に負けた側。相手の結果を尊重する
+        try:
+            os.link(tmp, DB_PATH)     # ← 不可分。既に在れば FileExistsError
+        except FileExistsError:
+            return                    # 競合に負けた側。相手の結果を尊重する
+        except OSError as exc:
+            # ハードリンク不可なファイルシステム。ここまで来たら旧 DB は
+            # all_db_paths() が読むので、無理に置換せず諦める方が安全。
+            print(f"[cgd usage] 旧 DB の引き継ぎを見送りました（集計には引き続き含まれます）: {exc}",
+                  file=sys.stderr)
             return
-        os.replace(tmp, DB_PATH)
         try:
             _LEGACY_DB.rename(_LEGACY_DB.with_suffix(".sqlite3.migrated"))
-        except OSError:
-            pass  # 相手が先に退避済み。移行自体は完了している
+        except OSError as exc:
+            # 相手が先に退避済みなら正常だが、権限・ロックの可能性もあるので黙らない
+            print(f"[cgd usage] 旧 DB の退避に失敗（引き継ぎ自体は完了）: {exc}", file=sys.stderr)
         print(f"[cgd usage] 旧 DB を {DB_PATH.name} へ引き継ぎました", file=sys.stderr)
     except OSError as exc:
         print(f"[cgd usage] 旧 DB の引き継ぎに失敗: {exc}", file=sys.stderr)
+    finally:
+        # 成功時は link 済みなので tmp は余分なリンク、失敗時は残骸。どちらも消す。
+        # 消し漏れると robocopy //XF にも掛からずミラーに乗る（codex_med 指摘）。
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def all_db_paths() -> list[Path]:
-    """集計対象。**全端末のファイルを読む**（書くのは自端末のものだけ）。"""
+    """集計対象。**全端末のファイルを読む**（書くのは自端末のものだけ）。
+
+    引き継ぎに失敗・見送りとなった旧 DB も**読み取り対象に含める**。含めないと、
+    移行が競合で流れた端末の履歴が集計から丸ごと消えて見える（記録は在るのに
+    見えないのが一番たちが悪い）。読むだけなので競合しない。
+    """
     _migrate_legacy()
     paths = sorted(_TOOLS_DIR.glob(DB_GLOB))
     if DB_PATH not in paths and DB_PATH.is_file():
         paths.append(DB_PATH)
+    if _LEGACY_DB.is_file() and _LEGACY_DB not in paths:
+        paths.append(_LEGACY_DB)
     return paths
 
 
@@ -115,6 +143,21 @@ def _arm_wf_gate(level: int, session: str | None = None) -> None:
     """
     if level not in WF_REQUIRED_LEVELS:
         return
+    # テスト・動作確認からの誤爆を止める逃げ道。ゲートは**本番の codex を遮断する**
+    # 副作用なので、record_usage を検証目的で呼んだだけで張られると事故になる
+    # （2026-08-12: レース検証で level 7 を渡してしまい、全体ゲートを張って
+    #  他セッションの codex まで止めかけた）。
+    if os.environ.get("CGD_NO_WF_GATE") == "1":
+        print(f"[cgd usage] CGD_NO_WF_GATE=1 のため Lv{level} のゲートは張りません",
+              file=sys.stderr)
+        return
+    if not session:
+        # セッション指定なしは**全セッション**を止める。他の作業を巻き込むので、
+        # 黙って張らずに必ず気づける形で出す。
+        print("[cgd usage] ⚠️ セッション指定なしでゲートを張ります"
+              "（**全セッションの codex が遮断されます**）。"
+              "自セッションだけに限定するには --session <SID> を付けてください。",
+              file=sys.stderr)
 
     def _fail(msg: str) -> None:
         print(f"[cgd usage] ❌ ERROR: Lv{level} の WF 必須ゲートを張れませんでした: {msg}", file=sys.stderr)
@@ -174,13 +217,20 @@ def record_usage(
     note: str | None = None,
     db_path: Path = DB_PATH,
     session: str | None = None,
+    arm_gate: bool = True,
 ) -> bool:
-    """利用ログを1件記録する。成功したら True、失敗しても例外は投げず False を返す。"""
+    """利用ログを1件記録する。成功したら True、失敗しても例外は投げず False を返す。
+
+    arm_gate=False にすると Lv6/7/8 でも WF 必須ゲートを張らない。
+    **テストや動作確認から呼ぶときは必ず False にする**（既定の True は cgd 本体用）。
+    環境変数 `CGD_NO_WF_GATE=1` でも同じ効果になる。
+    """
     if level not in VALID_LEVELS:
         print(f"[cgd usage] WARN: 未知の level '{level}' のため記録をスキップ", file=sys.stderr)
         return False
     # ゲートは DB 書込より先に張る（DB が落ちていても強制は効かせる）
-    _arm_wf_gate(level, session=session)
+    if arm_gate:
+        _arm_wf_gate(level, session=session)
     logged_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
         conn = _connect(db_path)
@@ -244,7 +294,16 @@ def build_report(since: str | None = None, db_path: Path | None = None) -> str:
     if db_path is not None:
         # 単一ファイルを明示された場合（テスト等）
         if not db_path.exists():
-            return "[cgd usage] 記録なし（ログファイル未作成）"
+            # 「ファイルが無い」を「記録が無い」と言わない。端末別へ移行した後に
+            # 旧パスを明示指定すると、実際には記録が在るのに空レポートを返して
+            # しまう（2026-08-12 cgd Lv7・DS 指摘。実挙動を確認済み）。
+            moved = db_path.with_suffix(".sqlite3.migrated")
+            hint = ""
+            if moved.exists():
+                hint = f"\n  ※ {moved.name} へ退避済みです。端末別ファイルへ移行しました。"
+            elif DB_PATH.exists():
+                hint = f"\n  ※ 現在の書込先は {DB_PATH.name} です。"
+            return f"[cgd usage] 指定されたファイルがありません: {db_path.name}{hint}"
         conn = _connect_readonly(db_path)
         try:
             where = "WHERE logged_at >= ?" if since else ""

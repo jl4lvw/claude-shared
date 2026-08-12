@@ -587,6 +587,40 @@ def render(role: str, mapping: dict[str, str]) -> str:
 # --------------------------------------------------------------------------
 # 添付 (検証対象の実体)
 # --------------------------------------------------------------------------
+def parse_attach_for(specs: list[str] | None, valid_ids: set[str]) -> dict[str, list[str]]:
+    """`--attach-for <task_id>:<path>` を {担当 id: [パス]} にする。
+
+    なぜ要るか (INC-20260812-004007ace10d):
+        添付は **全担当のプロンプトへ丸ごと複製**される。Lv3 なら同じ実体が
+        4 担当ぶん作られ、うち DeepSeek と Codex は外部へ実送信される。
+        162KB の添付で Codex 担当だけ約 14 万トークンに達した実測がある。
+
+        「担当ごとに必要なものだけ渡す」のは**仕様の判断**なので既定は変えない。
+        ここで足すのは**手段だけ**で、`--attach-for` を使わなければ
+        生成される依頼文は 1 バイトも変わらない。
+
+    担当 id は build 時に検証する。綴り間違いを黙って無視すると
+    「絞ったつもりで全員に配っている」という最悪の勘違いが起きる。
+    """
+    out: dict[str, list[str]] = {}
+    for spec in specs or []:
+        task_id, sep, path = spec.partition(":")
+        # Windows のドライブレター (`C:/...`) を区切りと誤認しない。
+        # `--attach-for C:/x.py` のような書き間違いは弾く必要がある。
+        if not sep or not task_id or len(task_id) == 1:
+            raise SystemExit(
+                f"[pv] --attach-for の書式が違います: {spec!r}\n"
+                "     正しくは <担当id>:<パス> (例: --attach-for feasible:C:/tmp-ai/impl.py)"
+            )
+        if task_id not in valid_ids:
+            raise SystemExit(
+                f"[pv] --attach-for の担当 id が存在しません: {task_id!r}\n"
+                f"     このレベルの担当: {sorted(valid_ids)}"
+            )
+        out.setdefault(task_id, []).append(path)
+    return out
+
+
 def _load_attachments(paths: list[str]) -> tuple[list[dict], str, str]:
     """(メタ一覧, 依頼文へ埋め込むブロック, 全体の sha256) を返す。
 
@@ -736,6 +770,32 @@ def cmd_build(args: argparse.Namespace) -> int:
 
     attachments, attach_block, attach_sha = _load_attachments(attach_paths)
 
+    # 担当限定の添付。既定 (未指定) では空 dict なので、以降の分岐は素通りし
+    # 生成される依頼文は従来と 1 バイトも変わらない。
+    _level_map = REVIEW_LEVELS if args.mode == "review" else LEVELS
+    attach_for = parse_attach_for(
+        getattr(args, "attach_for", None),
+        {t["id"] for t in _level_map[args.level]["tasks"]} | {"merge"},
+    )
+    if attach_for:
+        # 割り当てを sha に混ぜる。混ぜないと --attach-for だけ変えた再 build を
+        # --keep-raw が「同じ添付」と見なして古い回答を残す。
+        attach_sha = hashlib.sha256(
+            (attach_sha + "|" + json.dumps(attach_for, sort_keys=True)).encode("utf-8")
+        ).hexdigest()[:16]
+
+    _block_cache: dict[tuple[str, ...], str] = {}
+
+    def _block_for(task_id: str) -> str:
+        """その担当に見せる添付ブロック。共通 + 担当限定。"""
+        extra = attach_for.get(task_id)
+        if not extra:
+            return attach_block
+        key = tuple(attach_paths) + ("|",) + tuple(extra)
+        if key not in _block_cache:
+            _block_cache[key] = _load_attachments(attach_paths + list(extra))[1]
+        return _block_cache[key]
+
     # 既定の run 名は秒精度だった。複数セッションが同じ秒に build すると
     # plan/prompts を静かに上書きし合う（2026-08-12 自己レビュー M-10）。
     # 4 桁の乱数を足して衝突を実質無くす。--run を明示すれば従来どおり。
@@ -838,7 +898,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         # プロンプト側に「Write せよ」と書くと二重になるため経路で出し分ける。
         prompt = render(t["role"], {
             "TOPIC": topic,
-            "ATTACHMENTS": attach_block,
+            "ATTACHMENTS": _block_for(t["id"]),
             "RAW_PATH": str(raw_path).replace("\\", "/"),
             "SUBMIT": (
                 "回答の全文を次のファイルに書き出してください（Write ツール）:\n  "
@@ -879,7 +939,7 @@ def cmd_build(args: argparse.Namespace) -> int:
     merge_raw = str(d / "raw" / "merge.md").replace("\\", "/")
     merge_prompt = render(merge_role, {
         "TOPIC": topic,
-        "ATTACHMENTS": attach_block,
+        "ATTACHMENTS": _block_for("merge"),
         "RAW_LIST": "\n".join(f"  - {t['id']}: {t['raw_path']}" for t in tasks),
         "RUN": run,
         "MERGE_RAW_PATH": merge_raw,
@@ -1392,7 +1452,10 @@ def cmd_collect(args: argparse.Namespace) -> int:
            reason=None if ok_all else ("artifacts_incomplete" if bad else
                    ("review_unverified" if review and not review.get("ok") else "merge_unverified")),
            detail={
-               "mode": plan.get("mode") or "deliberate",
+               # mode を記録する前の plan には mode が無い。ここで "deliberate" を
+               # 補うと**推測を事実として記録する**ことになるので、無いものは None の
+               # まま残して集計側に「未記録」と出させる（cgd Lv7・DS 指摘）。
+               "mode": plan.get("mode"),
                "include_merge": bool(args.include_merge),
                "ng": [{"id": r["id"], "reason": r.get("reason"), "bytes": r["bytes"]} for r in bad],
                "total_bytes": sum(r["bytes"] for r in rows),
@@ -1407,7 +1470,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
         _usage("result", run=args.run, level=plan.get("level"), ok=True, reason="ok",
                engine=verify.get("merge_model"), size_bytes=merge_bytes,
                skill_version=plan.get("skill_version"),
-               detail={"mode": plan.get("mode") or "deliberate",
+               detail={"mode": plan.get("mode"),   # 無ければ None（未記録）のまま
                        "cites": verify.get("cites"), "auto": True})
 
     if ok_all and args.include_merge and not args.no_clear_pending:
@@ -1495,20 +1558,39 @@ def cmd_estimate(args: argparse.Namespace) -> int:
     if diff:
         print(f"  差分      : {diff:>9,} B")
 
-    per_task = total + topic + diff
-    print(f"\n  1 担当あたりの本文 = 添付 + テーマ + 差分 = {per_task:,} B"
-          "\n  （添付は担当ごとに複製されるので、担当数だけ倍になる）")
+    attach_for = parse_attach_for(
+        getattr(args, "attach_for", None),
+        {t["id"] for t in tasks} | {"merge"},
+    )
+    extra_bytes: dict[str, int] = {}
+    for task_id, paths in attach_for.items():
+        n = 0
+        for raw in paths:
+            p = Path(raw)
+            if not p.is_file():
+                raise SystemExit(f"[pv] --attach-for の添付が見つかりません: {p}")
+            n += len(p.read_text(encoding="utf-8", errors="replace").encode("utf-8"))
+        extra_bytes[task_id] = n
+
+    base = total + topic + diff
+    print(f"\n  共通の本文 = 添付 + テーマ + 差分 = {base:,} B"
+          "\n  （--attach は担当ごとに複製されるので、担当数だけ倍になる。"
+          "\n   絞りたい場合は --attach-for <担当id>:<パス> で担当限定にできる）")
     print("\n  担当           エンジン    送信 B      概算トークン")
     ext_tokens = 0
     for t in tasks:
         eng = t["engine"]
-        tok = int(per_task * TOK_PER_BYTE)
+        sent = base + extra_bytes.get(t["id"], 0)
+        tok = int(sent * TOK_PER_BYTE)
         if eng == "codex":
             tok += CODEX_FIXED_TOKENS
         if eng != "claude":
             ext_tokens += tok
-        print(f"  {t['id']:<14} {eng:<10} {per_task:>9,}  {tok:>13,}")
+        mark = " *" if t["id"] in extra_bytes else ""
+        print(f"  {t['id']:<14} {eng:<10} {sent:>9,}  {tok:>13,}{mark}")
     print(f"  {'merge':<14} {'fable':<10} {'(統合は各回答のみ)':>9}")
+    if extra_bytes:
+        print("  * は --attach-for による担当限定の添付を含む")
     print(f"\n  外部エンジンへの実送信 合計トークン(概算): {ext_tokens:,}")
 
     # **build と同じ条件で止める。** ここで通って build で落ちると事前チェックの意味がない。
@@ -1666,6 +1748,9 @@ def main() -> int:
                    help="レビュー対象の unified diff。--mode review のときのみ")
     b.add_argument("--attach", action="append",
                    help="検証対象の実体を渡す（複数可）。内容を依頼文へ埋め込む。合計 200KB まで")
+    b.add_argument("--attach-for", action="append", metavar="TASK_ID:PATH",
+                   help="その担当にだけ渡す添付（複数可）。--attach は全担当に複製されるので、"
+                        "実装コードは Codex 担当だけ、等の絞り込みに使う")
     b.add_argument("--run", default=None, help="省略時は現在時刻から生成")
     b.add_argument("--force", action="store_true", help="既存 run の raw を消して作り直す")
     b.add_argument("--keep-raw", action="store_true",
@@ -1692,6 +1777,7 @@ def main() -> int:
     es.add_argument("--level", type=int, required=True)
     es.add_argument("--mode", default="deliberate", choices=MODES)
     es.add_argument("--attach", action="append")
+    es.add_argument("--attach-for", action="append", metavar="TASK_ID:PATH")
     es.add_argument("--topic-file", default=None)
     es.add_argument("--diff", default=None)
 

@@ -28,6 +28,7 @@ import hashlib
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # 警告は stderr に出す。**stderr も UTF-8 にしないと CP932 コンソールで化けて読めず、
@@ -59,8 +60,13 @@ EXCLUDE_FILES: tuple[str, ...] = (
     # **こちらへ追随させ忘れていて、/g-ul が構造的に exit 0 へ到達できなくなっていた。**
     # 上のコメントが警告しているとおりの形骸化が実際に起きたので、
     # test_verify_sync_excludes.py で SKILL.md の //XF と機械照合するようにした。
+    # 端末別ファイル名だけを除外する。`cgd_usage*` と広げると移行前の旧
+    # `cgd_usage.sqlite3` まで除外され、共有側にしか旧DBが無い端末が履歴を
+    # 受け取れなくなる (2026-08-12 cgd Lv7・codex_high 指摘)。
     "pv_usage_*.sqlite3",
-    "cgd_usage*.sqlite3",
+    "cgd_usage_*.sqlite3",
+    # 移行途中の一時ファイル。残骸が出たときにミラーへ載せない。
+    "*.migrating.*",
 )
 
 
@@ -103,6 +109,32 @@ def _git(shared: Path, *args: str) -> tuple[int, str]:
     return proc.returncode, (proc.stdout or "").strip()
 
 
+# 「並行セッションが編集中」と見なす更新の新しさ (秒)。
+# /g-ul は「ミラー → commit → push → verify」で 1 分前後かかる。
+# その間に別セッションが .claude を書けば、こちらのミラーには載らず差分として残る。
+FRESH_EDIT_SEC = 600
+
+
+def _fresh_hint(path: Path) -> str:
+    """直近に更新されたファイルなら、その事実を添える。
+
+    並行セッション下では **/g-ul は原理的に収束しない**
+    (相手が .claude を書き続ける限り、こちらのミラーは常に古い)。
+    それ自体は直せないが、「自分の push が失敗した」のか
+    「他人が編集中なだけ」なのかは区別できる。
+    2026-08-12 に実際に、別セッションが編集中のファイル 1 本のせいで
+    exit 1 になり、自分の反映が失敗したのかを確かめ直す羽目になった
+    (INC-20260812-111904c95948)。
+    """
+    try:
+        age = time.time() - path.stat().st_mtime
+    except OSError:
+        return ""
+    if age < 0 or age > FRESH_EDIT_SEC:
+        return ""
+    return f" ({int(age // 60)} 分前に更新 — 並行セッションが編集中の可能性)"
+
+
 def check_mirror(claude_dir: Path, shared: Path) -> list[str]:
     """[1] .claude と claude-shared のツリー一致を検証する。"""
     problems: list[str] = []
@@ -121,11 +153,12 @@ def check_mirror(claude_dir: Path, shared: Path) -> list[str]:
         only_dst = sorted(set(b) - set(a))
         differ = sorted(k for k in set(a) & set(b) if a[k] != b[k])
         for rel in only_src[:5]:
-            problems.append(f"{target}/{rel}: 未反映(claude-shared に無い)")
+            problems.append(
+                f"{target}/{rel}: 未反映(claude-shared に無い){_fresh_hint(src / rel)}")
         for rel in only_dst[:5]:
             problems.append(f"{target}/{rel}: 削除漏れ(.claude に無い)")
         for rel in differ[:5]:
-            problems.append(f"{target}/{rel}: 内容が違う")
+            problems.append(f"{target}/{rel}: 内容が違う{_fresh_hint(src / rel)}")
         extra = len(only_src) + len(only_dst) + len(differ) - min(
             5, len(only_src)
         ) - min(5, len(only_dst)) - min(5, len(differ))

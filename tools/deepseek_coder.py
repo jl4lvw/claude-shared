@@ -141,6 +141,14 @@ FALLBACK_MODEL: str = "deepseek-v4-flash"
 # 課金は実際に生成した分だけなので、上限を上げること自体のコスト増はない。
 DEFAULT_MAX_TOKENS: int = 32000
 
+# API が受理する上限（実測）。予算切れで本文が空になったときの**増枠リトライ先**。
+# 2026-08-12: 26KB 差分の reviewer 役で reasoning 111,701 文字を出して 32,000 を
+# 使い切り、finish_reason=length で本文が空になった (INC-20260812-1117419055b1)。
+# 同じ差分でも JSON 出力を要求する pv review モードは完走しており、
+# 自由記述の reviewer 役だけが暴発する。呼び出し側が --max-tokens を
+# 付け直して再実行するしかなかったが、それは人間が気づいた場合に限られる。
+API_MAX_TOKENS: int = 65536
+
 # 為替レート（USD → JPY 換算用）。環境変数 DEEPSEEK_USD_TO_JPY で上書き可能。
 DEFAULT_USD_TO_JPY: float = 150.0
 
@@ -408,27 +416,51 @@ def call_deepseek(
 
     client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
-    try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": ROLE_PROMPTS[role]},
-                {"role": "user", "content": prompt},
-            ],
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
-    except Exception as exc:
-        code = _classify_openai_error(exc)
-        print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
-        sys.exit(code)
+    def _create(budget: int):
+        try:
+            return client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": ROLE_PROMPTS[role]},
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=budget,
+                temperature=temperature,
+            )
+        except Exception as exc:
+            code = _classify_openai_error(exc)
+            print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+            sys.exit(code)
 
+    response = _create(max_tokens)
     if track:
         _track_usage(model, getattr(response, "usage", None), reset=reset_session)
 
     choice = response.choices[0]
     content = (choice.message.content or "").strip()
     finish = getattr(choice, "finish_reason", None)
+
+    # **予算切れで本文が空なら、一度だけ増枠して取り直す。**
+    # 以前はここで非 0 終了するだけだったので、レビュアー 1 人が丸ごと欠けた状態で
+    # run が失敗し、人間が --max-tokens を付け直して回し直すしかなかった。
+    # reasoning が予算を食う挙動はモデル側の都合で、呼び出し側からは事前に読めない。
+    # 課金は生成した分だけなので、上限を上げること自体のコストは無い
+    # (使い切った 1 回分は捨てる形になるが、失敗して回し直すのと同額)。
+    if not content and finish == "length" and max_tokens < API_MAX_TOKENS:
+        print(
+            f"WARNING: 出力予算({max_tokens} tok)を推論で使い切り本文が空でした。"
+            f" {API_MAX_TOKENS} tok に増枠して 1 回だけ取り直します。",
+            file=sys.stderr,
+        )
+        response = _create(API_MAX_TOKENS)
+        if track:
+            # セッションのリセットは 1 回目で済んでいる。ここで再度 reset すると
+            # 1 回目の消費が集計から消える。
+            _track_usage(model, getattr(response, "usage", None), reset=False)
+        max_tokens = API_MAX_TOKENS
+        choice = response.choices[0]
+        content = (choice.message.content or "").strip()
+        finish = getattr(choice, "finish_reason", None)
 
     # 出力予算を使い切ったのに黙って空文字を返すのが最悪の失敗の仕方だった
     # (呼び出し側は「レビュー結果なし」と区別できない)。必ず気づける形にする。

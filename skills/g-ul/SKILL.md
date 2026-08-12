@@ -92,11 +92,16 @@ for t in $TARGETS; do
     # **削除する**ので、端末ごとに溜まる計測をミラーに載せると、/g-dl せずに
     # /g-ul した端末が他端末の記録を消してしまう（2026-08-12 修正）。
     # //XF に入れたファイルはコピーも削除もされないので、各端末の手元に残り続ける。
+    #
+    # 除外は**端末別ファイル名だけ**に絞る（`cgd_usage_*.sqlite3`。`cgd_usage*` と
+    # 広げると、端末別へ移行する前の旧 `cgd_usage.sqlite3` まで除外され、共有側にしか
+    # 旧DBが無い端末が履歴を受け取れなくなる）。旧DBは移行時に `.migrated` へ改名され、
+    # そちらは除外対象なので、一度同期されたあとは自動的にミラーから外れる。
     robocopy "$SRC_W" "$DST_W" //MIR //NFL //NDL //NP //R:2 //W:1 \
         //XD __pycache__ ".bootstrap-bak-*" ".migrate-pending-*" \
-        //XF "*.bak_*" "*.pyc" "*.migrated" \
+        //XF "*.bak_*" "*.pyc" "*.migrated" "*.migrating.*" \
              ".deepseek_usage_session.json" ".qwen_usage_session.json" ".gemini_usage_session.json" \
-             "telemetry.jsonl" "pv_usage_*.sqlite3" "cgd_usage*.sqlite3" > /dev/null 2>&1
+             "telemetry.jsonl" "pv_usage_*.sqlite3" "cgd_usage_*.sqlite3" > /dev/null 2>&1
     EXIT=$?
     # robocopy 終了コード: 0-7 = 成功（差分の有無）、8+ = エラー
     if [ $EXIT -ge 8 ]; then

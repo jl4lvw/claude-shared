@@ -2,7 +2,7 @@
 name: pv
 description: 並列検討・検証スキル（parallel verify）。**必ず Workflow を使い、取りまとめは必ず Fable 5 が行う**。依頼テキストは Python (`pv_plan.py`) が決定論的に生成するため、AI が毎回文言を作り直すことによる揺らぎ・引数取り違えが起きない。レベルに応じて呼び出すエンジン（Claude / DeepSeek / Codex）と数が変わり、思考の深さは `--depth` で直交して指定する。コードレビューは `/cgd` の担当で、本スキルは**仕様・設計・方針の検討と検証**を担う。「並列で検討」「多視点で検証」「反証も出して」「pv」などで起動。
 ---
-<!-- SKILL_VERSION: 2026-08-12_171326 -->
+<!-- SKILL_VERSION: 2026-08-12_183206 -->
 
 # pv — 並列検討・検証（parallel verify）
 
@@ -111,6 +111,24 @@ python "C:/ClaudeCode/.claude/tools/pv_plan.py" estimate --level 3 --topic-file 
 **合計 200KB を超えたら build も estimate も非 0 で止まる**（切り捨てはしない）。
 実コードを渡すと単一モジュールで上限に達することがあるので、
 関数単位に絞るなどして事前に削る。
+
+#### 担当を絞って渡す — `--attach-for`
+
+全員に見せる必要がない実体は、担当を指定して渡せる。
+
+```bash
+python "C:/ClaudeCode/.claude/tools/pv_plan.py" build --level 3 --topic-file "C:/tmp-ai/pv_topic.txt" --skill-version <スタンプ>   --attach "C:/tmp-ai/spec.md"   --attach-for "feasible:C:/tmp-ai/impl.py"
+```
+
+- `--attach` … **全担当**に複製される（従来どおり）
+- `--attach-for <担当id>:<パス>` … その担当にだけ足す（複数回指定可）
+- 担当 id は build 時に検証し、綴りが違えば**止まる**
+  （黙って無視すると「絞ったつもりで全員に配っている」ことに気づけない）
+- `estimate` も `--attach-for` を解釈し、限定添付を含む担当に `*` を付ける
+
+**既定の挙動は変わらない。** `--attach-for` を使わなければ生成される依頼文は従来と同一。
+「誰に何を見せるか」は検討の質に直結する**仕様の判断**なので、
+このオプションは手段だけを提供し、方針は指定した人が決める。
 
 出力の 2 行目 `WORKFLOW_ARGS ` の後ろの JSON が、そのまま Workflow の args になる。
 

@@ -156,9 +156,9 @@ for t in $TARGETS; do
     # telemetry.jsonl / Qwen セッション / usage DB のどれも除外していなかった。
     robocopy "$SRC_W" "$DST_W" //MIR //NFL //NDL //NP //R:2 //W:1 \
         //XD __pycache__ ".bootstrap-bak-*" ".migrate-pending-*" \
-        //XF "*.bak_*" "*.pyc" "*.migrated" \
+        //XF "*.bak_*" "*.pyc" "*.migrated" "*.migrating.*" \
              ".deepseek_usage_session.json" ".qwen_usage_session.json" ".gemini_usage_session.json" \
-             "telemetry.jsonl" "pv_usage_*.sqlite3" "cgd_usage*.sqlite3" > /dev/null 2>&1
+             "telemetry.jsonl" "pv_usage_*.sqlite3" "cgd_usage_*.sqlite3" > /dev/null 2>&1
     EXIT=$?
     if [ $EXIT -ge 8 ]; then
         echo "    robocopy ERROR (exit=$EXIT) for $t" >&2

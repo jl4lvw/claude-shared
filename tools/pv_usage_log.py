@@ -91,6 +91,9 @@ def all_db_paths() -> list[Path]:
     paths = sorted(_TOOLS_DIR.glob(DB_GLOB))
     if DB_PATH not in paths and DB_PATH.is_file():
         paths.append(DB_PATH)
+    # 引き継げなかった旧 DB も読む。記録が在るのに集計から消えるのが一番たちが悪い。
+    if _LEGACY_DB.is_file() and _LEGACY_DB not in paths:
+        paths.append(_LEGACY_DB)
     return paths
 
 # event の種類。増やすときはここに書いてから使う（タイポで別種になるのを防ぐ）
@@ -161,25 +164,36 @@ def _migrate_legacy() -> None:
     # 片方が「rename 済みのファイルを copy2」して失敗した
     # （2026-08-12 cgd Lv8・Codex 指摘）。
     # ロックファイルは stale で恒久ブロックする（DS 指摘）ので使わない。
-    # 一意な一時ファイルへコピー → **原子的な os.replace** で確定する。
+    #
+    # 2026-08-12 追加修正: `is_file()` で確認してから `os.replace` する形も不可分では
+    # なく、確認と置換の間に別プロセスの記録が DB を作って書き込むと、os.replace が
+    # それを**無条件で上書きして消す**（cgd Lv7 で 4 者が収束指摘）。
+    # 確定は **os.link**（既に在れば FileExistsError）で行い、単一勝者を決める。
     tmp = DB_PATH.with_name(DB_PATH.name + f".migrating.{os.getpid()}")
     try:
         shutil.copy2(_LEGACY_DB, tmp)
-        if DB_PATH.is_file():
-            tmp.unlink(missing_ok=True)   # 競合に負けた側。相手の結果を尊重する
+        try:
+            os.link(tmp, DB_PATH)     # ← 不可分。既に在れば FileExistsError
+        except FileExistsError:
+            return                    # 競合に負けた側。相手の結果を尊重する
+        except OSError as exc:
+            print(f"[pv_usage] 旧 DB の引き継ぎを見送りました（集計には引き続き含まれます）: {exc}",
+                  file=sys.stderr)
             return
-        os.replace(tmp, DB_PATH)
         try:
             _LEGACY_DB.rename(_LEGACY_DB.with_suffix(".sqlite3.migrated"))
-        except OSError:
-            pass  # 相手が先に退避済み。移行自体は完了しているので問題ない
+        except OSError as exc:
+            print(f"[pv_usage] 旧 DB の退避に失敗（引き継ぎ自体は完了）: {exc}", file=sys.stderr)
         print(f"[pv_usage] 旧 DB を {DB_PATH.name} へ引き継ぎました", file=sys.stderr)
     except OSError as exc:
+        print(f"[pv_usage] 旧 DB の引き継ぎに失敗: {exc}", file=sys.stderr)
+    finally:
+        # 成功時は link 済みなので余分なリンク、失敗時は残骸。どちらも消す
+        # （残ると robocopy の //XF に掛からずミラーに乗る）。
         try:
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
-        print(f"[pv_usage] 旧 DB の引き継ぎに失敗: {exc}", file=sys.stderr)
 
 
 def _connect(path: Path | None = None, *, readonly: bool = False) -> sqlite3.Connection:
@@ -716,21 +730,32 @@ def _cmd_reclassify(args: argparse.Namespace) -> int:
             "SELECT id, level, run, reason, detail FROM pv_event WHERE event = 'halt'"
         ).fetchall()
         changes: list[tuple[int, str, str, str]] = []
+        skipped_broken = 0    # detail が JSON として壊れている
+        skipped_nomsg = 0     # message が入っていない（分類の根拠が無い）
         for rid, level, run, reason, detail in rows:
             try:
                 payload = json.loads(detail) if detail else {}
             except (TypeError, ValueError):
+                skipped_broken += 1
                 continue
             msg = payload.get("message")
             if not isinstance(msg, str) or not msg:
+                skipped_nomsg += 1
                 continue
             fresh = pv_plan._halt_reason(msg)
             if fresh != reason:
                 payload["reclassified_from"] = reason
                 changes.append((rid, reason or "-", fresh, json.dumps(payload, ensure_ascii=False)))
 
+        # 黙って飛ばすと「付け直し不要」と「判定できなかった」が区別できない
+        # （2026-08-12 cgd Lv7・DS 指摘）。
+        skipped = skipped_broken + skipped_nomsg
+        if skipped:
+            print(f"[pv usage] 判定できず飛ばした halt 行: {skipped} 件"
+                  f"（detail 破損 {skipped_broken} / message 無し {skipped_nomsg}）")
+
         if not changes:
-            print(f"[pv usage] {DB_PATH.name}: 付け直しが要る halt 行はありません")
+            print(f"[pv usage] {DB_PATH.name}: halt {len(rows)} 行中、付け直しが要るものはありません")
             return 0
 
         print(f"[pv usage] {DB_PATH.name}: {len(changes)} 行の reason が現行ルールと違います")
