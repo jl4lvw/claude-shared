@@ -132,11 +132,24 @@ def _forward_incident(title: str, *, category: str, detail: str,
 # --- review モードの照合ヘルパ ----------------------------------------------
 # 差分パースと finding 検証の実体は pv_review.py（純関数・pytest 済み）にある。
 # ここは「ファイルを読む / plan.json へ落とす」という I/O の橋渡しだけを持つ。
-def _pv_review():
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import pv_review  # type: ignore
+_PV_REVIEW_MOD = None
 
-    return pv_review
+
+def _pv_review():
+    """pv_review を 1 度だけ読み込んで使い回す。
+
+    毎回 sys.path.insert すると呼ぶたびに path が伸び、別の同名モジュールを
+    引き当てる事故のもとになる（pv review が指摘）。
+    """
+    global _PV_REVIEW_MOD
+    if _PV_REVIEW_MOD is None:
+        here = str(Path(__file__).resolve().parent)
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import pv_review  # type: ignore
+
+        _PV_REVIEW_MOD = pv_review
+    return _PV_REVIEW_MOD
 
 
 def _review_index(diff_text: str):
@@ -167,12 +180,35 @@ def _index_from_json(data: dict):
     """
     mod = _pv_review()
     index = mod.DiffIndex()
+
+    def _hunks(raw) -> list[tuple[int, int]]:
+        """壊れた hunk 表現で落ちないようにする（pv review が無検証を指摘）。
+
+        plan.json は人が触れる場所なので、形が違えば**その hunk を捨てる**。
+        捨てた分は「範囲外」に倒れるだけで、幻覚を通す方向には効かない。
+        """
+        out: list[tuple[int, int]] = []
+        for h in raw or []:
+            try:
+                a, b = int(h[0]), int(h[1])
+            except (TypeError, ValueError, IndexError):
+                index.parse_warnings.append(f"hunk の形式が不正なので無視しました: {h!r}")
+                continue
+            if a <= 0 or b < a:
+                index.parse_warnings.append(f"hunk の範囲が不正なので無視しました: {h!r}")
+                continue
+            out.append((a, b))
+        return out
+
     for f in (data or {}).get("files", []):
+        if not isinstance(f, dict):
+            index.parse_warnings.append("ファイル項目が dict ではないので無視しました")
+            continue
         index.files.append(mod.DiffFile(
             new_path=f.get("new_path"), old_path=f.get("old_path"),
             status=f.get("status", "modified"), is_binary=bool(f.get("is_binary")),
-            new_hunks=[tuple(h) for h in f.get("new_hunks", [])],
-            old_hunks=[tuple(h) for h in f.get("old_hunks", [])],
+            new_hunks=_hunks(f.get("new_hunks")),
+            old_hunks=_hunks(f.get("old_hunks")),
         ))
     index.parse_warnings = list((data or {}).get("parse_warnings", []))
     return index
@@ -182,7 +218,7 @@ def _index_from_json(data: dict):
 # 正しい統合でも「取りこぼし」と誤判定して弾きすぎる（pv review が指摘）。
 _ADOPTED_RE = re.compile(r"^\[pv-adopted\]\s*(.+)$", re.MULTILINE)
 # 採用 id として妥当な形（担当id:連番）。装飾や説明文を拾わないため。
-_FINDING_ID_RE = re.compile(r"([a-z_]+:\d+)")
+_FINDING_ID_RE = re.compile(r"\b([a-z_]+:\d+)\b")
 
 
 def verify_review(plan: dict, with_coverage: bool = True) -> dict:
@@ -198,6 +234,26 @@ def verify_review(plan: dict, with_coverage: bool = True) -> dict:
     mod = _pv_review()
     index = _index_from_json(plan.get("diff_index") or {})
     result: dict = {"ok": True, "problems": [], "tasks": {}, "coverage": None}
+    if index.parse_warnings:
+        result["index_warnings"] = list(index.parse_warnings)
+
+    # 照合は **build 時点の索引**で行う（差分ファイルを読み直さない）。ただし
+    # 差分が build 後に差し替わっていたら、レビュー結果の意味が変わるので知らせる。
+    # 止めはしない: 差分ファイルを消した / 移動しただけ、というのも正当な運用のため。
+    diff_file = plan.get("diff_file")
+    if diff_file and plan.get("diff_sha256"):
+        p = Path(diff_file)
+        if p.is_file():
+            now = hashlib.sha256(
+                p.read_text(encoding="utf-8", errors="replace").encode("utf-8")
+            ).hexdigest()[:16]
+            if now != plan["diff_sha256"]:
+                result["diff_changed"] = {"plan": plan["diff_sha256"], "now": now}
+                print("[pv] 注意: build 時点から差分ファイルが変わっています"
+                      f"（plan={plan['diff_sha256']} / 現在={now}）。"
+                      "照合は build 時点の索引で行っています。", file=sys.stderr)
+        else:
+            result["diff_missing"] = diff_file
 
     # 実ファイルが手元にあるなら総行数を数えて渡す（無ければ超過判定はしない）
     counts: dict[str, int] = {}
@@ -362,7 +418,10 @@ MIN_ANSWER_BYTES = 200
 MIN_STRUCTURE_LINES = 3
 # 構造行の判定。`**` を含めていたため、**太字を使っただけで「構造がある」**と
 # 数えられていた（2026-08-12 cgd Lv8 指摘）。箇条書き・番号・見出しだけを数える。
-_STRUCTURE_RE = re.compile(r"^\s*(?:[-*・]\s|\d+[.)]\s|#{1,6}\s)", re.MULTILINE)
+# `・` は日本語の箇条書きで**空白を空けずに**書くのが普通なので、空白必須にすると
+# 既存の deliberate の回答まで「構造が薄い」と弾く後方互換の劣化になる
+# （2026-08-12 の pv review が指摘）。`-` `*` は強調記法と紛れるので空白を要求する。
+_STRUCTURE_RE = re.compile(r"^\s*(?:[-*]\s|・|\d+[.)]\s|#{1,6}\s)", re.MULTILINE)
 # 降参文の扱い。旧実装は「降参文があり、かつ 800 バイト未満」でしか弾かず、
 # 長ければ素通りだった。一方で「サイズ条件を撤廃せよ」という案は
 # **正当な部分回答（一部は不明だがそれ以外は答えている）まで弾く**と 3 者が反対した。
@@ -650,6 +709,29 @@ def cmd_build(args: argparse.Namespace) -> int:
         diff_summary = _index_to_json(index)
         for w in index.parse_warnings:
             print(f"[pv] 差分の注意: {w}", file=sys.stderr)
+
+        # 差分は添付と同じ 200KB 枠を食う。素通しにすると、超過したときに
+        # 「添付の合計が上限を超えました」としか出ず、**差分が原因だと分からない**
+        # （pv review で 3 者一致の指摘）。ここで差分単体の大きさを先に見る。
+        diff_bytes = len(diff_text.encode("utf-8"))
+        if diff_bytes > MAX_ATTACH_BYTES:
+            raise SystemExit(
+                f"[pv] 差分が大きすぎます: {diff_bytes:,} > {MAX_ATTACH_BYTES:,} bytes\n"
+                f"     ({diff_path})\n"
+                "     対象を絞って差分を作り直してください（ファイル単位で分ける等）。")
+        room = MAX_ATTACH_BYTES - diff_bytes
+        print(f"[pv] 差分 {diff_bytes:,} bytes / 添付に使える残り {room:,} bytes",
+              file=sys.stderr)
+
+        # --attach で同じファイルを重ねて指定されると二重添付になる
+        already = {str(Path(x).resolve()).lower() for x in attach_paths if Path(x).exists()}
+        if str(diff_path.resolve()).lower() in already:
+            attach_paths = [x for x in attach_paths
+                            if not (Path(x).exists()
+                                    and str(Path(x).resolve()).lower()
+                                    == str(diff_path.resolve()).lower())]
+            print("[pv] --attach に差分と同じファイルがあったので 1 本にまとめました",
+                  file=sys.stderr)
         attach_paths.insert(0, str(diff_path))
 
     attachments, attach_block, attach_sha = _load_attachments(attach_paths)
@@ -955,7 +1037,10 @@ def _build_cmd(task: dict) -> list[str]:
 # codex の stdout はセッション全体の記録なので、最終回答だけを取り出す。
 # 実測 (2026-08-11): 最終回答は最後の "\ncodex\n" 行の後ろ、
 # 末尾に "tokens used" + 数値行が付く。
-_CODEX_ANSWER_MARK = "\ncodex\n"
+# 最終回答の直前に現れる行。**行単位で比較する**ので前後の改行は含めない。
+# 以前は "\ncodex\n" のままで、`ln.strip()` との比較が永久に一致せず
+# 切り出しが恒久的に無効化されていた（pv review が予測し、テストで確定した）。
+_CODEX_ANSWER_MARK = "codex"
 _CODEX_TOKENS_RE = re.compile(r"^tokens used\s*$\r?\n\s*([\d,]+)\s*$", re.MULTILINE)
 
 

@@ -22,13 +22,81 @@
 from __future__ import annotations
 
 import argparse
+import os
+import platform
+import re
+import shutil
 import sqlite3
 import subprocess
 import sys
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 
-DB_PATH: Path = Path(__file__).parent / "cgd_usage.sqlite3"
+_TOOLS_DIR = Path(__file__).resolve().parent
+
+# --- 端末ごとにファイルを分ける（2026-08-12・pv と同じ方式に揃えた）-----------
+# 単一ファイル `cgd_usage.sqlite3` を共有ミラーに載せていたため、古い DB を持つ
+# 端末が push した時点で他端末の記録が上書きで消えていた。pv は先に端末別へ
+# 移行済みで、cgd だけ取り残されていた。
+# あわせて g-ul / g-dl の //XF に `cgd_usage*.sqlite3` を入れ、ミラーが
+# usage DB を触らないようにしてある（消えるのも復活するのも起きなくなる）。
+def _host_slug() -> str:
+    raw = platform.node() or os.environ.get("COMPUTERNAME") or "unknown"
+    slug = re.sub(r"[^A-Za-z0-9_-]", "-", raw).strip("-")
+    return slug or "unknown"
+
+
+HOST = _host_slug()
+DB_GLOB = "cgd_usage_*.sqlite3"
+DB_PATH: Path = Path(
+    os.environ.get("CGD_USAGE_DB", str(_TOOLS_DIR / f"cgd_usage_{HOST}.sqlite3"))
+)
+# 端末名を入れる前の単一ファイル。存在すれば初回に自端末のファイルへ引き継ぐ。
+_LEGACY_DB: Path = _TOOLS_DIR / "cgd_usage.sqlite3"
+
+
+def _migrate_legacy() -> None:
+    """旧 `cgd_usage.sqlite3` を自端末のファイルへ引き継ぐ（pv と同じ手順）。
+
+    コピー → 原子的な os.replace で確定する。移動だけだと途中で落ちたとき記録を失い、
+    ロックファイルは stale で恒久ブロックするので使わない。
+    """
+    if not _LEGACY_DB.is_file() or DB_PATH.is_file() or DB_PATH == _LEGACY_DB:
+        return
+    tmp = DB_PATH.with_name(DB_PATH.name + f".migrating.{os.getpid()}")
+    try:
+        shutil.copy2(_LEGACY_DB, tmp)
+        if DB_PATH.is_file():
+            tmp.unlink(missing_ok=True)   # 競合に負けた側。相手の結果を尊重する
+            return
+        os.replace(tmp, DB_PATH)
+        try:
+            _LEGACY_DB.rename(_LEGACY_DB.with_suffix(".sqlite3.migrated"))
+        except OSError:
+            pass  # 相手が先に退避済み。移行自体は完了している
+        print(f"[cgd usage] 旧 DB を {DB_PATH.name} へ引き継ぎました", file=sys.stderr)
+    except OSError as exc:
+        print(f"[cgd usage] 旧 DB の引き継ぎに失敗: {exc}", file=sys.stderr)
+
+
+def all_db_paths() -> list[Path]:
+    """集計対象。**全端末のファイルを読む**（書くのは自端末のものだけ）。"""
+    _migrate_legacy()
+    paths = sorted(_TOOLS_DIR.glob(DB_GLOB))
+    if DB_PATH not in paths and DB_PATH.is_file():
+        paths.append(DB_PATH)
+    return paths
+
+
+def _connect_readonly(path: Path) -> sqlite3.Connection:
+    """他端末の DB は**本当に read-only で開く**（schema 作成も移行も走らせない）。
+
+    pv で「集計のつもりが他端末の DB を触って壊す経路」になっていた実績があるため、
+    URI モードの mode=ro を使う。`?` `#` `%` を含むパスのため URI エスケープする。
+    """
+    uri = "file:" + urllib.parse.quote(str(path).replace("\\", "/"), safe="/:") + "?mode=ro"
+    return sqlite3.connect(uri, uri=True, timeout=5.0)
 
 VALID_LEVELS = tuple(range(0, 9))  # Lv0-8
 
@@ -79,6 +147,9 @@ def _arm_wf_gate(level: int, session: str | None = None) -> None:
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
+    """書込用。自端末のファイルだけを開く（初回は旧 DB を引き継ぐ）。"""
+    if db_path == DB_PATH:
+        _migrate_legacy()
     conn = sqlite3.connect(db_path, timeout=5.0)
     conn.execute(
         """
@@ -129,48 +200,82 @@ def record_usage(
     return True
 
 
-def build_report(since: str | None = None, db_path: Path = DB_PATH) -> str:
-    """集計結果を人間可読テキストで返す。レコードが1件もなければその旨を返す。"""
-    if not db_path.exists():
+def load_all_rows(since: str | None = None) -> list[tuple]:
+    """全端末の DB から行を読む。壊れた DB 1 つで集計全体を落とさない。"""
+    where = "WHERE logged_at >= ?" if since else ""
+    params: tuple = (since,) if since else ()
+    rows: list[tuple] = []
+    for path in all_db_paths():
+        try:
+            conn = _connect_readonly(path)
+        except sqlite3.Error as exc:
+            print(f"[cgd usage] WARN: {path.name} を開けません: {exc}", file=sys.stderr)
+            continue
+        try:
+            rows += conn.execute(
+                "SELECT logged_at, level, gemini_opted_in, critic_used "
+                f"FROM cgd_usage_log {where}",
+                params,
+            ).fetchall()
+        except sqlite3.Error as exc:
+            print(f"[cgd usage] WARN: {path.name} を読めません: {exc}", file=sys.stderr)
+        finally:
+            conn.close()
+    return rows
+
+
+def _sources_line() -> str:
+    hosts = []
+    for p in all_db_paths():
+        m = re.match(r"cgd_usage_(.+)\.sqlite3$", p.name)
+        hosts.append(m.group(1) if m else p.name)
+    if not hosts:
         return "[cgd usage] 記録なし（ログファイル未作成）"
+    return (f"[cgd usage] 書込先={DB_PATH.name}（端末 {HOST}）"
+            f"/ 集計対象 {len(hosts)} 端末: {', '.join(hosts)}")
 
-    conn = _connect(db_path)
-    try:
-        where = ""
-        params: tuple = ()
-        if since:
-            where = "WHERE logged_at >= ?"
-            params = (since,)
 
-        total = conn.execute(f"SELECT COUNT(*) FROM cgd_usage_log {where}", params).fetchone()[0]
-        if total == 0:
-            return "[cgd usage] 該当期間の記録なし" if since else "[cgd usage] 記録なし"
+def build_report(since: str | None = None, db_path: Path | None = None) -> str:
+    """集計結果を人間可読テキストで返す。レコードが1件もなければその旨を返す。
 
-        span = conn.execute(
-            f"SELECT MIN(logged_at), MAX(logged_at) FROM cgd_usage_log {where}", params
-        ).fetchone()
+    db_path は後方互換のため残しているが、既定では**全端末のファイル**を集計する
+    （2026-08-12 に端末別ファイルへ移行したため）。
+    """
+    if db_path is not None:
+        # 単一ファイルを明示された場合（テスト等）
+        if not db_path.exists():
+            return "[cgd usage] 記録なし（ログファイル未作成）"
+        conn = _connect_readonly(db_path)
+        try:
+            where = "WHERE logged_at >= ?" if since else ""
+            params: tuple = (since,) if since else ()
+            rows = conn.execute(
+                "SELECT logged_at, level, gemini_opted_in, critic_used "
+                f"FROM cgd_usage_log {where}", params).fetchall()
+        finally:
+            conn.close()
+        header = f"[cgd usage] {db_path.name}"
+    else:
+        rows = load_all_rows(since)
+        header = _sources_line()
+        if not all_db_paths():
+            return header
 
-        by_level = conn.execute(
-            f"SELECT level, COUNT(*) FROM cgd_usage_log {where} GROUP BY level ORDER BY level",
-            params,
-        ).fetchall()
+    total = len(rows)
+    if total == 0:
+        return header + "\n" + ("  該当期間の記録なし" if since else "  記録なし")
 
-        gemini_count = conn.execute(
-            f"SELECT COUNT(*) FROM cgd_usage_log {where}{' AND' if where else 'WHERE'} gemini_opted_in = 1",
-            params,
-        ).fetchone()[0]
-        critic_count = conn.execute(
-            f"SELECT COUNT(*) FROM cgd_usage_log {where}{' AND' if where else 'WHERE'} critic_used = 1",
-            params,
-        ).fetchone()[0]
-    finally:
-        conn.close()
-
+    stamps = sorted(r[0] for r in rows)
     counts_by_level = {lv: 0 for lv in VALID_LEVELS}
-    counts_by_level.update(dict(by_level))
+    for _ts, lv, _g, _c in rows:
+        if lv in counts_by_level:
+            counts_by_level[lv] += 1
+    gemini_count = sum(1 for r in rows if r[2])
+    critic_count = sum(1 for r in rows if r[3])
 
     lines = [
-        f"[cgd usage] 集計期間: {span[0]} 〜 {span[1]}（全 {total} 件）",
+        header,
+        f"[cgd usage] 集計期間: {stamps[0]} 〜 {stamps[-1]}（全 {total} 件）",
         "",
     ]
     for lv in VALID_LEVELS:

@@ -42,7 +42,7 @@ import argparse
 import hashlib
 import json
 import os
-import random
+import secrets
 import re
 import sys
 from datetime import datetime
@@ -50,6 +50,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from cgd_reviewers import build_reviewers  # noqa: E402
+from cgd_prompts import review_prompt  # noqa: E402
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -116,6 +117,23 @@ def expected_raw_paths(level: int, label: str, run_tag: str,
     return {n: (RAW_DIR / f"cgd_raw_{n}_{label}_{run_tag}.md").as_posix() for n in names}
 
 
+def expected_raw_paths_v2(run: str, level: int, include_gemini: bool) -> dict[str, str]:
+    """run ごとのディレクトリに分けた生ログのパス（並列実行の衝突対策）。
+
+    旧 expected_raw_paths は `<label>_<run_tag>` で一意性を作っていたが、
+    **同じ入力・同じ label で並行に回すと同じファイルを取り合う**。
+    run 名には時刻と乱数が入っているので、こちらを使えば衝突しない。
+
+    旧形式も残してあるのは、WF 内蔵定義（args を渡さない起動）が
+    `cgd_raw_<name>_<label>_<runTag>.md` を使うため。契約テストはそちらを見る。
+    """
+    names = list(REVIEWERS[level])
+    if include_gemini:
+        names.insert(GEMINI_AFTER[level], "gemini")
+    base = RAW_DIR / "cgd_runs" / run
+    return {n: (base / f"{n}.md").as_posix() for n in names}
+
+
 # --------------------------------------------------------------------- build
 
 
@@ -142,11 +160,16 @@ def cmd_build(args: argparse.Namespace) -> int:
     run_tag = sha256_of(inp)[:8]
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run = f"{label}_{stamp}_{random.randint(0, 9999):04d}"
+    # 同一秒に複数の run が立つ（並行セッション・連続実行）ので乱数を足す。
+    # 4 桁だと同一秒で 1/10000 の衝突があり、実際にテストで踏んだ。
+    # 衝突すると mkdir(exist_ok=True) が既存 run を再利用し、生ログを取り合う。
+    run = f"{label}_{stamp}_{secrets.token_hex(4)}"
     d = run_dir(run)
     d.mkdir(parents=True, exist_ok=True)
 
-    expected = expected_raw_paths(args.level, label, run_tag, args.include_gemini)
+    # 生ログは run ごとのディレクトリへ。並行実行しても取り合わない。
+    # (WF 内蔵定義に落ちる起動では旧形式が使われるが、そちらは build を通らない)
+    expected = expected_raw_paths_v2(run, args.level, args.include_gemini)
     plan = {
         "run": run,
         "level": args.level,
@@ -169,11 +192,18 @@ def cmd_build(args: argparse.Namespace) -> int:
     # レビュアー定義は **Python を単一の出所**にして args で渡す。
     # Workflow はファイルを読めないので、LLM を介さず届く経路は args だけ。
     # WF 側は受け取った定義を検証してから使い、無ければ内蔵定義に落ちる(後方互換)。
+    # raw_paths を渡すと、各コマンドが「生ログと終了コードをシェルに書かせる」形に包まれる。
+    # これで executed / exit_code が agent の自己申告ではなく実測値になる。
     reviewers = build_reviewers(
         args.level, plan["input_path"], plan["aux_input_path"],
         include_gemini=bool(args.include_gemini),
         reasoning=getattr(args, "codex_reasoning", None) or "medium",
+        raw_paths=expected,
     )
+    # 依頼テキストも Python で生成して同梱する。3 本の WF に複製されていた文面を
+    # 1 か所へ寄せるのが目的（文面自体は元から決定論的だったので、揺らぎ低減ではない）。
+    for r in reviewers:
+        r["prompt"] = review_prompt(args.level, r, label)
     plan["reviewers"] = reviewers
     (d / "plan.json").write_text(json.dumps(plan, ensure_ascii=False, indent=1),
                                  encoding="utf-8", newline="")
@@ -199,9 +229,18 @@ def cmd_build(args: argparse.Namespace) -> int:
 
 
 def _inspect_raw(path_str: str) -> dict:
+    """生ログと、その隣の .exit（シェルが書いた終了コード）を検査する。
+
+    2026-08-12 以降、生ログは **シェルがリダイレクトで書く**（以前は agent が
+    Write ツールで転記していた）。終了コードも `echo $? > <raw>.exit` で
+    シェルが残す。したがってここで見ているのは LLM 産の申告ではなく実測値。
+
+    .exit が無い = コマンドが最後まで到達しなかった（シェルごと死んだ等）。
+    ログだけあって .exit が無い状態は「途中で死んだ」なので通さない。
+    """
     p = Path(path_str)
     info = {"path": path_str, "exists": False, "bytes": 0, "structure_lines": 0, "ok": False,
-            "reason": ""}
+            "exit_code": None, "reason": ""}
     if not p.is_file():
         info["reason"] = "生ログが存在しない (レビュアーが実際には走っていない可能性)"
         return info
@@ -219,6 +258,33 @@ def _inspect_raw(path_str: str) -> dict:
         1 for line in text.splitlines()
         if line.lstrip().startswith(("#", "-", "*", "|", "1.", "2.", "3."))
     )
+    # シェルが書いた終了コードを読む。ここが executed の**唯一の権威**。
+    ex = Path(path_str + ".exit")
+    if ex.is_file():
+        try:
+            info["exit_code"] = int(ex.read_text(encoding="utf-8", errors="replace").strip())
+        except (OSError, ValueError):
+            info["reason"] = ".exit が読めない/数値でない (完走を確認できない)"
+            return info
+    else:
+        info["reason"] = (
+            ".exit が無い — コマンドが最後まで到達していない"
+            "（途中で落ちた / 古い形式のコマンドで実行された）"
+        )
+        return info
+    if info["exit_code"] != 0:
+        # ラッパ (cgd_reviewers.wrap) が使う特別なコードは意味を添える。
+        # 「なぜ落ちたか」が分からないと、環境の問題とレビューの問題を取り違える。
+        special = {
+            124: "タイムアウト/中断（コマンドが最後まで走らなかった。trap が初期値を残した）",
+            90: "作業ディレクトリを作れなかった（環境の失敗であってレビューの失敗ではない）",
+            127: "コマンドが見つからない（PATH / CLI 未インストール）",
+        }
+        note = special.get(info["exit_code"])
+        info["reason"] = (f"終了コードが {info['exit_code']} (0 以外は失敗)"
+                          + (f" — {note}" if note else ""))
+        return info
+
     if info["bytes"] < MIN_RAW_BYTES:
         info["reason"] = f"短すぎる ({info['bytes']} < {MIN_RAW_BYTES} bytes)"
         return info
@@ -243,8 +309,20 @@ def cmd_collect(args: argparse.Namespace) -> int:
         r["reviewer"] = name
     ok = all(r["ok"] for r in results)
 
-    print(json.dumps({"run": args.run, "level": plan["level"], "reviewers": results, "ok": ok},
-                     ensure_ascii=False))
+    # **ここが成否の権威**であることを出力にも明示する。
+    # WF の統合表に載る executed / exit_code は agent が JSON へ転記した値なので、
+    # 食い違ったらこちらを採る（3 者レビューで「自己申告経路が残っている」と収束した点）。
+    print(json.dumps({
+        "run": args.run,
+        "level": plan["level"],
+        "reviewers": results,
+        "ok": ok,
+        "authority": (
+            "executed/exit_code はここ（シェルが書いた .exit の実読値）が権威。"
+            "WF の戻り値にある executed は agent の転記なので、食い違ったらこちらを採る"
+        ),
+        "failed": [r["reviewer"] for r in results if not r["ok"]],
+    }, ensure_ascii=False))
 
     if ok:
         # 印を消せるのはここだけ。WF 内から消してはいけない

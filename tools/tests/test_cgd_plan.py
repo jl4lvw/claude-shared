@@ -50,8 +50,13 @@ def _build(sandbox, level: int = 8, label: str = "t", include_gemini: bool = Fal
         aux=str(sandbox["aux"]) if level in (7, 8) else None,
         include_gemini=include_gemini,
     )
-    assert cgd_plan.cmd_build(args) == cgd_plan.EXIT_OK
-    run = sorted((sandbox["tmp"] / "cgd").iterdir())[-1].name
+    # 「最後のディレクトリ」を取ると、後から作った run が辞書順で前に来たとき
+    # 古い run を掴む。build が出力した run 名をそのまま使う。
+    import contextlib, io  # noqa: PLC0415
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert cgd_plan.cmd_build(args) == cgd_plan.EXIT_OK
+    run = json.loads([l for l in buf.getvalue().splitlines() if l.startswith("{")][0])["run"]
     plan = json.loads((sandbox["tmp"] / "cgd" / run / "plan.json").read_text(encoding="utf-8"))
     return run, plan
 
@@ -124,11 +129,22 @@ def test_build_requires_aux_for_lv7_and_lv8(sandbox) -> None:
 # ----------------------------------------------------------------- collect
 
 
-def _write_raws(plan, body=OK_BODY, only=None):
+def _write_raws(plan, body=OK_BODY, only=None, exit_code="0"):
+    """生ログと .exit を書く。
+
+    実運用では **シェルがリダイレクトで書く**（agent の Write ではない）。
+    テストでもその形を再現する。exit_code=None なら .exit を書かない
+    ＝「コマンドが最後まで到達しなかった」状況。
+    """
     for name, p in plan["expected_raw"].items():
         if only is not None and name not in only:
             continue
+        # 生ログは run ごとのディレクトリに置かれる。実運用ではラッパの
+        # `mkdir -p "$(dirname ...)"` が作るので、テストでも同じように作る。
+        Path(p).parent.mkdir(parents=True, exist_ok=True)
         Path(p).write_bytes(body)
+        if exit_code is not None:
+            Path(p + ".exit").write_text(exit_code, encoding="utf-8")
 
 
 def test_collect_fails_when_no_raw_logs(sandbox) -> None:
@@ -183,6 +199,168 @@ def test_collect_keeps_marker_on_failure(sandbox) -> None:
     pend = sandbox["tmp"] / "cgd" / run / cgd_plan.PENDING_NAME
     assert _collect(run) == cgd_plan.EXIT_NG
     assert pend.exists()
+
+
+def test_collect_fails_when_exit_file_missing(sandbox) -> None:
+    """.exit が無い = コマンドが最後まで到達していない。
+
+    生ログだけあって .exit が無い状態は「途中で死んだ」。
+    ログの中身が立派でも通してはいけない。
+    """
+    run, plan = _build(sandbox)
+    _write_raws(plan, exit_code=None)
+    assert _collect(run) == cgd_plan.EXIT_NG
+
+
+def test_collect_fails_on_nonzero_exit(sandbox) -> None:
+    """**これが本題**: 成否は agent の申告ではなくシェルが書いた終了コードで決める。"""
+    run, plan = _build(sandbox)
+    _write_raws(plan)
+    first = list(plan["expected_raw"].values())[0]
+    Path(first + ".exit").write_text("1", encoding="utf-8")
+    assert _collect(run) == cgd_plan.EXIT_NG
+
+
+def test_collect_reports_exit_code(sandbox) -> None:
+    import argparse, io, contextlib  # noqa: PLC0415
+    run, plan = _build(sandbox)
+    _write_raws(plan)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        cgd_plan.cmd_collect(argparse.Namespace(run=run))
+    payload = json.loads(buf.getvalue())
+    assert all(r["exit_code"] == 0 for r in payload["reviewers"])
+
+
+def test_wrap_writes_log_and_exit_via_shell(tmp_path) -> None:
+    """ラッパが実際にシェルでログと終了コードを書くこと（机上で終わらせない）。
+
+    `{ ...; }` だと中の `exit` でシェルごと死んで .exit が書かれない。
+    サブシェルであることをここで固定する。
+    """
+    import cgd_reviewers  # noqa: PLC0415
+    raw = (tmp_path / "r.md").as_posix()
+    script = tmp_path / "s.sh"
+    nl = chr(10)
+    script.write_text(
+        "#!/usr/bin/env bash" + nl
+        + cgd_reviewers.wrap("echo hello ; exit 7", raw) + nl,
+        encoding="utf-8", newline="",
+    )
+    subprocess.run(["bash", str(script)], capture_output=True)
+    assert Path(raw).read_text(encoding="utf-8").strip() == "hello"
+    assert Path(raw + ".exit").read_text(encoding="utf-8").strip() == "7"
+
+
+@pytest.mark.parametrize("code,phrase", [
+    ("124", "タイムアウト"),
+    ("90", "作業ディレクトリ"),
+    ("127", "コマンドが見つからない"),
+])
+def test_collect_explains_special_exit_codes(sandbox, code: str, phrase: str) -> None:
+    """なぜ落ちたかが分からないと、環境の失敗とレビューの失敗を取り違える。"""
+    import argparse, io, contextlib  # noqa: PLC0415
+    run, plan = _build(sandbox)
+    _write_raws(plan)
+    first = list(plan["expected_raw"].values())[0]
+    Path(first + ".exit").write_text(code, encoding="utf-8")
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert cgd_plan.cmd_collect(argparse.Namespace(run=run)) == cgd_plan.EXIT_NG
+    payload = json.loads(buf.getvalue())
+    bad = [r for r in payload["reviewers"] if not r["ok"]][0]
+    assert phrase in bad["reason"], bad["reason"]
+
+
+def test_collect_declares_itself_authoritative(sandbox) -> None:
+    """WF の executed は agent の転記。食い違ったら collect を採ると出力に明示する。"""
+    import argparse, io, contextlib  # noqa: PLC0415
+    run, plan = _build(sandbox)
+    _write_raws(plan)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        cgd_plan.cmd_collect(argparse.Namespace(run=run))
+    payload = json.loads(buf.getvalue())
+    assert "権威" in payload["authority"]
+    assert payload["failed"] == []
+
+
+# ------------------------------------------------- wrap（シェル側の実挙動）
+
+
+@pytest.mark.parametrize("inner,want", [
+    ("echo hello", "0"),
+    ("echo out ; exit 7", "7"),
+    ("no_such_cmd_zzz_2026", "127"),
+    ("false | cat", "1"),          # pipefail が効いていること
+])
+def test_wrap_records_exit_code(tmp_path, inner: str, want: str) -> None:
+    """成否を **シェルが** 書くこと。agent の申告に依存しない。"""
+    import cgd_reviewers  # noqa: PLC0415
+    raw = (tmp_path / "r.md").as_posix()
+    script = tmp_path / "s.sh"
+    nl = chr(10)
+    script.write_text("#!/usr/bin/env bash" + nl + cgd_reviewers.wrap(inner, raw) + nl,
+                      encoding="utf-8", newline="")
+    subprocess.run(["bash", str(script)], capture_output=True)
+    assert Path(raw + ".exit").read_text(encoding="utf-8").strip() == want
+
+
+def test_wrap_records_124_when_killed(tmp_path) -> None:
+    """打ち切られたら trap が初期値 124 を残す。
+
+    これが無いと .exit が不在になり「走ったのか環境が壊れたのか」を区別できない。
+    """
+    import cgd_reviewers  # noqa: PLC0415
+    raw = (tmp_path / "k.md").as_posix()
+    script = tmp_path / "k.sh"
+    nl = chr(10)
+    script.write_text(
+        "#!/usr/bin/env bash" + nl
+        + cgd_reviewers.wrap("echo part ; kill -TERM $$", raw) + nl,
+        encoding="utf-8", newline="")
+    subprocess.run(["bash", str(script)], capture_output=True)
+    assert Path(raw + ".exit").read_text(encoding="utf-8").strip() == "124"
+
+
+def test_wrap_creates_parent_directory(tmp_path) -> None:
+    """/c/tmp-ai 決め打ちをやめ、raw_path の親から作ること。"""
+    import cgd_reviewers  # noqa: PLC0415
+    raw = (tmp_path / "deep" / "nest" / "r.md").as_posix()
+    script = tmp_path / "d.sh"
+    nl = chr(10)
+    script.write_text("#!/usr/bin/env bash" + nl + cgd_reviewers.wrap("echo x", raw) + nl,
+                      encoding="utf-8", newline="")
+    subprocess.run(["bash", str(script)], capture_output=True)
+    assert Path(raw).read_text(encoding="utf-8").strip() == "x"
+    assert Path(raw + ".exit").read_text(encoding="utf-8").strip() == "0"
+
+
+def test_wrap_quotes_path_against_injection(tmp_path) -> None:
+    """パスに $( ) が混ざってもコマンドとして実行されないこと。"""
+    import cgd_reviewers  # noqa: PLC0415
+    marker = tmp_path / "PWNED"
+    raw = (tmp_path / f"a $(touch {marker.as_posix()}) b.md").as_posix()
+    script = tmp_path / "i.sh"
+    nl = chr(10)
+    script.write_text("#!/usr/bin/env bash" + nl + cgd_reviewers.wrap("echo x", raw) + nl,
+                      encoding="utf-8", newline="")
+    subprocess.run(["bash", str(script)], capture_output=True)
+    assert not marker.exists(), "パスの $( ) が実行されている"
+
+
+def test_parallel_runs_do_not_share_raw_paths(sandbox) -> None:
+    """同じ入力・同じ label で 2 回 build しても生ログを取り合わないこと。
+
+    旧命名は `<label>_<入力の sha 先頭8>` だけで一意性を作っていたため、
+    並行実行すると同じファイルに両方が書き込んでいた。
+    """
+    run_a, plan_a = _build(sandbox, label="same")
+    run_b, plan_b = _build(sandbox, label="same")
+    assert run_a != run_b
+    a = set(plan_a["expected_raw"].values())
+    b = set(plan_b["expected_raw"].values())
+    assert not (a & b), f"生ログのパスが衝突している: {sorted(a & b)}"
 
 
 def test_collect_without_plan_fails(sandbox) -> None:

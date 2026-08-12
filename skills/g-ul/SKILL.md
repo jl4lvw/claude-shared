@@ -87,9 +87,16 @@ for t in $TARGETS; do
     DST_W=$(cygpath -w "$DST_BASH")
     echo "  mirror $t ..."
     # git-bash では robocopy のスラッシュオプションが MSYS パス変換に巻き込まれるため //OPT で escape
+    #
+    # //XF は「計測ファイル」を除外する。//MIR は送り側に無いファイルを受け側から
+    # **削除する**ので、端末ごとに溜まる計測をミラーに載せると、/g-dl せずに
+    # /g-ul した端末が他端末の記録を消してしまう（2026-08-12 修正）。
+    # //XF に入れたファイルはコピーも削除もされないので、各端末の手元に残り続ける。
     robocopy "$SRC_W" "$DST_W" //MIR //NFL //NDL //NP //R:2 //W:1 \
         //XD __pycache__ ".bootstrap-bak-*" ".migrate-pending-*" \
-        //XF "*.bak_*" "*.pyc" ".deepseek_usage_session.json" ".qwen_usage_session.json" "telemetry.jsonl" > /dev/null 2>&1
+        //XF "*.bak_*" "*.pyc" "*.migrated" \
+             ".deepseek_usage_session.json" ".qwen_usage_session.json" ".gemini_usage_session.json" \
+             "telemetry.jsonl" "pv_usage_*.sqlite3" "cgd_usage*.sqlite3" > /dev/null 2>&1
     EXIT=$?
     # robocopy 終了コード: 0-7 = 成功（差分の有無）、8+ = エラー
     if [ $EXIT -ge 8 ]; then

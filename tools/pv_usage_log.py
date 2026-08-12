@@ -24,10 +24,15 @@
   集計 (`summary` / `levels` / `failures`) は `pv_usage_*.sqlite3` を**全部読む**ので、
   端末を分けても全体の統計は取れる。
 
-  残る限界: //MIR は「送り側に無いファイルを消す」ので、`/g-dl` せずに `/g-ul` した
-  端末は共有側から他端末のファイルを消す。ただし消えるのは共有側のコピーだけで、
-  原本は各端末に残るため次の push で復活する。単一ファイル方式の「記録が本当に
-  失われる」とは失敗の重さが違う。cgd の usage DB は今も単一ファイルのまま。
+  2026-08-12 追記: この「//MIR が共有側から他端末のファイルを消す」問題は、
+  `/g-ul` `/g-dl` 両方の robocopy //XF に `pv_usage_*.sqlite3` `cgd_usage*.sqlite3`
+  を入れて解消した。//XF に載せたファイルはコピーも削除もされないので、usage DB は
+  各端末の手元だけで育つ（共有もされないが、消えることも無くなった）。
+  同日 cgd の usage DB も端末別（`cgd_usage_<端末名>.sqlite3`）へ移行済み。
+
+  分類の注意: halt の `reason` は**記録した時点の分類ルール**が残る。ルールを足す前に
+  書かれた行は古い分類のままなので、改修をまたぐ集計は `reclassify` で付け直す
+  （元の値は detail.reclassified_from に残す）。
 """
 from __future__ import annotations
 
@@ -644,6 +649,73 @@ def _cmd_purge(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_reclassify(args: argparse.Namespace) -> int:
+    """古い halt 行の reason を、現行の分類ルールで付け直す。
+
+    分類は `pv_plan._HALT_PATTERNS` の部分文字列一致で、**記録した時点のルール**が
+    そのまま残る。ルールを足す前に書かれた行は古い分類（多くは other）のままなので、
+    改修をまたいだ期間の集計が割れる。実際 2026-08-12 に 33 秒差の同じ中止が
+    Lv4=other / Lv8=level_unimplemented と別分類で入っていた。
+
+    detail に元の message が入っているので**実データから**引き直せる。
+    backfill と同じく、書き換えた事実を `reclassified_from` として detail に残す
+    （後から「でっち上げでない」ことを確認できるようにするため）。
+
+    書き換えるのは**自端末の DB だけ**。他端末のファイルは read-only で開く方針
+    （集計のつもりで他端末の DB を壊した実績があるため）。
+    """
+    try:
+        import pv_plan  # 遅延 import（pv_plan が本モジュールを import するため循環回避）
+    except Exception as exc:  # noqa: BLE001
+        print(f"[pv usage] pv_plan を読み込めないので再分類できません: {exc}")
+        return 1
+
+    if not DB_PATH.is_file():
+        print(f"[pv usage] 自端末の DB がありません: {DB_PATH.name}")
+        return 1
+
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, level, run, reason, detail FROM pv_event WHERE event = 'halt'"
+        ).fetchall()
+        changes: list[tuple[int, str, str, str]] = []
+        for rid, level, run, reason, detail in rows:
+            try:
+                payload = json.loads(detail) if detail else {}
+            except (TypeError, ValueError):
+                continue
+            msg = payload.get("message")
+            if not isinstance(msg, str) or not msg:
+                continue
+            fresh = pv_plan._halt_reason(msg)
+            if fresh != reason:
+                payload["reclassified_from"] = reason
+                changes.append((rid, reason or "-", fresh, json.dumps(payload, ensure_ascii=False)))
+
+        if not changes:
+            print(f"[pv usage] {DB_PATH.name}: 付け直しが要る halt 行はありません")
+            return 0
+
+        print(f"[pv usage] {DB_PATH.name}: {len(changes)} 行の reason が現行ルールと違います")
+        for rid, old, new, _ in changes:
+            print(f"    id={rid}  {old} → {new}")
+
+        if not args.apply:
+            print("\n  ※ 確認のみ（何も書き換えていません）。適用するには --apply を付けてください")
+            return 0
+
+        conn.executemany(
+            "UPDATE pv_event SET reason = ?, detail = ? WHERE id = ?",
+            [(new, det, rid) for rid, _old, new, det in changes],
+        )
+        conn.commit()
+        print(f"\n  {len(changes)} 行を更新しました（元の値は detail.reclassified_from に保存）")
+        return 0
+    finally:
+        conn.close()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="pv の利用状況・不具合台帳")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -671,6 +743,11 @@ def main() -> int:
 
     sub.add_parser("backfill", help="既存 run の plan.json から過去の実行を復元する")
 
+    rc = sub.add_parser("reclassify",
+                        help="古い halt 行の reason を現行の分類ルールで付け直す")
+    rc.add_argument("--apply", action="store_true",
+                    help="実際に書き換える（既定は確認のみ）")
+
     p = sub.add_parser("purge", help="指定 run の記録を削除する（テスト行の掃除用）")
     p.add_argument("--run", required=True)
 
@@ -679,6 +756,7 @@ def main() -> int:
         "summary": _cmd_summary, "levels": _cmd_levels,
         "failures": _cmd_failures, "record": _cmd_record,
         "backfill": _cmd_backfill, "purge": _cmd_purge, "cost": _cmd_cost,
+        "reclassify": _cmd_reclassify,
     }[args.cmd](args)
 
 

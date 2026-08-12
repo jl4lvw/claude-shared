@@ -150,9 +150,15 @@ for t in $TARGETS; do
     DST_W=$(cygpath -w "$DST_BASH")
     echo "  mirror $t ..."
     # git-bash では robocopy のスラッシュオプションが MSYS パス変換に巻き込まれるため //OPT で escape
+    #
+    # //XF は g-ul と**同じ一覧に揃える**（2026-08-12 修正）。こちらは共有 → 手元の
+    # 向きなので、除外を漏らすと //MIR が**自分の端末の計測を消す**。実際 g-dl 側は
+    # telemetry.jsonl / Qwen セッション / usage DB のどれも除外していなかった。
     robocopy "$SRC_W" "$DST_W" //MIR //NFL //NDL //NP //R:2 //W:1 \
         //XD __pycache__ ".bootstrap-bak-*" ".migrate-pending-*" \
-        //XF "*.bak_*" "*.pyc" ".deepseek_usage_session.json" > /dev/null 2>&1
+        //XF "*.bak_*" "*.pyc" "*.migrated" \
+             ".deepseek_usage_session.json" ".qwen_usage_session.json" ".gemini_usage_session.json" \
+             "telemetry.jsonl" "pv_usage_*.sqlite3" "cgd_usage*.sqlite3" > /dev/null 2>&1
     EXIT=$?
     if [ $EXIT -ge 8 ]; then
         echo "    robocopy ERROR (exit=$EXIT) for $t" >&2

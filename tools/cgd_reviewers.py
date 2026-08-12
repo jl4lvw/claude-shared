@@ -20,6 +20,8 @@ nonce だけは実行時にしか決まらないため `__WF_NONCE__` のまま�
 
 from __future__ import annotations
 
+import shlex
+
 CODEX_PROMPT = (
     "まず {input} の全文を読み、記載の差分・対象・評価観点に従ってコードレビュー。"
     "関連関数の抜粋は入力に同梱済み。追加で開くのは最大5ファイルまでとし、"
@@ -55,6 +57,12 @@ AUTH_GEMINI = "AuthenticationError / 401 / invalid api key / GEMINI_API_KEY が�
 # 単なる上限不足。Bash ツールの上限が 600000 なのでこれ以上は上げられない。
 # 同日 pv 側でも同種の DS timeout に当たっている (ENGINE_TIMEOUTS 300->900)。
 
+# **実行環境は Git Bash (MSYS) を前提にしている。**
+# Claude Code の Bash ツールが Git Bash なので、生成するコマンドは
+#   - `/c/tmp-ai` のような MSYS 形式のパス
+#   - `set -o pipefail` / `trap ... EXIT` / `$(dirname ...)` などの bash 構文
+# を使う。cmd.exe / PowerShell では動かない（3 者レビューで唯一 3 者一致した指摘）。
+# bash の実在は cgd_doctor.py の shell チェックで確認している。
 TOOLS = "C:/ClaudeCode/.claude/tools"
 
 
@@ -71,12 +79,81 @@ def _py(tool: str, role: str, target: str) -> str:
     return f'python "{TOOLS}/{tool}" --role {role} "{target}"'
 
 
+MKDIR_FAIL_RC = 90
+
+
+def wrap(cmd: str, raw_path: str) -> str:
+    """**生ログと終了コードをシェルに書かせる**ラッパ (2026-08-12)。
+
+    これ以前は「標準出力を Write ツールで保存しろ」と agent に頼み、
+    executed / exit_code も agent の自己申告だった。つまり成否の判定が
+    LLM に乗っており、collect が検査していたのも **LLM が書いたファイル**だった。
+
+    ここでリダイレクトすると:
+      - 生ログ  = コマンドの実出力そのもの（LLM の転記を挟まない）
+      - .exit   = シェルが書いた終了コード。Python が読んで executed を機械判定できる
+
+    設計上の判断（すべて実測または Lv6 レビューの指摘に基づく）:
+
+    - **サブシェル `( ... )` を使う。`{ ...; }` ではいけない。**
+      ブレースはサブシェルを作らないので、中のコマンドが `exit` を呼ぶと
+      シェルごと終了し、続く行が実行されず `.exit` が書かれない（実測確認済み）。
+
+    - **`trap ... EXIT` で必ず .exit を書く。**
+      タイムアウトや kill で打ち切られると通常経路の `echo` に到達しない。
+      その場合 .exit が不在になり「走ったのか環境が壊れたのか」を区別できない。
+      trap で退出時に必ず書くようにし、打ち切られた場合は 124（timeout 相当）を残す。
+
+    - **`set -o pipefail`。** 将来コマンド側にパイプが入ったとき、
+      `$?` が末尾プロセスの成否しか拾わないと失敗を取りこぼす。
+
+    - **パスは shlex.quote でエスケープする。**
+      いまは Python が生成する固定パスだけだが、二重引用符では `$( )` や
+      バッククォートが展開されるため、単一引用符で閉じる。
+
+    - **親ディレクトリは dirname から作る。** `/c/tmp-ai` 決め打ちだと
+      raw_path を別の場所に置いた瞬間にリダイレクトが失敗する。
+      作成に失敗したら専用コード 90 で即終了し、
+      「環境の失敗」と「レビューの失敗」を取り違えないようにする。
+
+    - 末尾の `__CGD_EXIT__=<n>` は agent に**転記させるだけ**の補助表示。
+      判定の権威はあくまで Python が読む .exit ファイル側にある。
+      本文と衝突しないよう printf で行頭を保証する。
+
+    - **ラッパ全体の終了コードは常に 0 になる**（末尾の printf が成功するため）。
+      これは意図どおり。成否は .exit だけを根拠にする。
+    """
+    q = shlex.quote(raw_path)
+    qe = shlex.quote(raw_path + ".exit")
+    # **trap の本体に単一引用符を入れない。**
+    # `trap '...' EXIT` の中で `printf '%s\n'` と書くと、内側の引用符が
+    # trap の文字列を途中で閉じてしまい、書式が `%sn` に化けて
+    # .exit の中身が "0n" になる（実測で確認）。
+    # 中身は整数 1 個なので echo で足りる。
+    return (
+        "set -o pipefail ; "
+        f"__cgd_out={q} ; __cgd_exit={qe} ; "
+        'mkdir -p "$(dirname "$__cgd_out")" || exit ' + str(MKDIR_FAIL_RC) + " ; "
+        "__cgd_rc=124 ; "
+        'trap \'echo "$__cgd_rc" > "$__cgd_exit"\' EXIT ; '
+        f"( {cmd} ) > " + '"$__cgd_out"' + " 2>&1 ; "
+        "__cgd_rc=$? ; "
+        'cat "$__cgd_out" ; '
+        'echo "__CGD_EXIT__=$__cgd_rc"'
+    )
+
+
 def build_reviewers(level: int, codex_input: str, aux_input: str | None,
-                    include_gemini: bool = False, reasoning: str = "medium") -> list[dict]:
+                    include_gemini: bool = False, reasoning: str = "medium",
+                    raw_paths: dict[str, str] | None = None) -> list[dict]:
     """レベルごとのレビュアー定義を返す。
 
     codex_input / aux_input は **正規化済みの絶対パス**を渡すこと
     (WF 側の _toPosix / 絶対パス検査と同じ値)。
+
+    raw_paths を渡すと、各コマンドを wrap() で包んで
+    「生ログと終了コードをシェルが書く」形にする。省略時は素のコマンド
+    (WF 内蔵定義との契約テスト用・および後方互換)。
     """
     aux = aux_input or codex_input          # lv6 は 1 入力（3 者に同じものを渡す）
     cx = CODEX_PROMPT.format(input=codex_input)
@@ -130,6 +207,14 @@ def build_reviewers(level: int, codex_input: str, aux_input: str | None,
              "cmd": _py("deepseek_coder.py", "critic", aux),
              "timeout": 600000, "usage": True, "isCodex": False, "authSignals": AUTH_DS},
         ]
+
+    if raw_paths:
+        missing = [r["name"] for r in rows if r["name"] not in raw_paths]
+        if missing:
+            raise ValueError(f"raw_paths に不足があります: {missing}")
+        for r in rows:
+            r["raw_path"] = raw_paths[r["name"]]
+            r["cmd"] = wrap(r["cmd"], raw_paths[r["name"]])
     return rows
 
 

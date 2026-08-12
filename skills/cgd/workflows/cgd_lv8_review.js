@@ -227,6 +227,9 @@ if (Array.isArray(_args.reviewers) && _args.reviewers.length > 0) {
     usage: r.usage === true,
     isCodex: r.isCodex === true,
     authSignals: typeof r.authSignals === 'string' ? r.authSignals : '',
+    // 依頼テキストも Python 側で生成したものを使う（無ければ内蔵の文面に落ちる）。
+    prompt: typeof r.prompt === 'string' && r.prompt ? r.prompt : '',
+    raw_path: typeof r.raw_path === 'string' ? r.raw_path : '',
   }))
   log(`[preflight] レビュアー定義を args から採用しました (${reviewers.length} 者)`)
 }
@@ -462,7 +465,7 @@ phase('Review')
 
 const reviews = await parallel(reviewers.map((r) => () =>
   agent(
-    `あなたは外部レビュアー「${r.name}」を実行し、その出力を構造化レビュー結果に変換する担当です。
+    (r.prompt || `あなたは外部レビュアー「${r.name}」を実行し、その出力を構造化レビュー結果に変換する担当です。
 これは cgd Lv8（技術の最深掘り + 複眼批評）の${r.kind === 'tech' ? '**技術レビュー**' : '**批評レビュー**'}枠です。
 
 [手順]
@@ -491,7 +494,7 @@ ${r.kind === 'tech'
 - 指摘が0件でも findings は空配列で返す（executed の値で成否を伝える）。
 ${r.isCodex ? '- あなた (Codex) は sandbox read-only で対象ファイルを直接読めるので、必要なら関連箇所を確認すること。' : ''}
 
-JSON で返す。`,
+JSON で返す。`),
     { label: `review:${r.name}`, phase: 'Review', schema: r.kind === 'tech' ? TECH_SCHEMA : CRITIC_SCHEMA }
   )
 ))

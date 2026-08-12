@@ -447,6 +447,36 @@ const CASES = {
   },
 
   // --- args.reviewers（Python 側を単一の出所にする経路） ---
+  prompt_from_args: {
+    // build が生成した依頼テキストをそのまま使うこと（3 本の複製をやめるため）。
+    args: {
+      ...GOOD, label: 'x',
+      reviewers: [{ name: 'r1', kind: 'tech', cmd: 'echo hi', timeout: 1000,
+                    usage: false, isCodex: false, authSignals: 'a',
+                    prompt: 'PROMPT-FROM-PYTHON' }],
+    },
+    expect: undefined,
+    agent: () => preflightEcho(),
+    assert: ({ reviewPrompts }) => {
+      if (reviewPrompts[0] !== 'PROMPT-FROM-PYTHON') {
+        throw new Error('args の prompt が使われていない: ' + reviewPrompts[0].slice(0, 60))
+      }
+    },
+  },
+  prompt_absent_falls_back_to_builtin: {
+    args: {
+      ...GOOD, label: 'x',
+      reviewers: [{ name: 'r1', kind: 'tech', cmd: 'echo hi', timeout: 1000,
+                    usage: false, isCodex: false, authSignals: 'a' }],
+    },
+    expect: undefined,
+    agent: () => preflightEcho(),
+    assert: ({ reviewPrompts }) => {
+      if (!reviewPrompts[0].includes('外部レビュアー')) {
+        throw new Error('内蔵の文面に落ちていない')
+      }
+    },
+  },
   reviewers_from_args: {
     // build が渡した定義をそのまま使うこと。
     args: {
