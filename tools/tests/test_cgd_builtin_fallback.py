@@ -87,7 +87,7 @@ def test_collect_detects_builtin_path_logs(sandbox) -> None:
     run, plan = _build(sandbox)
     _write_builtin_logs(sandbox, plan)
     _code, out = _collect(run)
-    assert out["fell_back_to_builtin"] == list(plan["expected_raw"])
+    assert out["found_in_builtin_path"] == list(plan["expected_raw"])
     for r in out["reviewers"]:
         assert r["builtin_log"]["bytes"] > 200
 
@@ -99,8 +99,10 @@ def test_collect_stops_saying_reviewer_did_not_run(sandbox) -> None:
     _code, out = _collect(run)
     for r in out["reviewers"]:
         assert "走っていない可能性" not in r["reason"]
-        assert "旧形式のパスに生ログがある" in r["reason"]
-        assert "完走は確認できない" in r["reason"]
+        assert "旧形式のパスに生ログの候補がある" in r["reason"]
+        # 「今回の実行か」も断定しない（旧形式は run をまたいで衝突するため）
+        assert "今回の実行かどうかも完走かも確認できません" in r["reason"] \
+            or "今回の実行かどうかも完走かも確認できない" in r["reason"]
 
 
 def test_collect_still_fails_the_gate_for_builtin_logs(sandbox) -> None:
@@ -121,7 +123,7 @@ def test_collect_keeps_plain_not_run_message_when_nothing_exists(sandbox) -> Non
     run, _plan = _build(sandbox)
     code, out = _collect(run)
     assert code == cgd_plan.EXIT_NG
-    assert out["fell_back_to_builtin"] == []
+    assert out["found_in_builtin_path"] == []
     assert all("走っていない可能性" in r["reason"] for r in out["reviewers"])
 
 
@@ -136,7 +138,7 @@ def test_collect_prefers_registered_path_over_builtin(sandbox) -> None:
     code, out = _collect(run)
     assert code == cgd_plan.EXIT_OK
     assert out["ok"] is True
-    assert out["fell_back_to_builtin"] == []
+    assert out["found_in_builtin_path"] == []
 
 
 # ------------------------------------- record_usage: ゲート副作用のガード
@@ -160,13 +162,75 @@ def test_record_usage_arms_gate_by_default(tmp_path, monkeypatch) -> None:
     assert called == [7]
 
 
-def test_env_kill_switch_skips_arming(monkeypatch, capsys) -> None:
-    """CGD_NO_WF_GATE=1 は実際の _arm_wf_gate の中で効く（呼ばれても張らない）。"""
-    monkeypatch.setenv("CGD_NO_WF_GATE", "1")
+@pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on", " 1 "])
+def test_env_kill_switch_accepts_common_truthy_values(monkeypatch, capsys, value) -> None:
+    """厳密一致だと `true` で切ったつもりが張られる（逆向きの事故）ので寛容に判定する。"""
+    monkeypatch.setenv("CGD_NO_WF_GATE", value)
     # ゲートスクリプトを呼ぶ前に return するので、subprocess は起動しない
     monkeypatch.setattr(cgd_usage_log, "GATE_SCRIPT", Path("存在しないはずのパス"))
     cgd_usage_log._arm_wf_gate(7)
-    assert "CGD_NO_WF_GATE=1" in capsys.readouterr().err
+    assert "CGD_NO_WF_GATE" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "", "off"])
+def test_env_kill_switch_ignores_falsy_values(monkeypatch, capsys, value) -> None:
+    """無効化していないつもりの値で勝手に切れては困る。"""
+    monkeypatch.setenv("CGD_NO_WF_GATE", value)
+    monkeypatch.setattr(cgd_usage_log, "GATE_SCRIPT", Path("存在しないはずのパス"))
+    cgd_usage_log._arm_wf_gate(7)
+    err = capsys.readouterr().err
+    assert "CGD_NO_WF_GATE" not in err
+    assert "セッション指定なし" in err   # 通常の経路まで進んでいる
+
+
+# ------------------------------------- 旧形式ログの stale 判定 / バイパスの記録
+
+
+def test_collect_ignores_stale_builtin_log(sandbox, monkeypatch) -> None:
+    """plan 作成より**古い**旧形式ログは今回の証拠にしない。
+
+    旧形式パスは `<name>_<label>_<runTag>` で、同じ入力・同じ label なら run を
+    またいで衝突する。過去実行の残骸を「走った証拠」に見せると、人が stale な
+    レビューを採用する事故になる（2026-08-12 Lv7 で 2 者が独立に指摘）。
+    """
+    import os
+    run, plan = _build(sandbox)
+    _write_builtin_logs(sandbox, plan)
+    old = cgd_plan._parse_created_at(plan["created_at"]) - 3600
+    for name in plan["expected_raw"]:
+        p = sandbox["tmp"] / "raw" / f"cgd_raw_{name}_{plan['label']}_{plan['run_tag']}.md"
+        os.utime(p, (old, old))
+    code, out = _collect(run)
+    assert code == cgd_plan.EXIT_NG
+    assert out["found_in_builtin_path"] == []
+    assert all("走っていない可能性" in r["reason"] for r in out["reviewers"])
+
+
+def test_record_usage_notes_when_gate_was_skipped(tmp_path, monkeypatch) -> None:
+    """ゲートを張らなかった事実を DB に残す。
+
+    「Lv6/7/8 の記録があるならゲートも張られたはず」と後から誤読されると
+    契約不一致になる（2026-08-12 Lv7 で 2 者が独立に指摘）。
+    """
+    import sqlite3
+    db = tmp_path / "u.sqlite3"
+    cgd_usage_log.record_usage(7, db_path=db, arm_gate=False, note="手動確認")
+    conn = sqlite3.connect(db)
+    note = conn.execute("SELECT note FROM cgd_usage_log").fetchone()[0]
+    conn.close()
+    assert "wf_gate_skipped" in note
+    assert "手動確認" in note        # 元の note を潰さない
+
+
+def test_record_usage_does_not_note_skip_for_non_wf_levels(tmp_path) -> None:
+    """Lv2 はそもそもゲート対象外なので「スキップした」とは書かない。"""
+    import sqlite3
+    db = tmp_path / "u.sqlite3"
+    cgd_usage_log.record_usage(2, db_path=db, arm_gate=False)
+    conn = sqlite3.connect(db)
+    note = conn.execute("SELECT note FROM cgd_usage_log").fetchone()[0]
+    conn.close()
+    assert note is None or "wf_gate_skipped" not in note
 
 
 def test_arm_wf_gate_warns_when_session_is_omitted(monkeypatch, capsys) -> None:

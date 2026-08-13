@@ -449,17 +449,27 @@ const CASES = {
   // --- args.reviewers（Python 側を単一の出所にする経路） ---
   prompt_from_args: {
     // build が生成した依頼テキストをそのまま使うこと（3 本の複製をやめるため）。
+    //
+    // **prompt には必ずコマンド本体が入る。** agent が実行するのは prompt に
+    // 書かれたコマンドであって r.cmd ではないので、cmd を含まない prompt は
+    // 実際には実行しようがない。以前このケースは `prompt: 'PROMPT-FROM-PYTHON'`
+    // という実物ではありえない形で書いてあり、そのままでは
+    // prompt_without_cmd ガード（cmd が prompt に無ければ止める）に引っかかった。
+    // ガードが正しいので、**テスト側を実物に合わせる**。
     args: {
       ...GOOD, label: 'x',
       reviewers: [{ name: 'r1', kind: 'tech', cmd: 'echo hi', timeout: 1000,
                     usage: false, isCodex: false, authSignals: 'a',
-                    prompt: 'PROMPT-FROM-PYTHON' }],
+                    prompt: 'PROMPT-FROM-PYTHON\n次を実行: echo hi' }],
     },
     expect: undefined,
     agent: () => preflightEcho(),
     assert: ({ reviewPrompts }) => {
-      if (reviewPrompts[0] !== 'PROMPT-FROM-PYTHON') {
+      if (!reviewPrompts[0].startsWith('PROMPT-FROM-PYTHON')) {
         throw new Error('args の prompt が使われていない: ' + reviewPrompts[0].slice(0, 60))
+      }
+      if (reviewPrompts[0].includes('外部レビュアー')) {
+        throw new Error('内蔵の文面に落ちている（args の prompt が無視された）')
       }
     },
   },

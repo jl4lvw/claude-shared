@@ -134,6 +134,16 @@ WF_REQUIRED_LEVELS = (6, 7, 8)
 GATE_SCRIPT: Path = Path(__file__).parent.parent / "hooks" / "cgd_wf_gate.py"
 
 
+def _gate_disabled_by_env() -> bool:
+    """ゲート無効化の環境変数を寛容に判定する。
+
+    厳密一致 (`== "1"`) だと `true` / `yes` で無効化したつもりが効かず、
+    「切ったつもりで張られている」逆の事故になる（2026-08-12 Lv7・DeepSeek 指摘）。
+    """
+    raw = (os.environ.get("CGD_NO_WF_GATE") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _arm_wf_gate(level: int, session: str | None = None) -> None:
     """Lv6/Lv7/Lv8 のとき inline codex 遮断ゲートを張る。
 
@@ -147,8 +157,8 @@ def _arm_wf_gate(level: int, session: str | None = None) -> None:
     # 副作用なので、record_usage を検証目的で呼んだだけで張られると事故になる
     # （2026-08-12: レース検証で level 7 を渡してしまい、全体ゲートを張って
     #  他セッションの codex まで止めかけた）。
-    if os.environ.get("CGD_NO_WF_GATE") == "1":
-        print(f"[cgd usage] CGD_NO_WF_GATE=1 のため Lv{level} のゲートは張りません",
+    if _gate_disabled_by_env():
+        print(f"[cgd usage] CGD_NO_WF_GATE により Lv{level} のゲートは張りません",
               file=sys.stderr)
         return
     if not session:
@@ -229,8 +239,14 @@ def record_usage(
         print(f"[cgd usage] WARN: 未知の level '{level}' のため記録をスキップ", file=sys.stderr)
         return False
     # ゲートは DB 書込より先に張る（DB が落ちていても強制は効かせる）
+    skipped = level in WF_REQUIRED_LEVELS and (not arm_gate or _gate_disabled_by_env())
     if arm_gate:
         _arm_wf_gate(level, session=session)
+    if skipped:
+        # 「Lv6/7/8 の記録があるならゲートも張られたはず」と後から誤読されると
+        # 契約不一致になるので、**張らなかった事実を DB にも残す**
+        # （2026-08-12 Lv7: codex_high と DeepSeek が独立に指摘）。
+        note = f"{note} wf_gate_skipped" if note else "wf_gate_skipped"
     logged_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
         conn = _connect(db_path)

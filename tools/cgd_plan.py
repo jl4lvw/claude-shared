@@ -70,6 +70,11 @@ EXIT_OK, EXIT_NG, EXIT_USAGE = 0, 1, 2
 #: pv の MIN_ANSWER_BYTES と同じ考え方。
 MIN_RAW_BYTES = 200
 
+#: 「見出しか箇条書きがこれだけあれば構造を持つ」の下限 (pv と同じ判定)。
+#: v2 判定と v1 診断の両方から参照する。直値で二重管理すると片方だけ変えたときに
+#: 判定が食い違う (2026-08-12 Lv7・codex_med 指摘)。
+MIN_STRUCTURE_LINES = 3
+
 #: レベルごとの参加者。WF スクリプトの reviewers 定義と対で維持すること。
 REVIEWERS: dict[int, list[str]] = {
     6: ["codex", "deepseek", "qwen"],
@@ -228,6 +233,31 @@ def cmd_build(args: argparse.Namespace) -> int:
 # ------------------------------------------------------------------- collect
 
 
+def _parse_created_at(value) -> float | None:
+    """plan.json の created_at を epoch 秒にする。読めなければ None（判定しない）。"""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").timestamp()
+    except ValueError:
+        return None
+
+
+def _mtime_after(path_str: str, since: float | None) -> bool:
+    """ファイルが `since` 以降に更新されているか。
+
+    since が取れない古い plan では判定できないので True を返す（従来どおり）。
+    「判定できない」を「古い」に倒すと、正しい診断まで出なくなるため。
+    """
+    if since is None:
+        return True
+    try:
+        # 秒精度の created_at と mtime を比べるので 1 秒の余裕を持たせる
+        return Path(path_str).stat().st_mtime >= since - 1.0
+    except OSError:
+        return False
+
+
 def _inspect_raw(path_str: str) -> dict:
     """生ログと、その隣の .exit（シェルが書いた終了コード）を検査する。
 
@@ -288,8 +318,8 @@ def _inspect_raw(path_str: str) -> dict:
     if info["bytes"] < MIN_RAW_BYTES:
         info["reason"] = f"短すぎる ({info['bytes']} < {MIN_RAW_BYTES} bytes)"
         return info
-    if info["structure_lines"] < 3:
-        info["reason"] = "構造が無い (見出し・箇条書きが 3 行未満)"
+    if info["structure_lines"] < MIN_STRUCTURE_LINES:
+        info["reason"] = f"構造が無い (見出し・箇条書きが {MIN_STRUCTURE_LINES} 行未満)"
         return info
     info["ok"] = True
     return info
@@ -323,20 +353,32 @@ def cmd_collect(args: argparse.Namespace) -> int:
     # .exit があることこそがこのゲートを「非 LLM」たらしめているので、
     # 弱い証拠で通すとゲートの意味が消える。
     # 変えるのは**診断の正確さ**だけ:「走っていない可能性」→「旧形式に在るが完走未確認」。
+    # 旧形式のパスは `<name>_<label>_<runTag>` で、**同じ入力・同じ label なら
+    # run をまたいで衝突する**。過去実行の残骸が転がっているだけで
+    # 「今回走った証拠」に見えてしまうため、plan 作成時刻より古いログは採らない
+    # （2026-08-12 Lv7: codex_high と DeepSeek が独立に指摘）。
+    # それでも「今回走った」と断定はできないので、文言は候補どまりにする。
+    started = _parse_created_at(plan.get("created_at"))
+
     results = []
-    fell_back: list[str] = []
+    found_builtin: list[str] = []
     for name, p in plan["expected_raw"].items():
         r = _inspect_raw(p)
         if not r["ok"] and not r["exists"] and name in builtin:
             alt = _inspect_raw(builtin[name])
-            if alt["exists"] and alt["bytes"] >= 200 and alt["structure_lines"] >= 3:
-                fell_back.append(name)
+            fresh = _mtime_after(builtin[name], started)
+            # しきい値は v2 判定と**同じ定数**を使う。直値で書くと後から片方だけ
+            # 変えたときに v1 診断と v2 判定が食い違う（Lv7・codex_med 指摘）。
+            if (alt["exists"] and alt["bytes"] >= MIN_RAW_BYTES
+                    and alt["structure_lines"] >= MIN_STRUCTURE_LINES and fresh):
+                found_builtin.append(name)
                 r["builtin_log"] = {"path": builtin[name], "bytes": alt["bytes"],
                                     "structure_lines": alt["structure_lines"]}
                 r["reason"] = (
-                    f"登録先には無いが、**旧形式のパスに生ログがある**"
-                    f"（{alt['bytes']} bytes）。ただし .exit が無いため完走は確認できない。"
-                    "WF に args.reviewers を渡しておらず内蔵定義で走った可能性が高い"
+                    f"登録先には無いが、**旧形式のパスに生ログの候補がある**"
+                    f"（{alt['bytes']} bytes / plan 作成後に更新）。"
+                    "ただし .exit が無いため**今回の実行かどうかも完走かも確認できない**。"
+                    "WF に args.reviewers を渡さず内蔵定義で走った場合にこの形になる"
                 )
         r["reviewer"] = name
         results.append(r)
@@ -355,19 +397,21 @@ def cmd_collect(args: argparse.Namespace) -> int:
             "WF の戻り値にある executed は agent の転記なので、食い違ったらこちらを採る"
         ),
         "failed": [r["reviewer"] for r in results if not r["ok"]],
-        "fell_back_to_builtin": fell_back,
+        # 「存在した」だけで「今回走った」証明ではないので、名前も事実どおりにする
+        # （2026-08-12 Lv7・DeepSeek 指摘: fell_back という語は断定が強すぎる）。
+        "found_in_builtin_path": found_builtin,
     }, ensure_ascii=False))
 
-    if fell_back:
+    if found_builtin:
         print(
-            f"[cgd plan] ⚠️ {len(fell_back)} 者の生ログが**旧形式のパス**に見つかりました: "
-            f"{', '.join(fell_back)}\n"
-            "  → 原因: Workflow に `args.reviewers` を渡していないため、WF が内蔵の\n"
-            "     レビュアー定義にフォールバックしています。レビュー自体は走っています。\n"
-            "  → ただし .exit が無く完走を機械的に確認できないので、**ゲートは通しません**。\n"
-            "     内容を使う場合は、上の path の生ログを人が確認してください。\n"
+            f"[cgd plan] ⚠️ {len(found_builtin)} 者について、**旧形式のパスに生ログの候補**が"
+            f"見つかりました: {', '.join(found_builtin)}\n"
+            "  → WF に `args.reviewers` を渡さず内蔵定義で走ると、この形になります。\n"
+            "  → ただし .exit が無いため、**今回の実行かどうかも完走かも機械的に確認できません**\n"
+            "     （plan 作成後に更新されている、までしか言えません）。**ゲートは通しません**。\n"
+            "     内容を使う場合は、上の path の生ログを人が中身まで確認してください。\n"
             "  → 次回は `cgd_plan.py build` が出力した WORKFLOW_ARGS の JSON を\n"
-            "     **丸ごと** args に渡してください（キーを手で選ばない）。",
+            "     **丸ごと**（prompt 本文も書き換えずに）args へ渡してください。",
             file=sys.stderr,
         )
 

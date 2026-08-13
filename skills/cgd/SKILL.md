@@ -2,7 +2,7 @@
 name: cgd
 description: Codex+DeepSeek+Qwen の統合コードレビュー・設計相談・実装・委譲・検証スキル（**Gemini は2026-07にAPIエラー多発のため既定オフのオプトイン参加に格下げ済み**）。**9段階レベル（Lv0〜Lv8）**でトークン消費・所要時間・実装主体が決まる。**レベル・Codex reasoning(low/medium/high)・Gemini/critic観点はすべてClaudeが対象から自動選択して宣言する（ユーザーに選ばせない・明示指示が最優先）**。**Lv0=委譲レーン**（DS/Qwenにコード生成を任せClaudeは分解と検証に専念・scaffold/量産タスク/コスト節約・Antigravity Plugin相当） / Lv1=Codex単独 / Lv2=Codex+DeepSeek並列（既定推奨。旧/codex等価のC+G構成は「Geminiも」等の明示指示で再現可） / Lv3=Codex+DeepSeekの技術×批評「2社×2視点」4レビュー（実装なし・review専用） / Lv4=Claude初期案→[DS+Qwen並列advisor]→Codex直列フル相談+再レビュー（Gemini併用時は先頭にGemini案出しが直列で入る） / Lv5=Lv4+🔴重大指摘の自動修正1周 / Lv6=Codex+DS+Qwen 3者並列レビュー（全員reviewer役、Gemini併用で4者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周（**Workflow実行必須**） / Lv7=Codex多重(medium+high)+補助(DS/Qwen)の4者並列「Codex集中」構成（Gemini併用で5者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周（最深掘り・**Workflow実行必須**） / Lv8=Lv7の技術構成そのまま+Codex(high)とDeepSeekにLv3同様の批評視点を追加した6者並列（Gemini併用で7者）+実装+検証+Codex再レビュー+🔴自動修正1周（技術の最深掘り+複眼批評、最重量級・**Workflow実行必須**）。Lv0=実装主体の切替（コストレーン）、Lv1-8=レビュー強度の選択（品質レーン）で直交。Lv4-5はDS/Qwenをadvisor役で別案出し、Lv6は横並びreviewer、Lv7は深いintegrationバグ検出を狙ってCodex多重化+DS/Qwenに関連関数抜粋を渡して補助役を強化。差分レビュー、設計判断、別案出し、実装、委譲、検証まで一気通貫。**旧 `/codex` `/gemini` 単体スキルは廃止され、本スキル（`/cgd` または `/codex` 起動）が必ずレベル自動決定から始まる**。全Lv共通の任意オプションで『critic観点』（辛口ユーザー視点＝ITに疎い現場担当者の使い勝手の不満 + あるべき論＝本来この仕様はどうあるべきかの批判を Claude本体+DS criticで評価）を追加でき、技術的正しさとは別軸で使い勝手・仕様の妥当性を否定的にチェックする。環境チェックは `python C:/ClaudeCode/.claude/tools/cgd_doctor.py` で一括。「委譲」「scaffold」「量産」「DSで書かせる」「Qwenで書かせる」「コスト節約」「3者に相談」「フルパイプ」「4者レビュー」「Codex多重」「Codex集中」「辛口レビュー」「ユーザー視点」「あるべき論」「critic」「cgd」「Codexにレビュー」「セカンドオピニオン」「C+G」「cg」「Geminiも」などのキーワードで起動。重要な設計判断・難しいバグ・大きめのリファクタの検討時には積極的に提案すること。既存 /generate-by-deepseek（DS単発コード生成→Claudeレビュー）は薄い構成で並立。
 ---
-<!-- SKILL_VERSION: 2026-08-12_180900 -->
+<!-- SKILL_VERSION: 2026-08-12_223359 -->
 
 # cgd — Codex + DeepSeek + Qwen 統合スキル（Lv0〜8、Gemini はオプトイン）
 
@@ -820,19 +820,50 @@ DS / Qwen は両者とも `--role reviewer` 固定で呼び出す（advisor と�
 
 ```bash
 RUN=$(date +%Y%m%d_%H%M%S)
-NONCE=$(python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" nonce)   # ゲート通過用（必須）
 cat > "C:/tmp-ai/cgd_in_${RUN}.txt" <<'EOF'
 <差分 + 背景 + 評価観点 + 対象ファイル絶対パス>
 EOF
+
+# run を登録し、期待する生ログのパスを確定させる（**collect ゲートの前提**）
+# --codex-reasoning は省略可（既定 medium）。Gemini を使うなら --include-gemini を足す
+python "C:/ClaudeCode/.claude/tools/cgd_plan.py" build --level 6 --label "<対象名>_${RUN}" \
+    --input "C:/tmp-ai/cgd_in_${RUN}.txt" --codex-reasoning medium
 ```
+
+`build` の標準出力は 2 行:
+
+- **1 行目** = `{"run": "...", "level": N, "label": "...", "run_tag": "...", "reviewers": [...]}`
+  → この **`run` の値を控える**。`collect --run` に渡すのはこれで、
+    上のシェル変数 `RUN` とは**別物**（run 名は `<label>_<時刻>_<乱数>` になる）。
+- **2 行目** = `WORKFLOW_ARGS ` + JSON → **この JSON をそのまま args にする**
 
 ```
 Workflow({ scriptPath: "C:/ClaudeCode/.claude/skills/cgd/workflows/cgd_lv6_review.js",
-           args: { input_path: "C:/tmp-ai/cgd_in_<RUN>.txt", codex_reasoning: "<low|medium|high>",
-                   label: "<対象名>_<RUN>", wf_nonce: "<nonce>" } })       // Gemini オプトイン時は include_gemini: true を追加
+           args: <2 行目の JSON オブジェクトそのもの> })
 ```
 
-完了後は戻り値の `label` を確認 → `table_md` を描画 → 🔴 は `raw_log_paths` で検証（後述ガード）→ **Step 2-6C へ**。
+> **args は「2 行目の JSON をそのまま」渡す。** キーを足す・減らす・`prompt` 本文を
+> 書き換える、のいずれもしない。渡さなかった / 壊れた場合は WF が**内蔵定義に
+> フォールバック**して生ログが別パスに出て、`collect` が通せなくなる。
+> Gemini を使うなら **`build` に `--include-gemini` を付ける**（args へ
+> `include_gemini` を手で足さない。build が WORKFLOW_ARGS に反映する）。
+
+> **`wf_nonce` は通常渡さない。** WF がゲートから自動取得する。常に渡すと、ゲートが
+> 複数ある／壊れているときの `gate_ambiguous` 診断に到達できなくなる（args の nonce が
+> 優先されて曖昧さが隠れる）。`gate_ambiguous` で停止したときだけ、
+> `python .claude/hooks/cgd_wf_gate.py nonce` の値を `wf_nonce` として足す。
+
+完了後は戻り値の `label` と **`reviewers_source`（`args` であること）** を確認 → `table_md` を描画
+→ 🔴 は `raw_log_paths` で検証（後述ガード）→ **collect（下記・省略禁止）** → **Step 2-6C へ**。
+
+```bash
+# <PLAN_RUN> = build の出力 1 行目にある run の値（シェル変数 RUN ではない）
+python "C:/ClaudeCode/.claude/tools/cgd_plan.py" collect --run <PLAN_RUN>
+```
+
+**exit 0 を確認してから結果を採用する。** レビュアーの成否は agent の自己申告なので、
+生ログと `.exit`（シェルが書いた終了コード）の実在を Python が判定するここが唯一の非 LLM ゲート。
+忘れても `UserPromptSubmit` hook が未検証の run を毎ターン提示する。
 実装（Step A）に進む前に、Step C の inline 再レビューが弾かれないようゲートを解除する:
 
 ```bash
@@ -1050,20 +1081,50 @@ Step 2-7C の入力ファイルは **ユニークサフィックス付き**で�
 
 ```bash
 RUN=$(date +%Y%m%d_%H%M%S)
-NONCE=$(python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" nonce)   # ゲート通過用（必須）
 # Codex 用 = lv7_codex_input.txt 相当 / aux 用 = lv7_aux_input.txt 相当をユニーク名で作る
 cp "C:/tmp-ai/lv7_codex_input.txt" "C:/tmp-ai/cgd_codex_${RUN}.txt"
 cp "C:/tmp-ai/lv7_aux_input.txt"   "C:/tmp-ai/cgd_aux_${RUN}.txt"
+
+# run を登録し、期待する生ログのパスを確定させる（**collect ゲートの前提**）
+# Gemini を使うなら --include-gemini を足す（Lv7 の codex reasoning は med+high 固定）
+python "C:/ClaudeCode/.claude/tools/cgd_plan.py" build --level 7 --label "<対象名>_${RUN}" \
+    --input "C:/tmp-ai/cgd_codex_${RUN}.txt" --aux "C:/tmp-ai/cgd_aux_${RUN}.txt"
 ```
+
+`build` の標準出力は 2 行:
+
+- **1 行目** = `{"run": "...", "level": N, "label": "...", "run_tag": "...", "reviewers": [...]}`
+  → この **`run` の値を控える**。`collect --run` に渡すのはこれで、
+    上のシェル変数 `RUN` とは**別物**（run 名は `<label>_<時刻>_<乱数>` になる）。
+- **2 行目** = `WORKFLOW_ARGS ` + JSON → **この JSON をそのまま args にする**
 
 ```
 Workflow({ scriptPath: "C:/ClaudeCode/.claude/skills/cgd/workflows/cgd_lv7_review.js",
-           args: { input_path: "C:/tmp-ai/cgd_codex_<RUN>.txt",
-                   aux_input_path: "C:/tmp-ai/cgd_aux_<RUN>.txt",
-                   label: "<対象名>_<RUN>", wf_nonce: "<nonce>" } })       // Gemini オプトイン時は include_gemini: true を追加
+           args: <2 行目の JSON オブジェクトそのもの> })
 ```
 
-完了後は戻り値の `label` を確認（`target` ならパース失敗を疑う）→ `table_md` を描画 → 🔴 は `raw_log_paths` で検証 → **Step 2-7E へ**。
+> **args は「2 行目の JSON をそのまま」渡す。** キーを足す・減らす・`prompt` 本文を
+> 書き換える、のいずれもしない。渡さなかった / 壊れた場合は WF が**内蔵定義に
+> フォールバック**して生ログが別パスに出て、`collect` が通せなくなる。
+> Gemini を使うなら **`build` に `--include-gemini` を付ける**（args へ
+> `include_gemini` を手で足さない。build が WORKFLOW_ARGS に反映する）。
+
+> **`wf_nonce` は通常渡さない。** WF がゲートから自動取得する。常に渡すと、ゲートが
+> 複数ある／壊れているときの `gate_ambiguous` 診断に到達できなくなる（args の nonce が
+> 優先されて曖昧さが隠れる）。`gate_ambiguous` で停止したときだけ、
+> `python .claude/hooks/cgd_wf_gate.py nonce` の値を `wf_nonce` として足す。
+
+完了後は戻り値の `label` と **`reviewers_source`（`args` であること）** を確認（`label` が `target` なら
+パース失敗を疑う）→ `table_md` を描画 → 🔴 は `raw_log_paths` で検証 → **collect（下記・省略禁止）**
+→ **Step 2-7E へ**。
+
+```bash
+# <PLAN_RUN> = build の出力 1 行目にある run の値（シェル変数 RUN ではない）
+python "C:/ClaudeCode/.claude/tools/cgd_plan.py" collect --run <PLAN_RUN>
+```
+
+**exit 0 を確認してから結果を採用する。** レビュアーの成否は agent の自己申告なので、
+生ログと `.exit`（シェルが書いた終了コード）の実在を Python が判定するここが唯一の非 LLM ゲート。
 実装（Step A）に進む前に、Step C の inline 再レビューが弾かれないようゲートを解除する:
 
 ```bash
@@ -1243,22 +1304,47 @@ Step 2-8C の入力ファイルを **ユニークサフィックス付き**に�
 
 ```bash
 RUN=$(date +%Y%m%d_%H%M%S)
-NONCE=$(python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" nonce)   # ゲート通過用（必須）
 cp "C:/tmp-ai/lv8_codex_input.txt" "C:/tmp-ai/cgd_codex_${RUN}.txt"
 cp "C:/tmp-ai/lv8_aux_input.txt"   "C:/tmp-ai/cgd_aux_${RUN}.txt"
+
+# run を登録し、期待する生ログのパスを確定させる（**collect ゲートの前提**）
+# Gemini を使うなら --include-gemini を足す
+python "C:/ClaudeCode/.claude/tools/cgd_plan.py" build --level 8 --label "<対象名>_${RUN}" \
+    --input "C:/tmp-ai/cgd_codex_${RUN}.txt" --aux "C:/tmp-ai/cgd_aux_${RUN}.txt"
 ```
+
+`build` の標準出力は 2 行:
+
+- **1 行目** = `{"run": "...", "level": N, "label": "...", "run_tag": "...", "reviewers": [...]}`
+  → この **`run` の値を控える**。`collect --run` に渡すのはこれで、
+    上のシェル変数 `RUN` とは**別物**（run 名は `<label>_<時刻>_<乱数>` になる）。
+- **2 行目** = `WORKFLOW_ARGS ` + JSON → **この JSON をそのまま args にする**
 
 ```
 Workflow({ scriptPath: "C:/ClaudeCode/.claude/skills/cgd/workflows/cgd_lv8_review.js",
-           args: { input_path: "C:/tmp-ai/cgd_codex_<RUN>.txt",
-                   aux_input_path: "C:/tmp-ai/cgd_aux_<RUN>.txt",
-                   label: "<対象名>_<RUN>", wf_nonce: "<nonce>" } })       // Gemini オプトイン時は include_gemini: true を追加
+           args: <2 行目の JSON オブジェクトそのもの> })
 ```
 
-戻り値は **`tech_table_md` と `critic_table_md` の 2 表**（Lv6-WF / Lv7-WF は 1 表なのでここが違う）。批評パスの findings は severity ではなく **困り度（高/中/低）** を持つ。
-完了後は `label` を確認 → 2 表を描画 → 🔴 は `raw_log_paths` で検証 → **Step 2-8E へ**。
+> **args は「2 行目の JSON をそのまま」渡す。** キーを足す・減らす・`prompt` 本文を
+> 書き換える、のいずれもしない。渡さなかった / 壊れた場合は WF が**内蔵定義に
+> フォールバック**して生ログが別パスに出て、`collect` が通せなくなる。
+> Gemini を使うなら **`build` に `--include-gemini` を付ける**（args へ
+> `include_gemini` を手で足さない。build が WORKFLOW_ARGS に反映する）。
 
-#### 🚨 結果を採用する前に `collect` を叩く（省略禁止・2026-08-12 追加）
+> **`wf_nonce` は通常渡さない。** WF がゲートから自動取得する。常に渡すと、ゲートが
+> 複数ある／壊れているときの `gate_ambiguous` 診断に到達できなくなる（args の nonce が
+> 優先されて曖昧さが隠れる）。`gate_ambiguous` で停止したときだけ、
+> `python .claude/hooks/cgd_wf_gate.py nonce` の値を `wf_nonce` として足す。
+
+戻り値は **`tech_table_md` と `critic_table_md` の 2 表**（Lv6-WF / Lv7-WF は 1 表なのでここが違う）。批評パスの findings は severity ではなく **困り度（高/中/低）** を持つ。
+完了後は `label` と **`reviewers_source`（`args` であること）** を確認 → 2 表を描画 → 🔴 は `raw_log_paths` で検証 → **Step 2-8E へ**。
+
+#### 🚨 結果を採用する前に `collect` を叩く（**Lv6/Lv7/Lv8 共通**・省略禁止・2026-08-12 追加）
+
+> この節はもともと Lv8 の手順として書かれていたが、**Lv6/Lv7 の手順に導線が無く、
+> memory の「cgd の結果採用前に collect を叩く（厳守）」と食い違っていた**。
+> 2026-08-12 に Lv6/Lv7 の起動手順も `cgd_plan.py build` 経由へ統一し、
+> ゲートを 3 レベル共通にした。下の例は Lv8 のものなので、`--level` は対象レベルに読み替える。
 
 **レビュアーの成否は agent の自己申告**（`executed` / `findings` / `raw_log_path`）で、
 WF はそれを検証していない。codex がタイムアウトや deny で死んでも
@@ -1273,7 +1359,8 @@ python "C:/ClaudeCode/.claude/tools/cgd_plan.py" build --level 8 --label "<対�
 # → WORKFLOW_ARGS の JSON をそのまま Workflow の args に渡す（キー名を手で書かない）
 
 # WF 完了後: **主 context が自分で叩く**。これが唯一の非 LLM ゲート
-python "C:/ClaudeCode/.claude/tools/cgd_plan.py" collect --run <RUN>
+# <PLAN_RUN> = build の出力 1 行目にある run の値（シェル変数 RUN ではない）
+python "C:/ClaudeCode/.claude/tools/cgd_plan.py" collect --run <PLAN_RUN>
 ```
 
 - 判定するのは「生ログが在るか・200 バイト以上か・見出し/箇条書きが 3 行以上か」だけ。
@@ -1432,6 +1519,35 @@ WF は **主 context への流入を約 94% 削減**するが、**Codex 側の�
 | Lv7-WF | `.claude/skills/cgd/workflows/cgd_lv7_review.js` | 既定 Codex(med)+Codex(high)+DS+Qwen 4者並列 → 収束/乖離判定 → 6列表（`include_gemini:true` で Gemini 追加・5者・7列表） |
 | Lv8-WF | `.claude/skills/cgd/workflows/cgd_lv8_review.js` | 既定 6者並列（技術4 = Lv7 と同一 + 批評2 = Codex(high)/DS critic）→ **技術表 + 批評表の2表**（`include_gemini:true` で7者）|
 
+### レビュアー定義の出所は `cgd_plan.py` に一本化する（2026-08-12）
+
+WF スクリプトは `args.reviewers` が無いと**内蔵定義（builtin）**で走る。これは
+**非常用の退避路**であり、通常運用では使わない:
+
+| | args 経路（正規） | builtin 経路（非常用） |
+|---|---|---|
+| 生ログの書き手 | **シェルのリダイレクト**（生のまま） | agent が Write ツールで転記（**LLM を経由する**） |
+| 終了コード `.exit` | 出る（`echo $? >` をシェルが実行） | **出ない** |
+| 生ログのパス | `cgd_runs/<run>/<name>.md` | `cgd_raw_<name>_<label>_<runTag>.md` |
+| `collect` ゲート | **通せる** | **原理的に通せない**（`.exit` が無いため） |
+| run をまたいだ衝突 | しない（run 名に時刻＋乱数） | **する**（同じ入力・同じ label で同名） |
+
+つまり **builtin で走らせると、そのレビューは非 LLM ゲートで検証できない**。
+`cgd_plan.py build` を必ず経由すること。`reviewers_source` が戻り値に載るので、
+builtin に落ちたことは完了通知の時点で分かる。
+
+**運用ルール（形骸化させないための明文化）**:
+
+1. **`reviewers_source` が `args` 以外なら、そのレビュー結果は採用しない。**
+   `collect` を通せない＝レビュアーが本当に走ったか機械的に確認できない、ということなので、
+   「参考情報」として扱い、採否の根拠にしない
+2. builtin で走ってしまったら、**原因を除いて args 経路で回し直す**のが既定の対応。
+   典型的な原因は「`WORKFLOW_ARGS` を渡していない / キーを手で選んだ / `prompt` を書き換えた」
+3. `cgd_plan.py` 自体が壊れていて正規ルートが取れない場合に限り builtin を使ってよい。
+   そのときは報告に **「機械検証されていない」と明記**し、生ログのパスを添える
+4. 復旧の起点は `python C:/ClaudeCode/.claude/tools/cgd_doctor.py`（環境）と
+   `cgd_plan.py doctor --run <PLAN_RUN>`（どのレビュアーの生ログが欠けたか）
+
 ### 責務分割（重要）
 
 | 主 context が担当 | Workflow が担当 |
@@ -1451,7 +1567,8 @@ WF は **主 context への流入を約 94% 削減**するが、**Codex 側の�
 ```bash
 # 1. 主context: ユニークサフィックス生成 (Workflow 内は Date.now 禁止なので主context側で date)
 RUN=$(date +%Y%m%d_%H%M%S)
-NONCE=$(python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" nonce)   # ゲート通過用（必須）   # 例 20260529_185800
+# nonce は通常不要（WF がゲートから自動取得する）。gate_ambiguous で止まったときだけ:
+#   NONCE=$(python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" nonce)
 
 # Lv6-WF: 入力をユニーク名で配置
 cat > "C:/tmp-ai/cgd_in_${RUN}.txt" <<'EOF'
@@ -1468,17 +1585,18 @@ EOF
 ```
 
 ```
-# 2. Workflow 起動 (label にも RUN を含めると raw も cgd_raw_<reviewer>_<対象>_<RUN>.md でユニーク化)
-# Lv6-WF (既定・Gemini なし):
-Workflow({ scriptPath: ".../cgd_lv6_review.js",
-           args: { input_path: "C:/tmp-ai/cgd_in_<RUN>.txt", codex_reasoning: "medium", label: "<対象名>_<RUN>" } })
-# Lv6-WF (Gemini オプトイン時): 上記に include_gemini: true を追加
-# Lv7-WF (既定・Gemini なし):
-Workflow({ scriptPath: ".../cgd_lv7_review.js",
-           args: { input_path: "C:/tmp-ai/cgd_codex_<RUN>.txt", aux_input_path: "C:/tmp-ai/cgd_aux_<RUN>.txt", label: "<対象名>_<RUN>" } })
-# Lv7-WF (Gemini オプトイン時): 上記に include_gemini: true を追加
+# 2. cgd_plan.py build で run を登録し、出力された WORKFLOW_ARGS を **丸ごと** args に渡す
+#    (Lv6/Lv7/Lv8 とも同じ。--codex-reasoning は Lv6 のみ / --include-gemini は任意)
+python "C:/ClaudeCode/.claude/tools/cgd_plan.py" build --level <6|7|8> --label "<対象名>_<RUN>" \
+    --input "<codex 用入力>" [--aux "<aux 用入力>"] [--codex-reasoning medium] [--include-gemini]
+
+Workflow({ scriptPath: ".../cgd_lv<6|7|8>_review.js",
+           args: <build 出力 2 行目の JSON オブジェクトそのもの> })
+#    キーの追加・削除・prompt 本文の書き換えをしない（壊すと builtin に落ちる）
+#    gate_ambiguous のときだけ wf_nonce をトップレベルに 1 つ足す
 
 # 3. 完了通知 → 戻り値の label が "<対象名>_<RUN>" なら args 到達OK ("target" ならパース失敗を疑う)
+#    あわせて reviewers_source が "args" であることを確認する ("builtin" なら args 未到達)
 # 4. table_md を描画、🔴 を raw 検証 (下記ガード) → 実装許可 AskUserQuestion → Step A〜D を主contextで実行
 ```
 

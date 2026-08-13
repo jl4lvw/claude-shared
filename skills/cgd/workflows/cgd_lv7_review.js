@@ -158,7 +158,15 @@ let reviewers = [
 // Python (cgd_reviewers.py) を単一の出所にし、cgd_plan.py build が args に載せる。
 // **Workflow はファイルを読めない**ので、LLM を介さずに届く経路は args しかない。
 // 渡されなければ上の内蔵定義をそのまま使う（後方互換・build を経由しない起動を壊さない）。
+// どちらの定義で走ったかを戻り値に載せる（2026-08-12）。builtin に落ちると生ログが
+// **旧形式のパス**に出るため、cgd_plan.py collect が登録先を見ても見つけられず
+// 「レビュアーが実際には走っていない可能性」と誤報する。黙って落ちると気づけない。
+let reviewersSource = 'builtin'
 if (Array.isArray(_args.reviewers) && _args.reviewers.length > 0) {
+  // **検証より先に**確定させる。args を受け取っているのに検証で halt したとき、
+  // 後ろで代入していると 'builtin' が返り、戻り値が事実と逆になる
+  // （2026-08-12 Step C・Codex 指摘）。
+  reviewersSource = 'args'
   const _bad = _args.reviewers.filter(
     (r) => !r || typeof r.name !== 'string' || typeof r.cmd !== 'string'
       || !Number.isSafeInteger(r.timeout) || r.timeout <= 0
@@ -166,9 +174,43 @@ if (Array.isArray(_args.reviewers) && _args.reviewers.length > 0) {
   if (_bad.length > 0) {
     return {
       halt: 'bad_reviewers',
+      reviewers_source: reviewersSource,
       given: _args.reviewers.length,
       message: 'args.reviewers の形式が不正です (name/cmd は文字列・timeout は正の整数が必須)。'
         + ' cgd_plan.py build が出力した WORKFLOW_ARGS をそのまま渡してください。',
+    }
+  }
+  // prompt を渡す経路では、agent が実際に実行するのは **prompt 本文に埋め込まれた
+  // コマンド文字列**であって r.cmd ではない（下の agent() 呼び出しを参照）。
+  // したがって prompt から cmd を削ると、agent は何を実行すべきか分からず落ちる。
+  // 2026-08-12 に prompt を短縮した実走で qwen だけがこれで失敗した。
+  // 「1 者だけ失敗」は原因が見えにくいので、**走らせる前にここで止める**。
+  // 空 prompt は対象外。agent(r.prompt || 内蔵文面) で内蔵テンプレに落ち、
+  // そちらには r.cmd が埋め込まれるため、実行できなくなることはない。
+  const _noCmd = _args.reviewers.filter(
+    (r) => typeof r.prompt === 'string' && r.prompt !== '' && !r.prompt.includes(r.cmd)
+  )
+  if (_noCmd.length > 0) {
+    return {
+      halt: 'prompt_without_cmd',
+      reviewers_source: reviewersSource,
+      reviewers: _noCmd.map((r) => r.name),
+      message: 'args.reviewers の prompt にコマンド本体が含まれていません: '
+        + _noCmd.map((r) => r.name).join(', ')
+        + '。prompt を渡す経路では agent は prompt 内のコマンドしか実行できません。'
+        + ' cgd_plan.py build が出力した WORKFLOW_ARGS を**本文も書き換えずに**渡してください。',
+    }
+  }
+  const _unexpanded = _args.reviewers.filter(
+    (r) => typeof r.prompt === 'string' && r.prompt.includes('__INPUT_') && !r.cmd.includes('__INPUT_')
+  )
+  if (_unexpanded.length > 0) {
+    return {
+      halt: 'prompt_placeholder_mismatch',
+      reviewers_source: reviewersSource,
+      reviewers: _unexpanded.map((r) => r.name),
+      message: 'prompt と cmd でプレースホルダの展開状態が食い違っています: '
+        + _unexpanded.map((r) => r.name).join(', '),
     }
   }
   reviewers = _args.reviewers.map((r) => ({
@@ -184,6 +226,11 @@ if (Array.isArray(_args.reviewers) && _args.reviewers.length > 0) {
     raw_path: typeof r.raw_path === 'string' ? r.raw_path : '',
   }))
   log(`[preflight] レビュアー定義を args から採用しました (${reviewers.length} 者)`)
+} else {
+  log('[preflight] 警告: args.reviewers が無いため**内蔵のレビュアー定義**を使います。'
+    + ' 生ログは cgd_raw_<name>_<label>_<runTag>.md に出ます。'
+    + ' cgd_plan.py build を使ったなら、WORKFLOW_ARGS の JSON を丸ごと args に'
+    + ' 渡してください（キーを手で選ぶと collect が生ログを見つけられません）。')
 }
 
 
@@ -244,6 +291,7 @@ const _unsafe = _targets.filter((p) => _UNSAFE_CHARS.some((c) => String(p).index
 if (_unsafe.length > 0) {
   return {
     halt: 'unsafe_path',
+    reviewers_source: reviewersSource,
     targets: _targets,
     message: 'パスにシェルで解釈される文字が含まれています（コマンドが壊れるため受け付けません）: '
       + _unsafe.join(' , ')
@@ -255,6 +303,7 @@ const _relative = _targets.filter((p) => !_isAbsolute(p))
 if (_relative.length > 0) {
   return {
     halt: 'relative_path',
+    reviewers_source: reviewersSource,
     targets: _targets,
     message: '入力は絶対パスで指定してください（相対パスは Preflight と codex で解決先がズレます）: '
       + _relative.join(' , ')
@@ -288,6 +337,7 @@ const _files = _filesDoc && Array.isArray(_filesDoc.files) ? _filesDoc.files : n
 if (!_files) {
   return {
     halt: 'preflight_unparsable',
+    reviewers_source: reviewersSource,
     raw: String((pre && pre.files_json) || '').slice(0, 500),
     message: 'Preflight の出力を JSON として解釈できませんでした。安全側に倒して停止します。',
   }
@@ -326,6 +376,7 @@ for (const f of _files) {
 if (_problems.length > 0) {
   return {
     halt: 'input_missing',
+    reviewers_source: reviewersSource,
     targets: _targets,
     files: _files,
     message: '入力の検証に失敗しました。渡したパスが正しいか確認してください:\n' + _problems.join('\n'),
@@ -348,6 +399,7 @@ const _gateDoc = _parseJson(pre.gate_json)
 if (!_gateDoc || typeof _gateDoc.armed !== 'boolean') {
   return {
     halt: 'gate_unknown',
+    reviewers_source: reviewersSource,
     raw: String(pre.gate_json || '').slice(0, 500),
     message: 'ゲート状態を判定できませんでした。誤って nonce 無しで進むと codex が全て deny されるため、安全側に倒して停止します。',
   }
@@ -384,6 +436,7 @@ const _gates = Array.isArray(_gateDoc.gates) ? _gateDoc.gates : []
 if (!wfNonce && _gateDoc.armed && (_gates.length > 1 || _gates.some((g) => g && g.corrupt))) {
   return {
     halt: 'gate_ambiguous',
+    reviewers_source: reviewersSource,
     gate: _gateDoc,
     message: 'ゲートが複数(または破損)あり、どの nonce を使うべきか決められません。'
       + ' 次のいずれかで解消してください: '
@@ -397,6 +450,7 @@ if (_gateDoc.armed && !_nonce) {
   log('[preflight] ⚠ ゲートが張られているのに nonce を取得できませんでした。codex 起動は deny されます。')
   return {
     halt: 'nonce_missing',
+    reviewers_source: reviewersSource,
     gate: _gateDoc,
     message: 'ゲート有効なのに nonce が取得できませんでした。`cgd_wf_gate.py status --json` の出力を確認してください。',
   }
@@ -460,7 +514,7 @@ const ok = reviews.filter(Boolean)
 const authFailed = ok.filter((r) => r.auth_error).map((r) => r.reviewer)
 if (authFailed.length > 0) {
   log(`[review] 認証エラー検出: ${authFailed.join(', ')} → Lv7 中断`)
-  return { halt: 'auth_error', failed: authFailed, message: `認証エラー: ${authFailed.join(', ')}。復旧後に再実行。` }
+  return { reviewers_source: reviewersSource, halt: 'auth_error', failed: authFailed, message: `認証エラー: ${authFailed.join(', ')}。復旧後に再実行。` }
 }
 // **実行できたか**を findings とは独立に検査する (2026-08-11 追加)。
 // これが無いと、タイムアウト/hang/ゲート deny で死んだレビュアーが
@@ -472,6 +526,7 @@ if (notExecuted.length > 0) {
   log(`[review] 実行できていないレビュアー: ${notExecuted.join(', ')} → 中断`)
   return {
     halt: 'exec_failed',
+    reviewers_source: reviewersSource,
     failed: notExecuted,
     message: `次のレビュアーはコマンドを完走できていません: ${notExecuted.join(', ')}。`
       + ' 生ログ (C:/tmp-ai/cgd_raw_*.md) を確認して原因を除いてから再実行してください。'
@@ -481,11 +536,11 @@ if (notExecuted.length > 0) {
 const codexOk = ok.filter((r) => (r.reviewer === 'codex_med' || r.reviewer === 'codex_high') && r.executed === true).length
 if (codexOk < 2) {
   log(`Codex 多重が片肺 (${codexOk}/2) → Lv7 中断 (Codex med+high 両方が本質)`)
-  return { halt: 'codex_incomplete', got: codexOk, message: 'Lv7 は Codex medium と high の両方成功が必須です。' }
+  return { reviewers_source: reviewersSource, halt: 'codex_incomplete', got: codexOk, message: 'Lv7 は Codex medium と high の両方成功が必須です。' }
 }
 if (ok.length < reviewers.length) {
   log(`[review] レビュアー欠員: ${ok.length}/${reviewers.length} のみ成功 → Lv7 中断`)
-  return { halt: 'incomplete', got: ok.length, expected: reviewers.length, message: `Lv7 は参加者${reviewers.length}者全員の成功が必要です。` }
+  return { reviewers_source: reviewersSource, halt: 'incomplete', got: ok.length, expected: reviewers.length, message: `Lv7 は参加者${reviewers.length}者全員の成功が必要です。` }
 }
 
 phase('Merge')
@@ -585,7 +640,7 @@ if (!merged) {
   mergeModelUsed = MERGE_FALLBACK
 }
 if (!merged) {
-  return { halt: 'merge_failed', tried: [MERGE_MODEL, MERGE_FALLBACK], label }
+  return { reviewers_source: reviewersSource, halt: 'merge_failed', tried: [MERGE_MODEL, MERGE_FALLBACK], label }
 }
 
 return {
@@ -593,6 +648,7 @@ return {
   label,
   include_gemini: includeGemini,
   participants: reviewerNames,
+  reviewers_source: reviewersSource,
   table_md: merged.table_md,
   convergent_findings: merged.convergent_findings,
   codex_divergent_findings: merged.codex_divergent_findings,
