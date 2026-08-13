@@ -84,7 +84,12 @@ const preflightEcho = (gateJson = NO_GATE, over = {}) => async (prompt) => {
 const okFiles = (file, args, over = {}) =>
   JSON.stringify({ files: targetsFor(file, args).map((p) => fileEntry(p, over)) })
 
-const GOOD = { input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x', wf_nonce: 'n' }
+// 2026-08-13: WF は args.reviewers が無いと既定で halt するようになった
+// (内蔵定義に落ちると生ログに .exit が付かず collect を通せないため)。
+// **入力ガードを検証するケースはレビュアーの出所を問題にしていない**ので、
+// 明示の逃げ道 allow_builtin を付けて、検証したい層まで到達させる。
+// ガードそのものは builtin_* の専用ケースで検証する。
+const GOOD = { input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x', wf_nonce: 'n', allow_builtin: true }
 
 /** Review 段のプロンプトから reviewer 名を拾う（本物の agent と同じ振る舞いを模す）。 */
 const reviewerOf = (prompt) => {
@@ -104,17 +109,17 @@ const CASES = {
   partial: {
     // lv6 は input_path だけで充足するので Preflight に進み、そこで nonce 無しでも
     // ゲート未設定なら通過する。lv7/lv8 は aux_input_path 必須なので missing_args。
-    args: { input_path: 'C:/tmp-ai/a.txt', label: 'x', wf_nonce: 'n' },
+    args: { input_path: 'C:/tmp-ai/a.txt', label: 'x', wf_nonce: 'n', allow_builtin: true },
     expect: { default: 'missing_args', lv6: undefined },
     agent: (file, args) => preflight(okFiles(file, args)),
   },
   empty: {
-    args: { input_path: '', aux_input_path: '', label: 'x' },
+    args: { input_path: '', aux_input_path: '', label: 'x', allow_builtin: true },
     expect: 'missing_args',
   },
   nonce_omitted_but_gate_off: {
     // ゲートが張られていなければ nonce 無しでも進んでよい。
-    args: { input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x' },
+    args: { input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x', allow_builtin: true },
     expect: undefined,
     agent: (file, args) => preflight(okFiles(file, args)),
   },
@@ -240,13 +245,13 @@ const CASES = {
   // --- ゲート有効時の nonce ---
   nonce_missing: {
     // ゲートは有効だが nonce が取り出せない（gates が空）→ 停止する。
-    args: { input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x' },
+    args: { input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x', allow_builtin: true },
     expect: 'nonce_missing',
     agent: (file, args) => preflight(okFiles(file, args), '{"armed":true,"count":1,"gates":[]}'),
   },
   nonce_self_fetched: {
     // args に wf_nonce が無くても status --json から自分で取れれば進む (2026-08-11)。
-    args: { input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x' },
+    args: { input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x', allow_builtin: true },
     expect: undefined,
     agent: (file, args) => preflight(
       okFiles(file, args),
@@ -266,7 +271,7 @@ const CASES = {
   },
   gate_ambiguous: {
     // ゲートが複数あるときは nonce を選ばず止まる (他セッションの nonce を掴むと全 deny)。
-    args: { input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x' },
+    args: { input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x', allow_builtin: true },
     expect: 'gate_ambiguous',
     agent: (file, args) => preflight(okFiles(file, args), JSON.stringify({
       armed: true, count: 2,
@@ -275,7 +280,7 @@ const CASES = {
     })),
   },
   gate_corrupt: {
-    args: { input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x' },
+    args: { input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x', allow_builtin: true },
     expect: 'gate_ambiguous',
     agent: (file, args) => preflight(okFiles(file, args), JSON.stringify({
       armed: true, count: 1,
@@ -284,7 +289,7 @@ const CASES = {
   },
   explicit_nonce_wins_over_ambiguity: {
     // args で明示されていれば曖昧でも進める（明示は上書き手段として残す）。
-    args: { input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x', wf_nonce: 'mine' },
+    args: { input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x', wf_nonce: 'mine', allow_builtin: true },
     expect: undefined,
     agent: (file, args) => preflight(okFiles(file, args), JSON.stringify({
       armed: true, count: 2,
@@ -301,7 +306,7 @@ const CASES = {
   same_input_and_aux: {
     // input_path と aux_input_path が同じでも通す（1 本に畳む）。
     // 畳まないと 1:1 照合が「2 件重複」と誤診して必ず halt していた (2026-08-11 実害)。
-    args: { input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/a.txt', label: 'x' },
+    args: { input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/a.txt', label: 'x', allow_builtin: true },
     expect: undefined,
     // 実物と同じく「渡された引数の数だけ返す」スタブを使う。
     // 畳み込みを消すと 2 件返り、1:1 照合が重複を検出して halt する。
@@ -311,11 +316,11 @@ const CASES = {
   // --- パスの形式（相対パスと区切り文字） ---
   relative_path: {
     // 相対パスは Preflight agent と codex で cwd が違い、別ファイルを見得る。
-    args: { input_path: 'tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x' },
+    args: { input_path: 'tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x', allow_builtin: true },
     expect: 'relative_path',
   },
   relative_path_both: {
-    args: { input_path: './a.txt', aux_input_path: '../b.txt', label: 'x' },
+    args: { input_path: './a.txt', aux_input_path: '../b.txt', label: 'x', allow_builtin: true },
     expect: 'relative_path',
   },
   reviewer_uses_validated_path: {
@@ -324,7 +329,7 @@ const CASES = {
     // 「検証した文字列」と「実行に使う文字列」が別物になっていた。
     args: {
       input_path: 'C:\\tmp-ai\\aa.txt', aux_input_path: 'C:\\tmp-ai\\bb.txt',
-      label: 'x', wf_nonce: 'n',
+      label: 'x', wf_nonce: 'n', allow_builtin: true,
     },
     expect: undefined,
     agent: () => preflightEcho(),
@@ -339,7 +344,7 @@ const CASES = {
   },
   unc_path_ok: {
     // UNC は //server/share/... の形なら通す（バックスラッシュは正規化する）。
-    args: { input_path: '//srv/share/a.txt', aux_input_path: '\\\\srv\\share\\b.txt', label: 'x' },
+    args: { input_path: '//srv/share/a.txt', aux_input_path: '\\\\srv\\share\\b.txt', label: 'x', allow_builtin: true },
     expect: undefined,
     agent: (file, args) => preflight(JSON.stringify({
       files: (file.includes('lv6') ? ['//srv/share/a.txt'] : ['//srv/share/a.txt', '//srv/share/b.txt'])
@@ -353,22 +358,22 @@ const CASES = {
 
   unsafe_path_quote: {
     // パスにダブルクォートが入るとコマンド文字列が壊れる。埋め込む前に弾く。
-    args: { input_path: 'C:/tmp-ai/a".txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x' },
+    args: { input_path: 'C:/tmp-ai/a".txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x', allow_builtin: true },
     expect: 'unsafe_path',
   },
   unsafe_path_subshell: {
-    args: { input_path: 'C:/tmp-ai/$(whoami).txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x' },
+    args: { input_path: 'C:/tmp-ai/$(whoami).txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x', allow_builtin: true },
     expect: 'unsafe_path',
   },
   unsafe_path_semicolon: {
-    args: { input_path: 'C:/tmp-ai/a.txt; rm -rf /', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x' },
+    args: { input_path: 'C:/tmp-ai/a.txt; rm -rf /', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x', allow_builtin: true },
     expect: 'unsafe_path',
   },
   label_is_sanitized: {
     // label は生ログの保存先に埋め込まれる。`/` や `..` を通さない。
     args: {
       input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt',
-      label: '../../etc/passwd', wf_nonce: 'n',
+      label: '../../etc/passwd', wf_nonce: 'n', allow_builtin: true,
     },
     expect: undefined,
     agent: () => preflightEcho(),
@@ -380,7 +385,7 @@ const CASES = {
   },
   raw_log_has_run_fingerprint: {
     // 同じ label で並行実行しても生ログが上書きされないこと。
-    args: { input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'same', wf_nonce: 'n' },
+    args: { input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'same', wf_nonce: 'n', allow_builtin: true },
     expect: undefined,
     agent: () => preflightEcho(),
     assert: ({ reviewPrompts }) => {
@@ -569,6 +574,102 @@ const CASES = {
       if (reviews.some((o) => o.model)) throw new Error('レビュアーにまでモデル指定が及んでいる')
     },
   },
+  // --- args.reviewers を渡さない経路のガード (2026-08-13) ---
+  builtin_without_permission_halts: {
+    // args.reviewers も allow_builtin も無ければ **止まる**。
+    // 以前は黙って内蔵定義に落ち、生ログが .exit の無い旧形式パスに出て
+    // cgd_plan.py collect が「レビュアーが走っていない」と誤報していた。
+    // 上の入力ガード群には allow_builtin を付けてあるので、
+    // **このケースが無いとガードを消しても全件グリーンのまま**になる。
+    args: { input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x', wf_nonce: 'n' },
+    expect: 'builtin_not_allowed',
+  },
+  builtin_allowed_explicitly_passes: {
+    // 明示すれば通る（逃げ道が塞がっていないこと）。
+    args: { ...GOOD, label: 'x' },
+    expect: undefined,
+    agent: (file, args) => preflight(okFiles(file, args)),
+  },
+  args_reviewers_need_no_permission: {
+    // args.reviewers を渡していれば allow_builtin は不要。
+    args: {
+      input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x', wf_nonce: 'n',
+      reviewers: [{ name: 'r1', kind: 'tech', cmd: 'echo hi', timeout: 1000,
+                    usage: false, isCodex: false, authSignals: 'a' }],
+    },
+    expect: undefined,
+    agent: () => preflightEcho(),
+    assert: ({ result, opts }) => {
+      const reviews = opts.filter((o) => o && String(o.label || '').startsWith('review:'))
+      if (reviews.length !== 1) throw new Error(`args の定義が使われていない (${reviews.length} 者)`)
+    },
+  },
+  dry_run_still_works_without_reviewers: {
+    // dry_run は「入力の実在と中身」を確かめる機能なのでレビュアーは走らない。
+    // ここに reviewers 必須ガードを掛けると dry-run 分岐へ永久に到達できず、
+    // **入力の事前確認という機能そのものが死ぬ**。
+    args: { input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x', dry_run: true },
+    expect: undefined,
+    agent: (file, args) => preflight(okFiles(file, args)),
+    assert: ({ result }) => {
+      if (!result || result.dry_run !== true) {
+        throw new Error(`dry_run の結果が返っていない: ${JSON.stringify(result && result.halt)}`)
+      }
+    },
+  },
+  merge_model_is_reported_in_the_result: {
+    // **統合に使ったモデルと fallback の発火を戻り値へ返すこと。**
+    // 以前は mergeModelUsed / mergeFallbackFired を計算しておきながら
+    // return に載せておらず、「Fable で統合できたのか Opus に落ちたのか」が
+    // 主 context に一切届かなかった (pv Lv3 で指摘 → 実読で確定 / 2026-08-13)。
+    // 直上のコメントは前から「fallback の事実も残す」と書いてあり、
+    // **意図と実装が食い違ったまま誰も気づけなかった**。戻り値そのものを見る。
+    args: { ...GOOD, label: 'x' },
+    expect: undefined,
+    agent: () => preflightEcho(),
+    review: (prompt, calls, o) => {
+      if (o && o.label === 'merge') {
+        return { table_md: '|a|', tech_table_md: '|a|', critic_table_md: '|a|',
+                 convergent_findings: [], divergent_findings: [], next_actions: [], summary: 'ok' }
+      }
+      return { reviewer: reviewerOf(prompt), auth_error: false, findings: [],
+               executed: true, exit_code: 0 }
+    },
+    assert: ({ result }) => {
+      if (!result) throw new Error('戻り値が取れていない')
+      if (result.merge_model_used !== 'fable') {
+        throw new Error(`merge_model_used が返っていない: ${JSON.stringify(result.merge_model_used)}`)
+      }
+      if (result.merge_fallback_fired !== false) {
+        throw new Error(`merge_fallback_fired が返っていない: ${JSON.stringify(result.merge_fallback_fired)}`)
+      }
+    },
+  },
+  merge_fallback_is_visible_in_the_result: {
+    // fallback が発火したなら、**発火した事実**まで戻り値に出ること。
+    // used だけだと「最初から opus だった」のか「fable が落ちた」のか区別できない。
+    args: { ...GOOD, label: 'x' },
+    expect: undefined,
+    agent: () => preflightEcho(),
+    review: (prompt, calls, o) => {
+      if (o && o.label === 'merge') return null            // 最上位モデルが失敗
+      if (o && o.label === 'merge-fallback') {
+        return { table_md: '|a|', tech_table_md: '|a|', critic_table_md: '|a|',
+                 convergent_findings: [], divergent_findings: [], next_actions: [], summary: 'ok' }
+      }
+      return { reviewer: reviewerOf(prompt), auth_error: false, findings: [],
+               executed: true, exit_code: 0 }
+    },
+    assert: ({ result }) => {
+      if (!result) throw new Error('戻り値が取れていない')
+      if (result.merge_model_used !== 'opus') {
+        throw new Error(`fallback 後の merge_model_used が opus でない: ${JSON.stringify(result.merge_model_used)}`)
+      }
+      if (result.merge_fallback_fired !== true) {
+        throw new Error('merge_fallback_fired が true になっていない')
+      }
+    },
+  },
   merge_falls_back_when_top_model_fails: {
     // 最上位モデルが落ちたら 1 回だけ代替で再試行する。
     args: { ...GOOD, label: 'x' },
@@ -599,7 +700,7 @@ const CASES = {
   },
   args_as_object: {
     // 念のためオブジェクト直渡しでも動くこと（将来ランタイムが変わった場合の保険）。
-    args: { input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x' },
+    args: { input_path: 'C:/tmp-ai/a.txt', aux_input_path: 'C:/tmp-ai/b.txt', label: 'x', allow_builtin: true },
     rawArgs: true,
     expect: undefined,
     agent: (file, args) => preflight(okFiles(file, args)),
@@ -647,8 +748,12 @@ for (const file of files) {
     }
 
     let got
+    // 戻り値そのものも assert へ渡す。halt の有無しか見ていなかったため、
+    // 「計算しているのに return に載せ忘れた」類 (merge_model_used) を検出できなかった。
+    let result
     try {
       const r = await run(file, c.args, agentImpl, { asString: c.rawArgs !== true })
+      result = r
       got = r && r.halt
     } catch (err) {
       got = String(err && err.message).includes(PASSED) ? undefined : `例外: ${err && err.message}`
@@ -659,7 +764,7 @@ for (const file of files) {
     // 通過したケースは「何を Review 段へ渡したか」まで検査する。
     if (ok && c.assert) {
       try {
-        c.assert({ prompts, reviewPrompts: prompts.slice(1), opts, file })
+        c.assert({ prompts, reviewPrompts: prompts.slice(1), opts, file, result })
       } catch (err) {
         ok = false
         note = ` — ${err && err.message}`

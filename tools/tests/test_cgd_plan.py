@@ -405,7 +405,10 @@ DUMP_MJS = TOOLS / "dump_wf_raw_paths.mjs"
 
 
 def _wf_raw_paths(level: int, label: str, sha: str, include_gemini: bool = False) -> dict:
-    args = {"input_path": "C:/tmp-ai/a.txt", "label": label, "_sha256": sha}
+    # 内蔵定義を吸い出すのがこのヘルパの目的。2026-08-13 から reviewers 無しの起動は
+    # 既定で halt するので、**明示的にオプトインする**必要がある。
+    args = {"input_path": "C:/tmp-ai/a.txt", "label": label, "_sha256": sha,
+            "allow_builtin": True}
     if level in (7, 8):
         args["aux_input_path"] = "C:/tmp-ai/b.txt"
     if include_gemini:
@@ -444,7 +447,9 @@ def test_expected_paths_match_with_gemini(level: int) -> None:
 
 
 def _wf_cmds(level: int, include_gemini: bool = False) -> dict:
-    args = {"input_path": "C:/tmp-ai/a.txt", "label": "L", "wf_nonce": "NONCE"}
+    # 同上: 内蔵定義の取り出しには allow_builtin が要る
+    args = {"input_path": "C:/tmp-ai/a.txt", "label": "L", "wf_nonce": "NONCE",
+            "allow_builtin": True}
     if level in (7, 8):
         args["aux_input_path"] = "C:/tmp-ai/b.txt"
     if include_gemini:
@@ -458,7 +463,9 @@ def _wf_cmds(level: int, include_gemini: bool = False) -> dict:
 
 
 def _wf_timeouts(level: int, include_gemini: bool = False) -> dict:
-    args = {"input_path": "C:/tmp-ai/a.txt", "label": "L", "wf_nonce": "NONCE"}
+    # 同上: 内蔵定義の取り出しには allow_builtin が要る
+    args = {"input_path": "C:/tmp-ai/a.txt", "label": "L", "wf_nonce": "NONCE",
+            "allow_builtin": True}
     if level in (7, 8):
         args["aux_input_path"] = "C:/tmp-ai/b.txt"
     if include_gemini:

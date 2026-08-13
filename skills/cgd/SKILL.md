@@ -2,7 +2,7 @@
 name: cgd
 description: Codex+DeepSeek+Qwen の統合コードレビュー・設計相談・実装・委譲・検証スキル（**Gemini は2026-07にAPIエラー多発のため既定オフのオプトイン参加に格下げ済み**）。**9段階レベル（Lv0〜Lv8）**でトークン消費・所要時間・実装主体が決まる。**レベル・Codex reasoning(low/medium/high)・Gemini/critic観点はすべてClaudeが対象から自動選択して宣言する（ユーザーに選ばせない・明示指示が最優先）**。**Lv0=委譲レーン**（DS/Qwenにコード生成を任せClaudeは分解と検証に専念・scaffold/量産タスク/コスト節約・Antigravity Plugin相当） / Lv1=Codex単独 / Lv2=Codex+DeepSeek並列（既定推奨。旧/codex等価のC+G構成は「Geminiも」等の明示指示で再現可） / Lv3=Codex+DeepSeekの技術×批評「2社×2視点」4レビュー（実装なし・review専用） / Lv4=Claude初期案→[DS+Qwen並列advisor]→Codex直列フル相談+再レビュー（Gemini併用時は先頭にGemini案出しが直列で入る） / Lv5=Lv4+🔴重大指摘の自動修正1周 / Lv6=Codex+DS+Qwen 3者並列レビュー（全員reviewer役、Gemini併用で4者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周（**Workflow実行必須**） / Lv7=Codex多重(medium+high)+補助(DS/Qwen)の4者並列「Codex集中」構成（Gemini併用で5者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周（最深掘り・**Workflow実行必須**） / Lv8=Lv7の技術構成そのまま+Codex(high)とDeepSeekにLv3同様の批評視点を追加した6者並列（Gemini併用で7者）+実装+検証+Codex再レビュー+🔴自動修正1周（技術の最深掘り+複眼批評、最重量級・**Workflow実行必須**）。Lv0=実装主体の切替（コストレーン）、Lv1-8=レビュー強度の選択（品質レーン）で直交。Lv4-5はDS/Qwenをadvisor役で別案出し、Lv6は横並びreviewer、Lv7は深いintegrationバグ検出を狙ってCodex多重化+DS/Qwenに関連関数抜粋を渡して補助役を強化。差分レビュー、設計判断、別案出し、実装、委譲、検証まで一気通貫。**旧 `/codex` `/gemini` 単体スキルは廃止され、本スキル（`/cgd` または `/codex` 起動）が必ずレベル自動決定から始まる**。全Lv共通の任意オプションで『critic観点』（辛口ユーザー視点＝ITに疎い現場担当者の使い勝手の不満 + あるべき論＝本来この仕様はどうあるべきかの批判を Claude本体+DS criticで評価）を追加でき、技術的正しさとは別軸で使い勝手・仕様の妥当性を否定的にチェックする。環境チェックは `python C:/ClaudeCode/.claude/tools/cgd_doctor.py` で一括。「委譲」「scaffold」「量産」「DSで書かせる」「Qwenで書かせる」「コスト節約」「3者に相談」「フルパイプ」「4者レビュー」「Codex多重」「Codex集中」「辛口レビュー」「ユーザー視点」「あるべき論」「critic」「cgd」「Codexにレビュー」「セカンドオピニオン」「C+G」「cg」「Geminiも」などのキーワードで起動。重要な設計判断・難しいバグ・大きめのリファクタの検討時には積極的に提案すること。既存 /generate-by-deepseek（DS単発コード生成→Claudeレビュー）は薄い構成で並立。
 ---
-<!-- SKILL_VERSION: 2026-08-12_223359 -->
+<!-- SKILL_VERSION: 2026-08-13_120528 -->
 
 # cgd — Codex + DeepSeek + Qwen 統合スキル（Lv0〜8、Gemini はオプトイン）
 
@@ -1521,8 +1521,8 @@ WF は **主 context への流入を約 94% 削減**するが、**Codex 側の�
 
 ### レビュアー定義の出所は `cgd_plan.py` に一本化する（2026-08-12）
 
-WF スクリプトは `args.reviewers` が無いと**内蔵定義（builtin）**で走る。これは
-**非常用の退避路**であり、通常運用では使わない:
+レビュアー定義の出所は **`cgd_plan.py build` が唯一**。内蔵定義（builtin）は
+`allow_builtin: true` を明示したときだけ使える**非常用の退避路**で、既定では halt する:
 
 | | args 経路（正規） | builtin 経路（非常用） |
 |---|---|---|
@@ -1536,15 +1536,44 @@ WF スクリプトは `args.reviewers` が無いと**内蔵定義（builtin）**
 `cgd_plan.py build` を必ず経由すること。`reviewers_source` が戻り値に載るので、
 builtin に落ちたことは完了通知の時点で分かる。
 
-**運用ルール（形骸化させないための明文化）**:
+### builtin は既定で**拒否**される（2026-08-13 変更）
+
+`args.reviewers` を渡さずに WF を起動すると、**走らずに halt する**:
+
+```
+halt: 'builtin_not_allowed'
+```
+
+以前は黙って内蔵定義にフォールバックしていたため、生ログが `.exit` の無い旧形式パスに出て
+`collect` が「レビュアーが走っていない」と誤報していた（2026-08-12 に実際に踏んだ）。
+cgd 全体の「**黙ってフォールバックしない**」方針に揃えた。
+
+**退避路が要るときだけ、明示的にオプトインする**:
+
+```
+args: { ..., allow_builtin: true }
+```
+
+- `true`（真偽値）のときだけ通る。文字列 `"true"` では通らない
+- 通った場合、戻り値は `reviewers_source: "builtin_allowed"` になる
+- **このレビューは `collect` を通せない**（`.exit` が無いため）
+
+**運用ルール**:
 
 1. **`reviewers_source` が `args` 以外なら、そのレビュー結果は採用しない。**
-   `collect` を通せない＝レビュアーが本当に走ったか機械的に確認できない、ということなので、
-   「参考情報」として扱い、採否の根拠にしない
-2. builtin で走ってしまったら、**原因を除いて args 経路で回し直す**のが既定の対応。
+   機械検証できていないので「参考情報」として扱い、採否の根拠にしない
+2. `builtin_not_allowed` で止まったら、**原因を除いて args 経路で回し直す**のが既定の対応。
    典型的な原因は「`WORKFLOW_ARGS` を渡していない / キーを手で選んだ / `prompt` を書き換えた」
-3. `cgd_plan.py` 自体が壊れていて正規ルートが取れない場合に限り builtin を使ってよい。
-   そのときは報告に **「機械検証されていない」と明記**し、生ログのパスを添える
+3. `allow_builtin: true` を使ってよいのは、`cgd_plan.py` 自体が壊れていて正規ルートが
+   取れないときだけ。使ったら報告に **「機械検証されていない」と明記**し、生ログのパスを添え、
+   台帳にも残す:
+   ```bash
+   python "C:/ClaudeCode/.claude/tools/incident_log.py" add --tool harness --category workflow \
+     --severity mid --title "cgd: allow_builtin で退避実行" \
+     --detail "<正規ルートが取れなかった理由>" --evidence "<生ログのパス>"
+   ```
+   この記録が「**退避路が実際に必要だった回数**」になる。一定期間 0 件なら builtin 定義と
+   `expected_raw_paths`（v1）ごと削除してよい、という判断材料にする
 4. 復旧の起点は `python C:/ClaudeCode/.claude/tools/cgd_doctor.py`（環境）と
    `cgd_plan.py doctor --run <PLAN_RUN>`（どのレビュアーの生ログが欠けたか）
 

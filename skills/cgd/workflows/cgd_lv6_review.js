@@ -150,7 +150,8 @@ let reviewers = [
 // 同じ定義が lv6/lv7/lv8 に 3 重複製されており、片方だけ直す事故を何度も踏んだ。
 // Python (cgd_reviewers.py) を単一の出所にし、cgd_plan.py build が args に載せる。
 // **Workflow はファイルを読めない**ので、LLM を介さずに届く経路は args しかない。
-// 渡されなければ上の内蔵定義をそのまま使う（後方互換・build を経由しない起動を壊さない）。
+// 渡されない場合は既定で halt する（2026-08-13〜）。内蔵定義を使うには
+// allow_builtin: true の明示が要る。dry_run はレビュアーを使わないので対象外。
 // どちらの定義で走ったかを戻り値に載せる（2026-08-12）。builtin に落ちると生ログが
 // **旧形式のパス**に出るため、cgd_plan.py collect が登録先を見ても見つけられず
 // 「レビュアーが実際には走っていない可能性」と誤報する。黙って落ちると気づけない。
@@ -219,11 +220,37 @@ if (Array.isArray(_args.reviewers) && _args.reviewers.length > 0) {
     raw_path: typeof r.raw_path === 'string' ? r.raw_path : '',
   }))
   log(`[preflight] レビュアー定義を args から採用しました (${reviewers.length} 者)`)
+} else if (_args.allow_builtin === true) {
+  // 明示的なオプトイン。退避路として残してあるが、**このレビューは機械検証できない**。
+  reviewersSource = 'builtin_allowed'
+  log('[preflight] 警告: allow_builtin=true のため**内蔵のレビュアー定義**で走ります。'
+    + ' 生ログは cgd_raw_<name>_<label>_<runTag>.md に出て .exit が付かないため、'
+    + ' cgd_plan.py collect を通せません。結果は「機械検証されていない参考情報」として'
+    + ' 扱い、報告にもその旨を明記してください。')
+} else if (_args.dry_run === true) {
+  // dry_run は「入力ファイルの実在と中身」を確かめるためのもので、レビュアーは走らない。
+  // reviewers 必須ガードをここに掛けると dry-run 分岐（後段）に永久に到達できず、
+  // **入力の事前確認という機能そのものが死ぬ**（2026-08-13 Lv7・codex_high が実コードで指摘）。
+  log('[preflight] dry_run のためレビュアー定義の検査を省略します（レビューは走りません）')
 } else {
-  log('[preflight] 警告: args.reviewers が無いため**内蔵のレビュアー定義**を使います。'
-    + ' 生ログは cgd_raw_<name>_<label>_<runTag>.md に出ます。'
-    + ' cgd_plan.py build を使ったなら、WORKFLOW_ARGS の JSON を丸ごと args に'
-    + ' 渡してください（キーを手で選ぶと collect が生ログを見つけられません）。')
+  // 2026-08-13: 既定で拒否するようにした。
+  // それまでは args が届かないと黙って内蔵定義に落ち、生ログが .exit の無い旧形式パスに
+  // 出て collect が「レビュアーが走っていない」と誤報していた（実際に踏んだ）。
+  // 「黙ってフォールバックしない」という cgd 全体の方針に揃える。
+  return {
+    halt: 'builtin_not_allowed',
+    reviewers_source: reviewersSource,
+    given_keys: Object.keys(_args),
+    message: 'args.reviewers が渡されていません。内蔵のレビュアー定義で走らせると'
+      + ' 生ログに .exit が付かず、cgd_plan.py collect を通せません'
+      + '（＝そのレビューが本当に走ったか機械的に確認できません）。'
+      + ' 手順: (1) python cgd_plan.py build --level <6|7|8> --label <名前> --input <入力>'
+      + ' を実行する（**Lv7/Lv8 は --aux <関連関数抜粋> も必須**）。'
+      + ' (2) 出力 2 行目の WORKFLOW_ARGS の JSON を**丸ごと** args に渡す'
+      + '（キーの追加・削除・prompt 本文の書き換えをしない）。'
+      + ' cgd_plan.py 自体が使えない場合に限り args.allow_builtin=true で強行できますが、'
+      + ' その結果は機械検証されていない参考情報として扱ってください。',
+  }
 }
 
 
@@ -628,6 +655,13 @@ if (!merged) {
 
 return {
   level: 6,
+  // **統合に使ったモデルと fallback の発火を必ず返す (2026-08-13)。**
+  // 直上のコメントは以前から「primary が落ちた事実も戻り値に残す」と書いていたのに、
+  // 実際の return には入っておらず、Fable で統合できたのか Opus に落ちたのかが
+  // 主 context に一切届いていなかった (pv Lv3 の棚卸し担当が指摘 → 実読で確定)。
+  // pv 側の WF は同じ 2 つを返しており、cgd だけ落ちていた。
+  merge_model_used: mergeModelUsed,
+  merge_fallback_fired: mergeFallbackFired,
   label,
   include_gemini: includeGemini,
   participants: reviewerNames,

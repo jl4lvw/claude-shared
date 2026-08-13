@@ -1,4 +1,4 @@
-"""cgd_prompts — cgd Lv6/7/8 の依頼テキスト（レビュー指示・統合指示）の単一の出所.
+"""cgd_prompts — cgd Lv6/7/8 の **レビュー依頼テキスト** の単一の出所.
 
 なぜ Python 側に置くか (2026-08-12 ユーザー指示):
     同じ文面が cgd_lv6/7/8_review.js に 3 重に複製されており、
@@ -9,6 +9,18 @@
     ここへ移して得られるのは「揺らぎの低減」ではなく **重複の解消** である。
     実際の揺らぎは agent が自己申告していた executed/exit_code にあり、
     そちらは cgd_reviewers.wrap() でシェルに書かせる形にして潰した。
+
+
+    **統合指示はここには無い (2026-08-13)。**
+    以前 merge_prompt() を置いていたが、**誰からも呼ばれていなかった上に、
+    呼んでも動かないものだった**。WF の MERGE_SCHEMA は
+    convergent_findings / codex_divergent_findings / aux_only_findings と
+    統合表の列順を要求するのに、この関数はそのどれにも触れていなかったため。
+    統合指示は各レベルの findings の突き合わせ方そのもの (Lv7 なら Codex 多重の
+    収束/乖離判定) で、**実行時の findings が決まらないと組み立てられない**。
+    Python 側で事前生成できないので、cgd_lv6/7/8_review.js に置いたままにする。
+    「依頼テキストの単一の出所」を名乗れるのは **レビュー依頼の側だけ**である、
+    と正直に書いておく (pv Lv3 の外部視点担当が二重管理として指摘し、実読で確定)。
 
 渡し方:
     Workflow はファイルを読めないので、`cgd_plan.py build` が生成して
@@ -87,35 +99,3 @@ def review_prompt(level: int, reviewer: dict, label: str) -> str:
 - 出力を要約・脚色しない。{name} が言っていないことを書かない。
 
 JSON で返す。"""
-
-
-def merge_prompt(level: int, label: str, tech_json: str, critic_json: str | None,
-                 reviewer_names: list[str]) -> str:
-    """統合（判断）の依頼テキスト。**取りまとめは Claude の最上位モデルが行う。**"""
-    head = (
-        f"cgd Lv{level} のレビュー結果を統合してください。対象: {label}\n"
-        f"参加者: {', '.join(reviewer_names)}\n"
-    )
-    if critic_json is not None:
-        head += (
-            "\nLv8 は「技術の最深掘り (Codex を medium + high で多重化 + DS/Qwen 補助)」と\n"
-            "「複眼批評 (Codex high + DeepSeek critic)」を同時に走らせる構成です。\n"
-            "**技術表と批評表の 2 表**を作ります。\n"
-        )
-    body = f"\n[技術レビュアーの findings]\n{tech_json}\n"
-    if critic_json is not None:
-        body += f"\n[批評レビュアーの findings]\n{critic_json}\n"
-
-    rules = """
-[統合のルール]
-- **findings を勝手に足さない。** レビュアーが言っていないことを書かない
-- severity / 困り度は **各レビュアーが付けた値を尊重**する。統合役が格上げ/格下げしない
-- 複数が同じ問題を指摘していたら 1 行にまとめ、誰が挙げたかを列で示す
-- 1 者だけの指摘も落とさない（収束していない = 誤りとは限らない）
-- 採用判断は ✅ (採用) / ❌ (不採用) / 🔄 (要検討) の 3 値。**理由を 1 行で書く**
-- 各指摘の根拠は raw_log_path にあり、主 context で後から検証できることを前提に、
-  確信度を誇張しない
-- 実行に失敗したレビュアーがいた場合、その事実を summary に明記する
-  （欠員のまま「全員が一致」と書かない）
-"""
-    return head + body + rules
