@@ -415,6 +415,25 @@ def cmd_collect(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
+    # **プロセス層の記録は collect が自動で行う。** 新しい手順を増やさないため
+    # （記録を独立した手順にすると、cgd の usage log と同じで急ぐと飛ぶ）。
+    # 失敗しても判定は変えない — 計測のためにゲートを落とすのは本末転倒。
+    doc = _read_metrics(args.run)
+    doc.update({
+        "run": args.run,
+        "level": plan.get("level"),
+        "label": plan.get("label"),
+        "collected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "ok": ok,
+        "reviewers": [
+            {"name": r["reviewer"], "ok": r["ok"], "exit_code": r.get("exit_code"),
+             "bytes": r.get("bytes"), "structure_lines": r.get("structure_lines")}
+            for r in results
+        ],
+        "found_in_builtin_path": found_builtin,
+    })
+    _write_metrics(args.run, doc)
+
     if ok:
         # 印を消せるのはここだけ。WF 内から消してはいけない
         # (pv で「正常系ではリマインダーが一度も鳴らない」事故が起きている)。
@@ -424,6 +443,205 @@ def cmd_collect(args: argparse.Namespace) -> int:
             pass
         return EXIT_OK
     return EXIT_NG
+
+
+# ------------------------------------------------------------------ metrics
+#
+# **なぜ run ディレクトリに置くか (2026-08-13)**
+#
+# pv Lv3 の 4 者が「Codex を medium + high で多重化する効果を一度も測っていない」
+# 「測る仕組みも無い」で収束した。ただし『run metrics を記録する』を新しい手順として
+# 足すと、cgd の usage log と同じ末路をたどる —— SKILL.md 自身が
+# 「Claude が忘れずに叩く前提なので急いでいるときに飛ぶ」と書いている。
+#
+# そこで層を分け、**規律を増やさずに取れるところから取る**:
+#
+#   1. プロセス層 (どのレビュアーが走り、終了コードと生ログのサイズがどうだったか)
+#      → `collect` が **自動で**書く。collect は既に必須なので新しい手順は増えない
+#   2. findings 層 (指摘の出所と severity の内訳)
+#      → `record-merge` に WF の戻り値を **標準入力**で渡す。
+#         引数に載せると引用とサイズで壊れるため stdin にした
+#   3. 採用層 (どの指摘を実際に直したか)
+#      → **まだ記録しない。** 人の判断が要るので、1 と 2 が役に立つと分かる前に
+#         規律を発明しない。必要になった時点で、印が消える唯一の場所へ寄せる
+#
+# 集計は `metrics` サブコマンドが run ディレクトリを走査して行う。
+# 「採用数」が無いので、いま答えられるのは「**high 単独で挙がった**重大指摘の率」まで。
+# 「**採用された**率」ではないことを出力にも明記する。
+
+
+METRICS_NAME = "metrics.json"
+
+
+def metrics_path(run: str) -> Path:
+    return run_dir(run) / METRICS_NAME
+
+
+def _write_metrics(run: str, doc: dict) -> None:
+    """metrics.json を書く。**失敗しても collect の判定は変えない。**
+
+    計測のために本来のゲートを落とすのは本末転倒。
+    書けなかった事実だけ stderr に出す。
+    """
+    try:
+        p = metrics_path(run)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(doc, ensure_ascii=False, indent=1),
+                     encoding="utf-8", newline="")
+    except OSError as exc:
+        print(f"[cgd plan] WARN: metrics を書けませんでした: {exc}", file=sys.stderr)
+
+
+def _read_metrics(run: str) -> dict:
+    p = metrics_path(run)
+    if not p.is_file():
+        return {}
+    try:
+        doc = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def _severity_counts(findings) -> dict[str, int]:
+    out = {"🔴": 0, "🟠": 0, "🟡": 0, "other": 0}
+    for f in findings or []:
+        sev = (f or {}).get("severity") if isinstance(f, dict) else None
+        out[sev if sev in out else "other"] += 1
+    return out
+
+
+def summarize_merge(result: dict) -> dict:
+    """WF の戻り値から findings 層の内訳を作る。
+
+    出所の分類は WF の統合スキーマがそのまま持っている:
+      convergent        … codex_med と codex_high の両方
+      codex_divergent   … どちらか片方のみ (source に med/high が入る)
+      aux_only          … 補助 (DS/Qwen) のみ
+    """
+    conv = result.get("convergent_findings") or []
+    div = result.get("codex_divergent_findings") or result.get("divergent_findings") or []
+    aux = result.get("aux_only_findings") or []
+
+    by_source = {"med_only": [], "high_only": [], "unknown_single": []}
+    for f in div:
+        src = str((f or {}).get("source", "")) if isinstance(f, dict) else ""
+        low = src.lower()
+        if "high" in low:
+            by_source["high_only"].append(f)
+        elif "med" in low:
+            by_source["med_only"].append(f)
+        else:
+            by_source["unknown_single"].append(f)
+
+    return {
+        "merge_model_used": result.get("merge_model_used"),
+        "merge_fallback_fired": result.get("merge_fallback_fired"),
+        "reviewers_source": result.get("reviewers_source"),
+        "participants": result.get("participants"),
+        "counts": {
+            "convergent": _severity_counts(conv),
+            "codex_high_only": _severity_counts(by_source["high_only"]),
+            "codex_med_only": _severity_counts(by_source["med_only"]),
+            "codex_single_unknown": _severity_counts(by_source["unknown_single"]),
+            "aux_only": _severity_counts(aux),
+        },
+        "note": (
+            "これは『挙がった』件数であって『採用された』件数ではない。"
+            "採用層はまだ記録していない"
+        ),
+    }
+
+
+def cmd_record_merge(args: argparse.Namespace) -> int:
+    """WF の戻り値 (JSON) を標準入力から受け取り、metrics.json へ足す。"""
+    raw = sys.stdin.buffer.read()
+    if not raw.strip():
+        print("[cgd plan] 標準入力が空です。WF の戻り値 JSON を渡してください",
+              file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        result = json.loads(raw.decode("utf-8", errors="replace"))
+    except ValueError as exc:
+        print(f"[cgd plan] 標準入力を JSON として解釈できません: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if not isinstance(result, dict):
+        print(f"[cgd plan] JSON が object ではありません: {type(result).__name__}",
+              file=sys.stderr)
+        return EXIT_USAGE
+
+    if not run_dir(args.run).is_dir():
+        print(f"[cgd plan] run が見つかりません: {args.run}", file=sys.stderr)
+        return EXIT_NG
+
+    doc = _read_metrics(args.run)
+    doc["run"] = args.run
+    doc["merge"] = summarize_merge(result)
+    doc["merge_recorded_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _write_metrics(args.run, doc)
+    print(json.dumps({"run": args.run, "merge": doc["merge"]}, ensure_ascii=False))
+    return EXIT_OK
+
+
+def cmd_metrics(args: argparse.Namespace) -> int:
+    """run ディレクトリを走査して集計する。"""
+    rows: list[dict] = []
+    if ROOT.is_dir():
+        for d in sorted(ROOT.iterdir()):
+            doc = _read_metrics(d.name) if d.is_dir() else {}
+            if not doc:
+                continue
+            if args.since and str(doc.get("collected_at") or "") < args.since:
+                continue
+            rows.append(doc)
+
+    if not rows:
+        print("[cgd plan] metrics がまだありません（collect を通した run が対象）")
+        return EXIT_OK
+
+    def _sev(doc: dict, key: str, sev: str) -> int:
+        return (((doc.get("merge") or {}).get("counts") or {}).get(key) or {}).get(sev, 0)
+
+    print(f"[cgd plan] metrics — {len(rows)} run")
+    # 見出しは ASCII に寄せる。全角は端末で 2 桁ぶん占めるので、
+    # Python の桁揃え（文字数基準）と必ずずれて読みにくくなる。
+    print(f"  {'run':<40} {'Lv':>2} {'ok':>3} {'conv':>5} {'high':>5}"
+          f" {'med':>5} {'?':>4} {'aux':>5}   (数字は 🔴 のみ)")
+    # **codex_single_unknown を落とさない。** source が付かない指摘を合計から外すと
+    # 内訳の合計が静かに減り、割合が実態より良く見える。
+    # 「unknown が多い」こと自体が「merge が source を書いていない」という信号。
+    tot = {"convergent": 0, "codex_high_only": 0, "codex_med_only": 0,
+           "codex_single_unknown": 0, "aux_only": 0}
+    merged_runs = 0
+    for doc in rows:
+        has_merge = bool(doc.get("merge"))
+        if has_merge:
+            merged_runs += 1
+            for k in tot:
+                tot[k] += _sev(doc, k, "🔴")
+        cells = [str(doc.get('run'))[:40].ljust(40),
+                 str(doc.get('level', '?')).rjust(2),
+                 ('OK' if doc.get('ok') else 'NG').rjust(3)]
+        for key in ('convergent', 'codex_high_only', 'codex_med_only',
+                    'codex_single_unknown', 'aux_only'):
+            width = 4 if key == 'codex_single_unknown' else 5
+            cells.append(str(_sev(doc, key, '🔴') if has_merge else '-').rjust(width))
+        print('  ' + ' '.join(cells))
+
+    print(f"\n  merge を記録済みの run: {merged_runs} / {len(rows)}")
+    if merged_runs:
+        total_red = sum(tot.values())
+        print(f"  🔴 の内訳 (合計 {total_red} 件):")
+        for k, v in tot.items():
+            pct = f"{100 * v / total_red:.0f}%" if total_red else "-"
+            print(f"    {k:<18} {v:>4} ({pct})")
+        print("\n  ※ これは『挙がった』件数。**『採用された』件数ではない**ので、")
+        print("     Codex 多重化の費用対効果をこの表だけで結論づけないこと。")
+    if merged_runs < len(rows):
+        print(f"\n  {len(rows) - merged_runs} run は merge 未記録です:")
+        print("    WF の戻り値を渡すと findings の内訳まで取れます:")
+        print('    <戻り値のJSON> | python cgd_plan.py record-merge --run <RUN>')
+    return EXIT_OK
 
 
 # -------------------------------------------------------------------- doctor
@@ -513,9 +731,18 @@ def main() -> int:
 
     sub.add_parser("list", help="未検証の run を一覧する")
 
+    p_rec = sub.add_parser("record-merge",
+                           help="WF の戻り値(JSON)を標準入力から受け取り metrics に足す")
+    p_rec.add_argument("--run", required=True)
+
+    p_met = sub.add_parser("metrics", help="run を横断して集計する")
+    p_met.add_argument("--since", default=None, help="YYYY-MM-DD 以降に collect した run のみ")
+
     args = parser.parse_args()
     return {"build": cmd_build, "collect": cmd_collect,
-            "doctor": cmd_doctor, "list": cmd_list}[args.command](args)
+            "doctor": cmd_doctor, "list": cmd_list,
+            "record-merge": cmd_record_merge,
+            "metrics": cmd_metrics}[args.command](args)
 
 
 if __name__ == "__main__":
