@@ -553,6 +553,107 @@ def summarize_merge(result: dict) -> dict:
     }
 
 
+# --------------------------------------------------- findings の位置照合
+#
+# pv Lv3 の反証担当が「location と hunk 範囲の照合は決定論的に実装できるのに
+# 未実装なだけ」と指摘した点への対応。差分パースと範囲判定は pv_review.py に
+# 純関数として既にあり 56 件のテストが付いているので、**作り直さず再利用する**。
+#
+# **これはゲートではない。** cgd の Codex は read-only sandbox で周辺ファイルを
+# 読める設計なので、「差分に無いファイルへの指摘」は pv と違って正当でありうる。
+# 幻覚と断定できないものを弾くと、10 件の正当な指摘を 1 件の誤判定で捨てる。
+# ここでやるのは **内訳を出すこと**だけで、合否は変えない。
+#
+# 照合できなかったこと自体も必ず出す。差分が見つからないのに件数だけ 0 と出すと
+# 「問題なし」と誤読される —— 検証していないことを「合格」と表示しないのが要点。
+
+_LOCATION_RE = re.compile(r"^(?P<path>.+?):(?P<line>\d+)(?:-(?P<end>\d+))?\s*$")
+
+
+def _parse_location(location) -> tuple[str | None, int | None]:
+    """`path/to/file.py:123` を (パス, 行) に割る。行が無ければ (パス, None)。"""
+    if not isinstance(location, str):
+        return None, None
+    text = location.strip()
+    if not text:
+        return None, None
+    m = _LOCATION_RE.match(text)
+    if m:
+        try:
+            return m.group("path").strip(), int(m.group("line"))
+        except ValueError:
+            return m.group("path").strip(), None
+    return text, None
+
+
+def _in_any_hunk(line: int, hunks) -> bool:
+    return any(start <= line <= end for start, end in (hunks or []))
+
+
+def locate_findings(input_text: str, findings) -> dict:
+    """findings の location を差分に照らして分類する。**合否は判定しない。**
+
+    分類:
+      in_diff             … 差分に在るファイルで、行が hunk の範囲内
+      out_of_diff         … 差分に在るファイルだが、行が hunk の外
+                            （呼び出し元への言及など。**正当なので問題視しない**）
+      file_not_in_diff    … 差分に無いファイル。cgd では Codex が周辺を読むので
+                            **これ自体は異常ではない**。ただし件数が多ければ
+                            「対象を外れたレビューになっていないか」の手がかりになる
+      no_line             … ファイル名だけで行が無い
+      unparsed            … location が無い / 解釈できない
+    """
+    try:
+        import pv_review
+    except ImportError as exc:                      # pragma: no cover - 環境依存
+        return {"checked": False, "reason": f"pv_review を読み込めません: {exc}"}
+
+    index = pv_review.parse_unified_diff(input_text or "")
+    if not index.files:
+        # **「差分が無い」と「指摘が全部妥当」を混同させない。**
+        return {
+            "checked": False,
+            "reason": "入力から unified diff を取り出せませんでした（差分を含まない入力）",
+            "findings": len(findings or []),
+        }
+
+    buckets = {"in_diff": 0, "out_of_diff": 0, "file_not_in_diff": 0,
+               "no_line": 0, "unparsed": 0}
+    outside: list[str] = []
+    for f in findings or []:
+        if not isinstance(f, dict):
+            buckets["unparsed"] += 1
+            continue
+        path, line = _parse_location(f.get("location"))
+        if not path:
+            buckets["unparsed"] += 1
+            continue
+        entry = index.find(path)
+        if entry is None:
+            buckets["file_not_in_diff"] += 1
+            if path not in outside:
+                outside.append(path)
+            continue
+        if line is None:
+            buckets["no_line"] += 1
+            continue
+        if _in_any_hunk(line, entry.new_hunks) or _in_any_hunk(line, entry.old_hunks):
+            buckets["in_diff"] += 1
+        else:
+            buckets["out_of_diff"] += 1
+
+    return {
+        "checked": True,
+        "diff_files": len(index.files),
+        "counts": buckets,
+        "files_outside_diff": outside[:10],
+        "note": (
+            "これは位置の内訳であって指摘の正しさではない。"
+            "cgd の Codex は周辺ファイルを読めるので file_not_in_diff は異常ではない"
+        ),
+    }
+
+
 def cmd_record_merge(args: argparse.Namespace) -> int:
     """WF の戻り値 (JSON) を標準入力から受け取り、metrics.json へ足す。"""
     raw = sys.stdin.buffer.read()
@@ -577,9 +678,25 @@ def cmd_record_merge(args: argparse.Namespace) -> int:
     doc = _read_metrics(args.run)
     doc["run"] = args.run
     doc["merge"] = summarize_merge(result)
+
+    # 位置の内訳も残す。**合否は変えない**（cgd の Codex は周辺ファイルを読むので
+    # 差分外の指摘を幻覚と断定できない）。判断材料を増やすだけ。
+    plan_file = run_dir(args.run) / "plan.json"
+    try:
+        plan = json.loads(plan_file.read_text(encoding="utf-8"))
+        src = Path(plan["input_path"]).read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError, KeyError) as exc:
+        doc["locations"] = {"checked": False, "reason": f"入力を読めません: {exc}"}
+    else:
+        merged_findings = []
+        for key in ("convergent_findings", "codex_divergent_findings",
+                    "divergent_findings", "aux_only_findings"):
+            merged_findings.extend(result.get(key) or [])
+        doc["locations"] = locate_findings(src, merged_findings)
     doc["merge_recorded_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     _write_metrics(args.run, doc)
-    print(json.dumps({"run": args.run, "merge": doc["merge"]}, ensure_ascii=False))
+    print(json.dumps({"run": args.run, "merge": doc["merge"],
+                      "locations": doc.get("locations")}, ensure_ascii=False))
     return EXIT_OK
 
 
