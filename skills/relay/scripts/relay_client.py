@@ -572,6 +572,69 @@ def cmd_release(args: argparse.Namespace) -> None:
         print(f"予約はありませんでした: thread_id={args.thread}")
 
 
+def cmd_handoff(args: argparse.Namespace) -> None:
+    """GUIから引き継いだ会話への着手・完了・差し戻し・一覧。
+
+    takeover はサーバー側で lease holder を**原子的に**自分へ付け替える。
+    release→再取得の2段にしないのは、その隙間にGUIの巡回が滑り込むため。
+    """
+    sub = args.handoff_cmd
+    if sub == "list":
+        body = _request_json("GET", "/handoffs")
+        active = body.get("active") or []
+        if not active:
+            print("有効な引き継ぎはありません")
+        for h in active:
+            print(
+                f"#{h['handoff_no']} [{h['status']}] thread={h['thread_id']}"
+                f" 発行={h['created_at'][:16]} {h['summary'][:60] if h.get('summary') else ''}"
+            )
+        for h in body.get("recent") or []:
+            print(f"  (済) #{h['handoff_no']} [{h['status']}] {h.get('finish_note') or ''}")
+        return
+    no = args.number
+    if sub == "takeover":
+        holder = getattr(args, "holder", None) or _new_holder()
+        body = _request_json(
+            "POST", f"/handoffs/{no}/takeover", payload={"holder": holder}
+        )
+        peers = "・".join(body.get("peers") or []) or "?"
+        print(f"引き継ぎ #{no} に着手しました(状態: 対応中)")
+        print(f"  thread_id={body['thread_id']} 相手={peers} holder={holder}")
+        if body.get("summary"):
+            print("---- GUIからの要約 ----")
+            print(body["summary"])
+            print("----------------------")
+        print("続け方:")
+        print(
+            f"  経緯の取得: python {Path(__file__).name} check --peek"
+            f" --thread {body['thread_id']}"
+        )
+        print(
+            f"  返信: python {Path(__file__).name} send --to {peers.split('・')[0]}"
+            f" --thread {body['thread_id']} --holder {holder} <本文>"
+        )
+        print(
+            f"  返信待ち(予約維持): python {Path(__file__).name} wait"
+            f" --thread {body['thread_id']} --holder {holder}"
+        )
+        print(f"  完了: python {Path(__file__).name} handoff done {no}")
+        print(f"  戻す: python {Path(__file__).name} handoff return {no} --reason \"理由\"")
+        print("⚠ ctx台帳に holder と thread_id を必ず記録すること(圧縮で失うと延長も解放もできない)")
+        return
+    if sub in ("done", "return"):
+        note = getattr(args, "reason", "") or getattr(args, "note", "") or ""
+        body = _request_json(
+            "POST", f"/handoffs/{no}/{'done' if sub == 'done' else 'return'}",
+            payload={"note": note},
+        )
+        label = "完了" if sub == "done" else "差し戻し"
+        print(f"引き継ぎ #{no} を{label}にしました(常駐GUIが引き取れる状態に戻りました)")
+        return
+    print("handoff のサブコマンド: takeover / done / return / list", file=sys.stderr)
+    raise SystemExit(2)
+
+
 def cmd_wait(args: argparse.Namespace) -> None:
     """このスレッドへの返信が来るまで待ち、来たら表示する。
 
@@ -775,6 +838,22 @@ def main() -> None:
     )
     _add_as_option(wait_parser)
     wait_parser.set_defaults(func=cmd_wait)
+
+    handoff_parser = subparsers.add_parser(
+        "handoff", help="GUIから引き継いだ会話への着手・完了・差し戻し"
+    )
+    handoff_sub = handoff_parser.add_subparsers(dest="handoff_cmd")
+    ho_take = handoff_sub.add_parser("takeover", help="引き継ぎに着手する(lease付け替え)")
+    ho_take.add_argument("number", type=int, help="引き継ぎ番号(3桁)")
+    ho_take.add_argument("--holder", default=None, help="省略時は自動採番")
+    ho_done = handoff_sub.add_parser("done", help="完了として記録しGUIへ返す")
+    ho_done.add_argument("number", type=int)
+    ho_done.add_argument("--note", default="", help="完了メモ")
+    ho_ret = handoff_sub.add_parser("return", help="完了せずGUIへ差し戻す")
+    ho_ret.add_argument("number", type=int)
+    ho_ret.add_argument("--reason", default="", help="差し戻す理由")
+    handoff_sub.add_parser("list", help="引き継ぎ一覧")
+    handoff_parser.set_defaults(func=cmd_handoff)
 
     edit_parser = subparsers.add_parser("edit", help="未読の自分の送信メッセージを編集する")
     edit_parser.add_argument("message_id", type=int, help="編集するメッセージのID")
