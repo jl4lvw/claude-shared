@@ -310,6 +310,80 @@ def cmd_send(args: argparse.Namespace) -> None:
         print(f"添付しました: file_id={file_info['file_id']} filename={file_info['filename']}")
 
 
+# 確認(ask)は受信箱とは別管理で、発端メッセージが done になると
+# `GET /messages` からは消える。そのため **check だけを見ていると
+# 未回答の確認に永久に気づけない**(2026-08-21 運用者指摘)。
+_ASK_STATE_LABEL = {
+    "awaiting_operator": "回答待ち",
+    "answer_sent": "回答済み(パソコンの反映待ち)",
+    "answer_stuck": "回答がパソコンに届いていません",
+    "failed": "AIが失敗しました",
+    "escalated": "AIが判断を諦めました",
+    "working": "AIが処理中",
+}
+
+
+def _print_open_asks(act_as: Optional[str] = None) -> None:
+    """自分宛の「いま出ている確認」を表示する。**0件なら何も出さない。**
+
+    代理閲覧(--as)のときは出さない。確認は名義ごとの持ち物で、
+    代理の受信箱に混ぜると誰が答えるべきか分からなくなる。
+    """
+    if act_as:
+        return
+    try:
+        data = _request_json("GET", "/agent/attention")
+    except SystemExit:
+        # 旧サーバー(この口が無い)。check 本来の仕事は済んでいるので黙って戻る
+        return
+    except Exception:
+        return
+    items = [i for i in (data or {}).get("items", []) if i.get("needs_you")]
+    if not items:
+        return
+    print("=" * 60)
+    print(f"■ 未回答の確認が {len(items)} 件あります(受信箱とは別枠です)")
+    for it in items:
+        label = _ASK_STATE_LABEL.get(it.get("state") or "", it.get("state") or "")
+        origin = it.get("origin_status")
+        note = ""
+        if origin == "done":
+            note = "  ※ 発端メッセージは完了済み(この確認は取り残されています)"
+        elif it.get("origin_deleted"):
+            note = "  ※ 発端メッセージは削除済み"
+        print("-" * 60)
+        print(f"[{label}] message_id={it.get('origin_msg_id')} "
+              f"from={it.get('from_user')} ask_key={it.get('ask_key')}")
+        if note:
+            print(note)
+        body = (it.get("question") or "").strip()
+        if body:
+            print(body)
+        for i, opt in enumerate(it.get("options") or [], 1):
+            mark = " ←推奨" if opt == it.get("recommended") else ""
+            print(f"  {i}. {opt}{mark}")
+        if it.get("reason"):
+            print(f"  推奨理由: {it['reason']}")
+    print("-" * 60)
+    print("答えるとき: relay_client.py answer <ask_key> \"回答の本文\"")
+
+
+def cmd_answer(args: argparse.Namespace) -> None:
+    """確認に CLI から答える。常駐GUIの確認パネルを待たずに引き取れる。
+
+    回答の置き場はスマホから答えたときと同じ(サーバーに積み、常駐GUIが
+    取りに来て待機中のエージェントへ渡す)。**危険操作の承認は答えられない** —
+    パソコンの承認パネルで行う。
+    """
+    data = _request_json(
+        "POST",
+        "/agent/attention/answer",
+        payload={"ask_key": args.ask_key, "answer": args.answer},
+    )
+    print(f"回答しました: ask_key={data.get('ask_key')}")
+    print("常駐GUIが取りに来て、待っている処理へ渡します(最大60秒)。")
+
+
 def cmd_check(args: argparse.Namespace) -> None:
     # GET /messages(自分宛の受信箱取得)は「未処理すべて」(未読 + 取得済みだがdone
     # されていないもの)を返す(2026-07-20サーバー仕様変更)。自動ポーリングが先に取得
@@ -336,6 +410,7 @@ def cmd_check(args: argparse.Namespace) -> None:
     if not messages:
         who = f"{target}宛(代理)" if act_as else "自分宛"
         print(f"{who}の未処理メッセージはありません。")
+        _print_open_asks(act_as)
         return
     if act_as:
         print(f"※ {act_as}宛を代理で閲覧しています(statusは変更されません)")
@@ -371,6 +446,7 @@ def cmd_check(args: argparse.Namespace) -> None:
 
     print("=" * 60)
     print(f"{len(messages)}件の未処理メッセージがあります(doneするまで毎回表示されます)。")
+    _print_open_asks(act_as)
     if act_as:
         print(
             f"代理で処理する場合は、先に処理権を取ってください: "
@@ -793,6 +869,13 @@ def main() -> None:
     )
     _add_as_option(check_parser, "指定user宛を代理で閲覧する(statusは変更されない)")
     check_parser.set_defaults(func=cmd_check)
+
+    answer_parser = subparsers.add_parser(
+        "answer", help="未回答の確認に答える(ask_key は check で表示される)"
+    )
+    answer_parser.add_argument("ask_key", help="check で表示された ask_key")
+    answer_parser.add_argument("answer", help="回答の本文(選択肢はそのまま書く)")
+    answer_parser.set_defaults(func=cmd_answer)
 
     reserve_parser = subparsers.add_parser(
         "reserve", help="スレッドを予約する(返信を常駐GUIでなく自分が受け取る)"
