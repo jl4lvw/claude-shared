@@ -17,6 +17,7 @@ import os
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 from urllib import error, request
@@ -42,6 +43,28 @@ ENV_PATH = Path(os.environ.get("RELAY_ENV_FILE") or (LOCAL_DIR / ".env")).expand
 DOWNLOAD_DIR = Path(
     os.environ.get("RELAY_INBOX_DIR") or (ENV_PATH.parent / "inbox")
 ).expanduser()
+
+
+def _fmt_local(value: object, with_date: bool = True) -> str:
+    """サーバーの UTC ISO 文字列を、この端末の現地時刻にして返す。
+
+    **切り出して表示してはいけない。** `value[:16]` のように書くと
+    `+00:00` を剥がしただけの UTC が現地時刻の顔で出る（JST なら 9 時間ずれ）。
+    PC の GUI と スマホ PWA は先に直してあり、CLI だけ残っていた（2026-08-23）。
+
+    解釈できない値はそのまま返す（壊れた表示にするより原文の方が手掛かりになる）。
+    タイムゾーンが無い値は現地時刻とみなす（古いデータへの保険）。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone()
+    return parsed.strftime("%Y-%m-%d %H:%M" if with_date else "%H:%M")
 
 
 def _load_env(path: Path) -> dict[str, str]:
@@ -128,6 +151,11 @@ def _request_json(
     # 未指定なら「予約中スレッドは見えない」側に倒れる(fail safe)。
     if holder:
         req.add_header("X-Relay-Holder", holder)
+    # 常駐GUIのエージェントとして動いているなら名乗る(2026-08-25)。
+    # `human_only` のメッセージはエージェントには見せない。
+    # 運用者の `/m` はこの環境変数を持たないので従来どおり見える
+    if os.environ.get("RELAY_AGENT", "").strip().lower() in ("1", "true", "yes"):
+        req.add_header("X-Relay-Agent", "1")
     if data is not None:
         req.add_header("Content-Type", "application/json")
     try:
@@ -260,6 +288,24 @@ def _download_file(file_id: str, filename: str) -> Path:
     return dest
 
 
+def _fmt_span(seconds: int) -> str:
+    """秒を人が読める長さにする。
+
+    「900秒」では長いのか短いのか判らない。予約の要点は**いつ切れるか**
+    なので、そこが一目で判る書き方にする(2026-08-24)。
+    """
+    total = max(0, int(seconds))
+    if total < 60:
+        return f"{total}秒"
+    minutes, sec = divmod(total, 60)
+    if minutes < 60:
+        return f"約{minutes}分" if sec else f"{minutes}分"
+    hours, minutes = divmod(minutes, 60)
+    if minutes:
+        return f"約{hours}時間{minutes}分"
+    return f"{hours}時間"
+
+
 def cmd_send(args: argparse.Namespace) -> None:
     # 送信前チェック(2026-08-02 項目2・必須): 本文POSTより前にサイズ・拡張子を
     # /configと照合する。違反があれば送信自体を中止し、「添付なし孤児メッセージ」
@@ -279,6 +325,8 @@ def cmd_send(args: argparse.Namespace) -> None:
         payload["thread_id"] = args.thread
     if args.no_reply_needed:
         payload["no_reply_needed"] = True
+    if getattr(args, "human_only", False):
+        payload["human_only"] = True
 
     # 返信の受け取り手を、送信と同じ操作で予約する(2026-08-04 /r#28)。
     # 送信してから別コマンドで予約すると、その隙に返信が届いて常駐GUIに攫われる。
@@ -293,12 +341,36 @@ def cmd_send(args: argparse.Namespace) -> None:
     message = _request_json("POST", "/messages", payload=payload, act_as=act_as)
     name = f"{act_as}名義(実行はあなた)" if act_as else "自分名義"
     print(f"送信しました[{name}]: thread_id={message['thread_id']} message_id={message['id']}")
+    # **毎回、返信を誰が受け取るかを言う**(2026-08-24)。
+    # 予約はオプトインで、忘れても何も起きず黙って常駐GUIが拾う。
+    # 実際に「委託した作業の返信をGUIが勝手に処理する」が起きた。
+    # 警告にしないのは、警告は慣れると読み飛ばされるから。事実を毎回置く。
     if holder:
-        print(f"返信を予約しました: holder={holder}(期限 {args.reserve_ttl}秒)")
+        print(
+            f"返信の受け取り手: このセッション"
+            f"(holder={holder} / {_fmt_span(args.reserve_ttl)}で自動解放)"
+        )
         print("このセッションで返信を受け取るには、続けて次を実行してください:")
         print(
             f"  relay_client.py wait --thread {message['thread_id']} "
             f"--holder {holder} --after-id {message['id']}"
+        )
+        print(
+            "  relay_client.py release --thread "
+            f"{message['thread_id']} --holder {holder}   # 終わったら必ず"
+        )
+    elif getattr(args, "human_only", False):
+        # **AI が触らない件は「誰が受け取るか」の答えが違う。**
+        # 常駐GUIと書くと嘘になる(2026-08-25)
+        print(
+            "返信の受け取り手: 相手の運用者(AIの自動応答を禁止しました)。"
+            "相手は /m で扱います"
+        )
+    else:
+        print(
+            "返信の受け取り手: 常駐GUI(このセッションでは受け取りません)。"
+            "自分で受け取るなら --reserve を付けて送り直すか、"
+            f"reserve --thread {message['thread_id']} で今から予約してください"
         )
 
     if args.file:
@@ -321,6 +393,10 @@ _ASK_STATE_LABEL = {
     "escalated": "AIが判断を諦めました",
     "working": "AIが処理中",
 }
+
+
+# サーバーの `_CLI_ANSWERABLE_KINDS` と揃える。増やすときは両方直す
+_CLI_ANSWERABLE_KINDS = ("question",)
 
 
 def _print_open_asks(act_as: Optional[str] = None) -> None:
@@ -352,8 +428,13 @@ def _print_open_asks(act_as: Optional[str] = None) -> None:
         elif it.get("origin_deleted"):
             note = "  ※ 発端メッセージは削除済み"
         print("-" * 60)
-        print(f"[{label}] message_id={it.get('origin_msg_id')} "
-              f"from={it.get('from_user')} ask_key={it.get('ask_key')}")
+        # 発端は「あれば付く」もの。特定できない確認もここに出る(2026-08-23)
+        oid = it.get("origin_msg_id")
+        where = f"message_id={oid}" if oid else "message_id=(不明)"
+        who = it.get("from_user")
+        print(f"[{label}] {where}"
+              + (f" from={who}" if who else "")
+              + f" ask_key={it.get('ask_key')}")
         if note:
             print(note)
         body = (it.get("question") or "").strip()
@@ -364,8 +445,20 @@ def _print_open_asks(act_as: Optional[str] = None) -> None:
             print(f"  {i}. {opt}{mark}")
         if it.get("reason"):
             print(f"  推奨理由: {it['reason']}")
+        # **答えられない確認に「答えてください」と書かない。**
+        # サーバーは question 以外を 403 で拒む(承認は机の前でしか通さない)
+        # のに、以前は全件に同じ案内を出していた
+        # (2026-08-22 cgd Lv8 で codex med/high が収束)
+        if (it.get("ask_kind") or "question") not in _CLI_ANSWERABLE_KINDS:
+            print("  ※ この確認はここからは回答できません"
+                  "(パソコンの確認パネルで対応してください)")
     print("-" * 60)
-    print("答えるとき: relay_client.py answer <ask_key> \"回答の本文\"")
+    answerable = [i for i in items
+                  if (i.get("ask_kind") or "question") in _CLI_ANSWERABLE_KINDS]
+    if answerable:
+        print("答えるとき: relay_client.py answer <ask_key> \"回答の本文\"")
+    else:
+        print("この一覧はパソコンの確認パネルで対応してください")
 
 
 def cmd_answer(args: argparse.Namespace) -> None:
@@ -384,6 +477,109 @@ def cmd_answer(args: argparse.Namespace) -> None:
     print("常駐GUIが取りに来て、待っている処理へ渡します(最大60秒)。")
 
 
+def _is_agent_self() -> bool:
+    """自分が常駐GUIのエージェントとして動いているか。"""
+    return os.environ.get("RELAY_AGENT", "").strip().lower() in ("1", "true", "yes")
+
+
+def _handoff_messages(no: int, act_as=None) -> object:
+    """引き継がれた会話の未処理メッセージを取る。取れなければ None を返す。
+
+    **受信箱(GET /messages)からは取れない。** 引き継ぎ中のスレッドは lease で
+    隠れており、しかも holder は1つしか送れないので、引き継ぎが2件あると
+    片方は必ず隠れたままになる(本番で #103/#104 が同時に立っていた)。
+    サーバーに「その引き継ぎの持ち主だから読める」専用の口を用意してある。
+    """
+    # **soft_status で吸収する。** _request_json は HTTPError で sys.exit(1)
+    # するので、404 を返す旧サーバーだと check 全体がそこで終了してしまう
+    # (SystemExit は BaseException なので except Exception では拾えない)。
+    # 2026-08-26 Step C 🟠
+    try:
+        got = _request_json(
+            "GET", f"/handoffs/{no}/messages", act_as=act_as,
+            soft_status=(403, 404),
+        )
+    except BaseException as exc:  # noqa: BLE001 表示の付加情報なので本体は止めない
+        print(f"    ⚠ 本文を取得できませんでした({type(exc).__name__}: {exc})")
+        return None
+    if isinstance(got, ApiConflict):
+        print(f"    ⚠ 本文を取得できませんでした(HTTP {got.status})")
+        print(f"    サーバーが古い可能性があります。着手して読む: "
+              f"relay_client.py handoff takeover {no}")
+        return None
+    return got
+
+
+def _print_handoffs(act_as=None) -> int:
+    """自分に引き継がれた会話を、**本文まで**出す。件数を返す。
+
+    引き継ぎ中のスレッドは lease で受信箱から隠れるので、`/m` は
+    「未処理はありません」と言う。そこで黙ると、引き継がれた会話が
+    永久に見つからない(2026-08-24 運用者の問いへの対応)。
+
+    2026-08-26 に本文表示を足した。存在だけ出しても本文が読めなければ
+    着手できず、実際に RC からの依頼5件が12時間放置された。
+
+    **取得に失敗したら黙らない。** 「引き継ぎはありません」と
+    区別が付かなくなるのが、この事故の本体だった。
+    """
+    # エージェントには見せない。一覧には会話の抜粋と takeover 手順が載るので、
+    # 人へ渡したはずの会話を奪えてしまう(2026-08-26 Lv8 V4)
+    if _is_agent_self():
+        return 0
+    try:
+        body = _request_json("GET", "/handoffs", act_as=act_as)
+    except Exception as exc:  # noqa: BLE001
+        print("=" * 60)
+        print(f"⚠ 引き継ぎ状態を確認できません({type(exc).__name__}: {exc})")
+        print("  「引き継ぎは無い」ではありません。サーバーに繋がらないだけの可能性があります")
+        print("=" * 60)
+        return 0
+    active = [h for h in (body.get("active") or [])]
+    if not active:
+        return 0
+    print("=" * 60)
+    print(f"■ あなたに引き継がれた会話が {len(active)} 件あります(未処理より先に扱ってください)")
+    print("-" * 60)
+    for h in active:
+        status_ja = {
+            "pending": "未着手",
+            "in_session": "対応中",
+            "taken": "対応中",
+        }.get(h.get("status"), h.get("status"))
+        print(
+            f"[{status_ja}] #{h['handoff_no']:03d} thread={h['thread_id']}"
+            f" 発行={_fmt_local(h['created_at'])}"
+        )
+        summary = (h.get("summary") or "").strip()
+        if summary:
+            for line in summary.splitlines()[:4]:
+                print(f"    {line[:110]}")
+        msgs = _handoff_messages(h["handoff_no"], act_as)
+        if msgs is not None:
+            if msgs:
+                print(f"    --- 未処理 {len(msgs)} 件 ---")
+                for m in msgs:
+                    print(
+                        f"    [#{m['id']}] {m['from_user']} "
+                        f"{_fmt_local(m['created_at'])}"
+                    )
+                    for line in str(m.get("content") or "").splitlines():
+                        print(f"      {line}")
+            else:
+                print("    (このスレッドに未処理はありません)")
+        if h.get("status") == "pending":
+            print(
+                f"    着手する: relay_client.py handoff takeover {h['handoff_no']}"
+            )
+        else:
+            print(
+                f"    終えたら: relay_client.py handoff done {h['handoff_no']}"
+            )
+    print("=" * 60)
+    return len(active)
+
+
 def cmd_check(args: argparse.Namespace) -> None:
     # GET /messages(自分宛の受信箱取得)は「未処理すべて」(未読 + 取得済みだがdone
     # されていないもの)を返す(2026-07-20サーバー仕様変更)。自動ポーリングが先に取得
@@ -400,6 +596,10 @@ def cmd_check(args: argparse.Namespace) -> None:
         # peek=true はサーバー側でunread→processingへの遷移を起こさない
         # (自動ポーリング向け。2026-07-20仕様、wait コマンドでも同様に使用)
         params["peek"] = "true"
+    # **引き継ぎを本当に一番上に出す。** 以前はコメントだけ「一番上」と言い、
+    # 実装は /messages の後だった(2026-08-26 Lv8 Codex両者収束)。
+    # 受信箱の取得が失敗した回は引き継ぎも出ないままだった
+    handoff_count = _print_handoffs(act_as)
     messages = _request_json(
         "GET",
         "/messages",
@@ -409,7 +609,15 @@ def cmd_check(args: argparse.Namespace) -> None:
     )
     if not messages:
         who = f"{target}宛(代理)" if act_as else "自分宛"
-        print(f"{who}の未処理メッセージはありません。")
+        if handoff_count:
+            # **「ありません」と言い切らない。** 引き継ぎは受信箱から隠れる
+            # 仕組みなので、ここで言い切ると画面が嘘をつくことになる
+            print(
+                f"{who}の受信箱に未処理はありません"
+                f"(引き継ぎ {handoff_count} 件は上に出ています。そちらを扱ってください)。"
+            )
+        else:
+            print(f"{who}の未処理メッセージはありません。")
         _print_open_asks(act_as)
         return
     if act_as:
@@ -423,8 +631,13 @@ def cmd_check(args: argparse.Namespace) -> None:
         print("=" * 60)
         print(
             f"[{msg['type']}][{label}] thread_id={msg['thread_id']} message_id={msg['id']} "
-            f"from={msg['from_user']} at={msg['created_at']}"
+            f"from={msg['from_user']} at={_fmt_local(msg['created_at'])}"
         )
+        # **AI の自動応答が禁止された件**(2026-08-25)。常駐GUIのエージェントには
+        # 見えないので、ここに出ている時点で「人が扱う」ものだと判る。
+        # それでも明示する — 代理で AI に投げ返す誘惑を断つため
+        if msg.get("human_only"):
+            print("  ※ AIの自動応答は禁止されています。あなた(運用者)が判断してください")
         # 他の実行者が処理権を持っているものは触らない(二重処理防止)
         claimed_by = msg.get("claimed_by")
         if claimed_by:
@@ -434,7 +647,7 @@ def cmd_check(args: argparse.Namespace) -> None:
                 if claimed_by == SELF_USER_ID
                 else f"{claimed_by} が処理中 → 手を出さない"
             )
-            print(f"  ※ 処理権: {note} (claimed_at={msg.get('claimed_at')})")
+            print(f"  ※ 処理権: {note} (claimed_at={_fmt_local(msg.get('claimed_at'))})")
         print(msg["content"])
 
         files = _request_json(
@@ -473,7 +686,8 @@ def cmd_edit(args: argparse.Namespace) -> None:
     message = _request_json(
         "PATCH", f"/messages/{args.message_id}", payload={"content": args.content}
     )
-    print(f"編集しました: message_id={message['id']} edited_at={message['edited_at']}")
+    print(f"編集しました: message_id={message['id']} "
+          f"edited_at={_fmt_local(message['edited_at'])}")
 
 
 def cmd_done(args: argparse.Namespace) -> None:
@@ -481,7 +695,8 @@ def cmd_done(args: argparse.Namespace) -> None:
     message = _request_json(
         "POST", f"/messages/{args.message_id}/done", act_as=act_as
     )
-    print(f"既読処理済にしました: message_id={message['id']} completed_at={message['completed_at']}")
+    print(f"既読処理済にしました: message_id={message['id']} "
+          f"completed_at={_fmt_local(message['completed_at'])}")
 
 
 def cmd_forward(args: argparse.Namespace) -> None:
@@ -525,7 +740,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
         sys.exit(EXIT_CLAIM_CONFLICT)
     print(
         f"処理権を取得しました: message_id={result['id']} "
-        f"claimed_by={result['claimed_by']} at={result['claimed_at']}"
+        f"claimed_by={result['claimed_by']} at={_fmt_local(result['claimed_at'])}"
     )
     print("これで他の端末はこのメッセージをdoneできません。処理後に done を実行してください。")
 
@@ -581,7 +796,8 @@ def cmd_delegations(args: argparse.Namespace) -> None:
 
 def cmd_revoke(args: argparse.Namespace) -> None:
     body = _request_json("DELETE", f"/delegations/{args.delegation_id}")
-    print(f"代理権限を取り消しました: id={body['id']} revoked_at={body['revoked_at']}")
+    print(f"代理権限を取り消しました: id={body['id']} "
+          f"revoked_at={_fmt_local(body['revoked_at'])}")
 
 
 # --- スレッド予約と返信待ち受け(2026-08-04 /r#28) ------------------------
@@ -630,7 +846,7 @@ def cmd_reserve(args: argparse.Namespace) -> None:
         )
         sys.exit(_WAIT_LOST_EXIT)
     print(f"予約しました: thread_id={args.thread} holder={holder}")
-    print(f"  期限: {lease['expires_at']} (待ち受け中は自動で延長されます)")
+    print(f"  期限: {_fmt_local(lease['expires_at'])} (待ち受け中は自動で延長されます)")
     print(f"  返信を待つ: relay_client.py wait --thread {args.thread} --holder {holder}")
 
 
@@ -663,7 +879,8 @@ def cmd_handoff(args: argparse.Namespace) -> None:
         for h in active:
             print(
                 f"#{h['handoff_no']} [{h['status']}] thread={h['thread_id']}"
-                f" 発行={h['created_at'][:16]} {h['summary'][:60] if h.get('summary') else ''}"
+                f" 発行={_fmt_local(h['created_at'])} "
+                f"{h['summary'][:60] if h.get('summary') else ''}"
             )
         for h in body.get("recent") or []:
             print(f"  (済) #{h['handoff_no']} [{h['status']}] {h.get('finish_note') or ''}")
@@ -682,9 +899,11 @@ def cmd_handoff(args: argparse.Namespace) -> None:
             print(body["summary"])
             print("----------------------")
         print("続け方:")
+        # `check` に `--thread` は無い。しかも `--holder` を付けないと
+        # 予約中スレッドはサーバー側で除外されて見えない(2026-08-23)
         print(
             f"  経緯の取得: python {Path(__file__).name} check --peek"
-            f" --thread {body['thread_id']}"
+            f" --holder {holder}"
         )
         print(
             f"  返信: python {Path(__file__).name} send --to {peers.split('・')[0]}"
@@ -709,6 +928,30 @@ def cmd_handoff(args: argparse.Namespace) -> None:
         return
     print("handoff のサブコマンド: takeover / done / return / list", file=sys.stderr)
     raise SystemExit(2)
+
+
+def _lease_left_sec(
+    thread_id: str, holder: str, act_as: "str | None" = None
+) -> "int | None":
+    """自分の予約の残り秒。判らなければ None。
+
+    表示のためだけに使う。**取れなくても処理は続ける**
+    (残り時間が出せないことは、予約を失ったことを意味しない)。
+    """
+    try:
+        rows = _request_json("GET", "/threads/leases", act_as=act_as)
+    except Exception:
+        return None
+    for row in rows or []:
+        if row.get("thread_id") == thread_id and row.get("holder") == holder:
+            try:
+                expires = datetime.fromisoformat(str(row["expires_at"]))
+            except (ValueError, KeyError, TypeError):
+                return None
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            return max(0, int((expires - datetime.now(timezone.utc)).total_seconds()))
+    return None
 
 
 def cmd_wait(args: argparse.Namespace) -> None:
@@ -758,7 +1001,7 @@ def cmd_wait(args: argparse.Namespace) -> None:
                 print("=" * 60)
                 print(
                     f"[{msg['type']}] message_id={msg['id']} from={msg['from_user']} "
-                    f"at={msg['created_at']}"
+                    f"at={_fmt_local(msg['created_at'])}"
                 )
                 print(msg["content"])
             print("=" * 60)
@@ -784,6 +1027,30 @@ def cmd_wait(args: argparse.Namespace) -> None:
             return
 
         if time.monotonic() >= deadline:
+            if getattr(args, "keep", False):
+                # **手放さずに戻る**(2026-08-24)。委託した作業の返事は
+                # 数時間後に来る。そこで解放すると、その瞬間に常駐GUIが
+                # 拾ってしまい「勝手に応答された」になる。
+                # 予約自体には TTL があるので、放置しても必ずいつかは戻る。
+                left = _lease_left_sec(args.thread, holder, act_as)
+                print(
+                    f"返信がないまま{args.timeout}秒が経過しました。"
+                    "予約は保持したままです"
+                    + (f"(残り{_fmt_span(left)})" if left is not None else "")
+                    + "。放置すると期限切れで常駐GUIが引き取ります。",
+                    file=sys.stderr,
+                )
+                print(
+                    f"  relay_client.py wait --thread {args.thread} "
+                    f"--holder {holder} --keep   # 続けて待つ",
+                    file=sys.stderr,
+                )
+                print(
+                    f"  relay_client.py release --thread {args.thread} "
+                    f"--holder {holder}   # 常駐GUIへ返す",
+                    file=sys.stderr,
+                )
+                sys.exit(_WAIT_TIMEOUT_EXIT)
             # 待ち切れなかったら予約を返す。持ったまま放置すると、
             # 誰も見ないメッセージが生まれる(このシステムが一番避けたい状態)。
             # 直前のheartbeatからここまでの間に他へ移っていると409になるが、
@@ -830,6 +1097,12 @@ def main() -> None:
     )
     send_parser.add_argument("--thread", default=None, help="継続する場合はthread_idを指定")
     send_parser.add_argument("--file", default=None, help="添付するファイルのパス")
+    send_parser.add_argument(
+        "--human-only",
+        action="store_true",
+        help="AIの自動応答を禁止し、相手の運用者が /m で扱うことを強制する。"
+        "常駐GUIのエージェントからは見えなくなるが、画面と件数には出る",
+    )
     send_parser.add_argument(
         "--no-reply-needed",
         action="store_true",
@@ -910,6 +1183,11 @@ def main() -> None:
     )
     wait_parser.add_argument("--timeout", type=int, default=900, help="待つ上限秒(既定900)")
     wait_parser.add_argument("--interval", type=int, default=5, help="確認間隔秒(既定5)")
+    wait_parser.add_argument(
+        "--keep",
+        action="store_true",
+        help="待ち切れなくても予約を解放しない。委託のように返事が数時間後に来る場合に使う(既定は解放して常駐GUIへ返す)",
+    )
     wait_parser.add_argument(
         "--ttl", type=int, default=300, help="待ち受け中に維持する予約TTL秒(既定300)"
     )

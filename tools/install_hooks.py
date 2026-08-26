@@ -105,6 +105,13 @@ _HOOKS: tuple[tuple[str, str | None, str, int, str], ...] = (
         5,
         "ctx: 手動圧縮時に台帳へ COMPACT manual を追記(ctx/SKILL.md 184-186)",
     ),
+    (
+        "PostToolUse",
+        "Edit|Write",
+        ".claude/hooks/ruff_check.py",
+        15,
+        "Claudeが.pyファイルを編集した直後にruff checkを自動実行し指摘を報告(自動修正なし)",
+    ),
 )
 
 
