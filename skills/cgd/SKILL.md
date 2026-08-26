@@ -2,7 +2,7 @@
 name: cgd
 description: Codex+DeepSeek+Qwen の統合コードレビュー・設計相談・実装・委譲・検証スキル（**Gemini は2026-07にAPIエラー多発のため既定オフのオプトイン参加に格下げ済み**）。**9段階レベル（Lv0〜Lv8）**でトークン消費・所要時間・実装主体が決まる。**レベル・Codex reasoning(low/medium/high)・Gemini/critic観点はすべてClaudeが対象から自動選択して宣言する（ユーザーに選ばせない・明示指示が最優先）**。**Lv0=委譲レーン**（DS/Qwenにコード生成を任せClaudeは分解と検証に専念・scaffold/量産タスク/コスト節約・Antigravity Plugin相当） / Lv1=Codex単独 / Lv2=Codex+DeepSeek並列（既定推奨。旧/codex等価のC+G構成は「Geminiも」等の明示指示で再現可） / Lv3=Codex+DeepSeekの技術×批評「2社×2視点」4レビュー（実装なし・review専用） / Lv4=Claude初期案→[DS+Qwen並列advisor]→Codex直列フル相談+再レビュー（Gemini併用時は先頭にGemini案出しが直列で入る） / Lv5=Lv4+🔴重大指摘の自動修正1周 / Lv6=Codex+DS+Qwen 3者並列レビュー（全員reviewer役、Gemini併用で4者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周（**Workflow実行必須**） / Lv7=Codex多重(medium+high)+補助(DS/Qwen)の4者並列「Codex集中」構成（Gemini併用で5者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周（最深掘り・**Workflow実行必須**） / Lv8=Lv7の技術構成そのまま+Codex(high)とDeepSeekにLv3同様の批評視点を追加した6者並列（Gemini併用で7者）+実装+検証+Codex再レビュー+🔴自動修正1周（技術の最深掘り+複眼批評、最重量級・**Workflow実行必須**）。Lv0=実装主体の切替（コストレーン）、Lv1-8=レビュー強度の選択（品質レーン）で直交。Lv4-5はDS/Qwenをadvisor役で別案出し、Lv6は横並びreviewer、Lv7は深いintegrationバグ検出を狙ってCodex多重化+DS/Qwenに関連関数抜粋を渡して補助役を強化。差分レビュー、設計判断、別案出し、実装、委譲、検証まで一気通貫。**旧 `/codex` `/gemini` 単体スキルは廃止され、本スキル（`/cgd` または `/codex` 起動）が必ずレベル自動決定から始まる**。全Lv共通の任意オプションで『critic観点』（辛口ユーザー視点＝ITに疎い現場担当者の使い勝手の不満 + あるべき論＝本来この仕様はどうあるべきかの批判を Claude本体+DS criticで評価）を追加でき、技術的正しさとは別軸で使い勝手・仕様の妥当性を否定的にチェックする。環境チェックは `python C:/ClaudeCode/.claude/tools/cgd_doctor.py` で一括。「委譲」「scaffold」「量産」「DSで書かせる」「Qwenで書かせる」「コスト節約」「3者に相談」「フルパイプ」「4者レビュー」「Codex多重」「Codex集中」「辛口レビュー」「ユーザー視点」「あるべき論」「critic」「cgd」「Codexにレビュー」「セカンドオピニオン」「C+G」「cg」「Geminiも」などのキーワードで起動。重要な設計判断・難しいバグ・大きめのリファクタの検討時には積極的に提案すること。既存 /generate-by-deepseek（DS単発コード生成→Claudeレビュー）は薄い構成で並立。
 ---
-<!-- SKILL_VERSION: 2026-08-26_224214 -->
+<!-- SKILL_VERSION: 2026-08-27_084649 -->
 
 # cgd — Codex + DeepSeek + Qwen 統合スキル（Lv0〜8、Gemini はオプトイン）
 
@@ -41,6 +41,7 @@ Claude Code は司令塔。Codex / DeepSeek / Qwen を **役割分担** で使�
 - **Lv2 以降**では `DEEPSEEK_API_KEY` が必要（Lv2 既定第2エンジン）。**Lv4-5 / Lv6 / Lv7** では `DASHSCOPE_API_KEY` も追加で必要（DS と Qwen を並列で呼ぶため・Lv4-5 は advisor、Lv6/Lv7 は reviewer 役）
 - **Gemini はオプトイン時のみ必須**: `gemini_advisor.py`（Google の OpenAI 互換エンドポイントを叩く Python ラッパー、旧 gemini CLI は廃止済み）を使う。環境変数 `GEMINI_API_KEY`（Google AI Studio で無料発行）が必要。既定モデル `gemini-2.5-flash`（`GEMINI_MODEL` で上書き可）。未設定でも Gemini を使わない限り Lv1-8 すべて実行可能
 - **Serena MCP は任意**（Lv7/Lv8 の関連関数抽出を高精度化する。`claude mcp list` で `serena` が `Connected` なら自動優先、未登録のプロジェクトでは自動的に grep+Read へフォールバックする。導入必須ではない）
+- **module-graph は任意**（`900.ClaudeCode/mcp-memory-3d-viewer/memory.json` にサブプロジェクト間のHTTP依存関係が記録されていれば、Lv7/Lv8 でそれを読み、変更対象を外部から呼んでいるサブプロジェクトがあればレビュアーへの参考情報として渡す。ファイルが無ければ何もしない。詳細は `/module-graph` スキル参照）
 - 相談段はすべて read-only 運用：書き込み・実行は Claude Code 本体が行う
 - 実装フェーズに入ったら AGENTS.md / CLAUDE.md ルール（バックアップ必須・shebang禁止・`encoding="utf-8"` 明示）を強制適用する
 
@@ -1040,6 +1041,32 @@ Lv6 と違い、DS / Qwen には **差分 + 関連関数抜粋** を渡す。Cod
 
 **共通**: ファイル全体が小さい（< 500 行）場合は **全文をそのまま抜粋** として使う（方式によらず共通）。
 
+**C. モジュール間HTTP依存のチェック(任意・追加情報)**: Serena はプロセス内(≒1サブプロジェクト内)の参照しか追えないため、**別サブプロジェクトからHTTP経由で呼ばれている**ような依存はA/Bのどちらでも検出できない。`module-graph`スキルが実行済みなら、`900.ClaudeCode/mcp-memory-3d-viewer/memory.json`にその依存関係が記録されている場合があるので、これも確認する:
+
+```bash
+python -c "
+import json
+target = '<変更対象ファイルが属するサブプロジェクトのフォルダ名(例: 023.商品マスタDB)>'
+try:
+    with open('C:/ClaudeCode/900.ClaudeCode/mcp-memory-3d-viewer/memory.json', encoding='utf-8') as f:
+        rels = [json.loads(l) for l in f if l.strip()]
+    callers = [r['from'] for r in rels if r.get('type')=='relation' and r.get('relationType')=='http_calls_detected' and r.get('to')==target]
+    print(callers if callers else '検出なし')
+except FileNotFoundError:
+    print('memory.json未生成(module-graph未実行)')
+"
+```
+
+呼び出し元が見つかった場合、Step 2-7C の入力(Codex用・DS/Qwen用の両方)に以下を追記する:
+
+```
+[外部からの呼び出し元(module-graph検出・参考情報・自動検出のため最新でない可能性あり)]
+このモジュールは <検出された caller 一覧> からHTTP経由で呼び出されている可能性があります。
+後方互換性への影響(レスポンス形式・エンドポイントパス・必須パラメータの変更等)を確認してください。
+```
+
+`memory.json` が無い/該当なしの場合は何もせず通常通り進める(cgdの実行を妨げない・必須ではない)。
+
 **抽出量の目安**:
 - 差分行数の **5〜10 倍程度**（差分 50 行 → 抜粋 300〜500 行）が現実的
 - 5KB 未満を目標（DS/Qwen の argv 制限・トークン制約・タイムアウト回避）
@@ -1270,7 +1297,7 @@ Gemini オプトイン時の観点は Claude が対象から判断して決め�
 
 ### Step 2-8B: 関連関数の事前抽出（Claude 本体作業）
 
-**Lv7 の Step 2-7B と同一手順**（Serena が使えるなら `find_symbol`+`find_referencing_symbols` で精密抽出、使えなければ `git diff` → hunk 周辺の関数境界を grep+Read で抽出 → `C:/tmp-ai/lv8_related_funcs.txt` に結合保存。差分の5〜10倍、5KB未満が目安）。批評パスにも同じ抽出結果を再利用する（技術と批評で対象を分けない・見る角度だけ変える）。
+**Lv7 の Step 2-7B と同一手順**（Serena が使えるなら `find_symbol`+`find_referencing_symbols` で精密抽出、使えなければ `git diff` → hunk 周辺の関数境界を grep+Read で抽出 → `C:/tmp-ai/lv8_related_funcs.txt` に結合保存。差分の5〜10倍、5KB未満が目安。**module-graph による外部からのHTTP呼び出し元チェック(C.)も同様に実施**）。批評パスにも同じ抽出結果を再利用する（技術と批評で対象を分けない・見る角度だけ変える）。
 
 ### Step 2-8C: 入力ファイル準備（先に1回だけ作る・技術・批評で共有）
 
@@ -2040,6 +2067,7 @@ Bash 並列起動の各段の `$?` を確認し、**1 つでも非 0 が出た�
   - Lv8: DS は `--role reviewer`（技術補助）と `--role critic`（批評）の両方。Qwen は `--role reviewer`（技術補助）のみ。Codex(high) にも技術に加え別プロンプトで批評を依頼（Lv7 の技術構成 + Lv3 の批評構成の合成）
 - **Codex 多重 (Lv7 / Lv8)**: medium と high を **同じ入力で並列実行**。reasoning level の違いから別視点を取得。Lv8 は high をもう1回、批評プロンプトで再利用する（合計3呼出）。再レビュー（Step C）は両Lvとも medium 単独で OK
 - **関連関数の事前抽出 (Lv7 / Lv8)**: Serena が使えるなら `find_symbol`+`find_referencing_symbols` で本体と実参照元を精密抽出（使えない場合は grep+Read にフォールバック）し、`C:/tmp-ai/lv7_related_funcs.txt`（Lv8 は `lv8_related_funcs.txt`）に結合保存してから DS/Qwen に渡す。差分の 5〜10 倍程度のサイズが目安。Lv8 は技術・批評の両方でこの抽出結果を再利用する
+- **モジュール間HTTP依存の参考情報 (Lv7 / Lv8・任意)**: Serena は1プロセス内の参照しか追えないため、別サブプロジェクトからのHTTP呼び出しは検出できない。`module-graph`スキルが実行済みで `memory.json` に `http_calls_detected` リレーションがあれば、変更対象を外部から呼んでいるサブプロジェクトをレビュアーへの参考情報として渡す（自動検出のため最新でない可能性がある旨を明記する）。無くても cgd の実行は妨げない
 - **再レビュー（Step C）は Codex 単独**: トークン節約のため DS/Qwen/Gemini は呼ばない（Lv4-7 共通、Gemini を初回オプトインしていても Step C では呼ばない。Lv1-3 は実装フェーズがないため Step C 自体に到達しない）
 - **差分のみ**: Step C は `git diff` を渡し、全ファイルは渡さない（時間とコスト圧縮）
 - **スキル連鎖禁止**: 本スキル内から `/codex` や別スキルを Skill ツール経由で自動呼び出ししない
