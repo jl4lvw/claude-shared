@@ -144,7 +144,25 @@ def _gate_disabled_by_env() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-def _arm_wf_gate(level: int, session: str | None = None) -> None:
+# セッション解決は cgd 全体で 1 本に揃える(2026-08-28)。
+# 取り込めない場合も record 自体は動かす(明示指定だけが効く形へ縮退)
+try:
+    from cgd_session import resolve_session
+except ImportError:  # pragma: no cover
+    def resolve_session(explicit=None):  # type: ignore[misc]
+        return explicit
+
+
+class GateSetupError(RuntimeError):
+    """ゲートを張れなかった。**記録だけ進めて成功扱いにしない**ため。
+
+    2026-08-27 Lv8 で codex_high が「ゲート設定失敗後も DB 記録へ進み、
+    『記録あり・ゲートなし』が成功扱いになる」と指摘した。
+    """
+
+
+def _arm_wf_gate(level: int, session: str | None = None,
+                 allow_global: bool = False) -> None:
     """Lv6/Lv7/Lv8 のとき inline codex 遮断ゲートを張る。
 
     失敗しても本流(cgd の実行)は止めないが、**黙って素通りさせない**。
@@ -161,12 +179,25 @@ def _arm_wf_gate(level: int, session: str | None = None) -> None:
         print(f"[cgd usage] CGD_NO_WF_GATE により Lv{level} のゲートは張りません",
               file=sys.stderr)
         return
+    # **明示が無ければ環境変数から取る**(2026-08-28)。
+    # これが無いと、下の fail closed により手順どおりの
+    # `record --level 8` が常に落ちる
+    session = resolve_session(session)
+    if not session and not allow_global:
+        # **張らずに止める**(2026-08-28・Lv8 で4者一致)。
+        # 旧実装はここで警告だけ出して**全体ゲート**を張っていたが、
+        # 手順書が「record の出力は無視してよい」と書いているため
+        # その警告は誰にも読まれず、手順どおりに使うと必ず全体ゲートに
+        # なっていた。2026-08-27 にこれで別セッションの WF を止めている。
+        # 「所有者不明のときこそ強い副作用を起こしてはいけない」
+        print("[cgd usage] ❌ セッションを特定できないため、Lv{} のゲートを"
+              "張りませんでした。".format(level)
+              + "全セッションを止めてよいなら --global、"
+              + "自セッションだけなら --session <SID> を付けてください。",
+              file=sys.stderr)
+        raise GateSetupError("セッションを特定できません")
     if not session:
-        # セッション指定なしは**全セッション**を止める。他の作業を巻き込むので、
-        # 黙って張らずに必ず気づける形で出す。
-        print("[cgd usage] ⚠️ セッション指定なしでゲートを張ります"
-              "（**全セッションの codex が遮断されます**）。"
-              "自セッションだけに限定するには --session <SID> を付けてください。",
+        print("[cgd usage] ⚠️ --global 指定のため**全セッションの codex を遮断**します",
               file=sys.stderr)
 
     def _fail(msg: str) -> None:
@@ -228,6 +259,7 @@ def record_usage(
     db_path: Path = DB_PATH,
     session: str | None = None,
     arm_gate: bool = True,
+    allow_global: bool = False,
 ) -> bool:
     """利用ログを1件記録する。成功したら True、失敗しても例外は投げず False を返す。
 
@@ -241,7 +273,15 @@ def record_usage(
     # ゲートは DB 書込より先に張る（DB が落ちていても強制は効かせる）
     skipped = level in WF_REQUIRED_LEVELS and (not arm_gate or _gate_disabled_by_env())
     if arm_gate:
-        _arm_wf_gate(level, session=session)
+        try:
+            _arm_wf_gate(level, session=session, allow_global=allow_global)
+        except GateSetupError as exc:
+            # **記録だけ進めない**(2026-08-27 Lv8 codex_high)。
+            # 「記録あり・ゲートなし」を成功として返すと、
+            # 呼び出し側は張れたつもりで WF を回す
+            print(f"[cgd usage] ❌ ゲートを張れなかったため記録しません: {exc}",
+                  file=sys.stderr)
+            return False
     if skipped:
         # 「Lv6/7/8 の記録があるならゲートも張られたはず」と後から誤読されると
         # 契約不一致になるので、**張らなかった事実を DB にも残す**
@@ -362,7 +402,7 @@ def build_report(since: str | None = None, db_path: Path | None = None) -> str:
     return "\n".join(lines)
 
 
-def main() -> None:
+def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
@@ -374,6 +414,10 @@ def main() -> None:
     p_record.add_argument("--gemini", action="store_true", help="Gemini をオプトイン参加させた場合")
     p_record.add_argument("--critic", action="store_true", help="critic 観点を併用した場合")
     p_record.add_argument("--note", default=None, help="任意メモ（起動キーワード等）")
+    p_record.add_argument("--global", dest="global_gate", action="store_true",
+                          help="**全セッションの codex を遮断する**全体ゲートを張る"
+                               "(既定はセッション単位。所有者不明のまま全体を"
+                               "止めないための明示指定)")
     p_record.add_argument("--session", default=None,
                           help="セッションID（scratchpad ディレクトリ名）。Lv6/7/8 のゲートを"
                                "自セッション限定にする。省略すると最初に codex を叩いたセッションが所有者になる")
@@ -384,14 +428,22 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "record":
-        record_usage(args.level, gemini_opted_in=args.gemini, critic_used=args.critic,
-                     note=args.note, session=args.session)
-        return
+        ok = record_usage(args.level, gemini_opted_in=args.gemini,
+                          critic_used=args.critic, note=args.note,
+                          session=args.session, allow_global=args.global_gate)
+        # **非0で返す**。ゲートを張れていないのに 0 を返すと、
+        # 呼び出し側は張れたつもりで先へ進む(2026-08-28)
+        if not ok:
+            return 1
+        return 0
 
     if args.command == "report":
         print(build_report(since=args.since))
-        return
+        return 0
 
 
 if __name__ == "__main__":
-    main()
+    # **終了コードを伝える**(2026-08-28)。
+    # main() の戻り値を捨てていたため、ゲートを張れなくても exit 0 になり
+    # 呼び出し側は張れたつもりで先へ進んでいた
+    raise SystemExit(main())

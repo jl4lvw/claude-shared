@@ -71,6 +71,21 @@ except Exception as _exc:  # pragma: no cover
 GATE_DIR: Path = Path(os.environ.get("CGD_WF_GATE_DIR", r"C:/tmp-ai/.cgd_wf_gates"))
 GLOBAL_KEY = "_unclaimed"
 
+# セッション解決は cgd 全体で 1 本に揃える(2026-08-28)。
+# ゲート・run 登録・通知・collect が別々に判定していると
+# 「通知には出るのに collect は拒む」の食い違いが起きる(Lv8 で4者一致)。
+# **取り込めなくてもフックは動かす** — ここで落ちると codex が
+# 一切叩けなくなる方が害が大きい
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    from cgd_session import ownership, resolve_session
+except Exception:  # noqa: BLE001 セッション解決が無くても遮断機能は保つ
+    def resolve_session(explicit=None):  # type: ignore[misc]
+        return explicit
+
+    def ownership(owner, me):  # type: ignore[misc]
+        return "unknown"
+
 BYPASS_PREFIX = "CGD_WF_RUN="
 
 WF_REQUIRED_LEVELS = (6, 7, 8)
@@ -585,23 +600,29 @@ def main() -> int:
         return 0
 
     if args.command == "disarm":
-        removed = disarm(args.session, all_sessions=args.all)
+        # **自分のものと所有者不明だけを消す**(2026-08-28)。
+        # 旧実装は「残りが1件なら所有者を見ずに消す」救済を持っており、
+        # 2026-08-27 に別セッションの Lv8 ゲートを実際に破壊した。
+        # `--session` の明示があればそれを優先する
+        me = resolve_session(args.session)
+        removed = disarm(args.session or me, all_sessions=args.all)
         # 解除後に残っているゲートを必ず報告する。
         # 「ゲートは張られていません」と言って終わると、セッション単位で
         # 張られたゲートが残ったまま解除できたと誤認する (INC-20260811-1440406a0dfc)。
         remaining = list_all_gates()
-        # 残りが 1 件だけなら、それを解除して終える。
-        # 「--session を付けないと解除されない」仕様は事故を生んだだけで
-        # (INC-20260811-1440406a0dfc)、単一利用者の端末では守るものが無い。
-        # 複数残っている場合だけ、取り違え防止のため明示指定を求める。
-        if len(remaining) == 1 and not args.session and not args.all:
-            _key, gate, _corrupt = remaining[0]
-            owner = (gate or {}).get("session")
-            if owner:
-                # 誰のゲートを消したのか必ず言う。黙って他セッションの
-                # WF 強制を無効化すると、向こうは理由も分からず素通りになる。
-                print(f"[cgd wf-gate] ⚠️ セッション {owner} が張ったゲートを解除します")
-            removed += disarm(owner, all_sessions=(owner is None))
+        # **所有者で分岐する**(2026-08-28・Lv8 で4者一致)。
+        #   自分のもの        → 解除(上の disarm で済んでいる)
+        #   所有者不明(_unclaimed) → 解除する。全員を止めるゲートなので、
+        #     止められている側が消せないと INC-20260811-1440406a0dfc の
+        #     デッドロックが再発する
+        #   他セッション所有  → **消さない**。誰の持ち物かと解除方法を出す
+        if remaining and not args.all:
+            for key, gate, _corrupt in list(remaining):
+                if key != GLOBAL_KEY:
+                    continue
+                print("[cgd wf-gate] ⚠️ 所有者不明の全体ゲートを解除します"
+                      "(全セッションを止めるものなので誰でも解除できる仕様)")
+                removed += disarm(None)
             remaining = list_all_gates()
 
         # 解除したものは**全部**挙げる。1 件だけ報告して他を黙って消すと、
@@ -612,11 +633,15 @@ def main() -> int:
             print("[cgd wf-gate] ゲートは張られていません")
 
         if remaining:
-            print(f"[cgd wf-gate] ⚠️ 解除されていないゲートが {len(remaining)} 件残っています:")
+            # **他セッションのものを黙って消さない。** 誰の持ち物かを出して、
+            # 消すなら明示させる(2026-08-28)
+            print(f"[cgd wf-gate] ⚠️ 他セッションのゲートが {len(remaining)} 件残っています"
+                  "(巻き込み防止のため解除していません):")
             for key, gate, corrupt in remaining:
                 label = "⚠️ 破損" if corrupt else f"Lv{gate['level']} / 失効 {gate['expires_at']}"
                 print(f"    {key}  {label}")
-            print("[cgd wf-gate] 個別に解除: ... disarm --session <SID>   / 全部消す: ... disarm --all")
+            print("[cgd wf-gate] そのセッションが終わるのを待つか、"
+                  "本当に必要なら: ... disarm --session <SID>  /  ... disarm --all")
             return 1
         return 0
 

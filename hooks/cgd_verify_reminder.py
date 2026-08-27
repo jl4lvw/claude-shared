@@ -30,6 +30,27 @@ ROOT = Path("C:/tmp-ai/cgd")
 PENDING_NAME = ".pending_verify"
 MAX_SHOW = 3
 
+# 所有者の判定は cgd 全体で 1 本に揃える(2026-08-28・Lv8 で4者一致)。
+# **取り込めなくてもフックは動かす**(通知が出ないだけの縮退にする)
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    from cgd_session import ownership, resolve_session
+except Exception:  # noqa: BLE001
+    def resolve_session(explicit=None):  # type: ignore[misc]
+        return explicit
+
+    def ownership(owner, me):  # type: ignore[misc]
+        return "unknown"
+
+
+def _owner_of(pend: Path) -> object:
+    """その run の owner。読めなければ None(=所有者不明)。"""
+    plan = pend.parent / "plan.json"
+    try:
+        return json.loads(plan.read_text(encoding="utf-8")).get("owner")
+    except (OSError, ValueError):
+        return None
+
 
 def main() -> int:
     try:
@@ -40,6 +61,21 @@ def main() -> int:
         return 0
     if not pendings:
         return 0
+
+    # **自分の run だけ挙げる**(2026-08-28)。他セッションの run を
+    # 並べると、言われるまま collect して相手の印を消してしまう。
+    # 所有者不明(古い run)も自分のものとは断定できないので件数だけにする
+    me = resolve_session()
+    mine, others = [], []
+    for pend in pendings:
+        (mine if ownership(_owner_of(pend), me) == "mine" else others).append(pend)
+    if not mine:
+        if others:
+            print(f"[cgd] 未検証の run が {len(others)} 件ありますが、"
+                  "いずれも自セッションのものではないため一覧しません"
+                  "(必要なら python .claude/tools/cgd_plan.py list)。")
+        return 0
+    pendings = mine
 
     lines = [
         f"[cgd] Step 検証が済んでいない run が {len(pendings)} 件あります。",

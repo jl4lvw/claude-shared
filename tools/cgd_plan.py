@@ -84,6 +84,11 @@ REVIEWERS: dict[int, list[str]] = {
 GEMINI_AFTER = {6: 1, 7: 2, 8: 2}    # include_gemini 時に gemini を挿す位置
 
 
+# 所有者の判定は cgd 全体で 1 本に揃える(2026-08-28・Lv8 で4者一致)。
+# ここが通知側とずれると「通知には出るのに collect は拒む」が起きる
+from cgd_session import ownership, owner_stamp, resolve_session
+
+
 def sanitize_label(raw: str) -> str:
     """WF 側 (cgd_lv*_review.js) と **同じ規則** で label を正規化する。
 
@@ -188,6 +193,9 @@ def cmd_build(args: argparse.Namespace) -> int:
         "include_gemini": bool(args.include_gemini),
         "expected_raw": expected,
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        # **誰の run か**を残す(2026-08-28)。これが無いと通知が全 run を
+        # 出すしかなく、他セッションの run を collect してしまう
+        "owner": owner_stamp(resolve_session()),
     }
     (d / "plan.json").write_text(json.dumps(plan, ensure_ascii=False, indent=1),
                                  encoding="utf-8", newline="")
@@ -332,6 +340,21 @@ def cmd_collect(args: argparse.Namespace) -> int:
         print(f"[cgd plan] plan.json がありません: {plan_file}", file=sys.stderr)
         return EXIT_NG
     plan = json.loads(plan_file.read_text(encoding="utf-8"))
+
+    # **他人の run を検証済みにしない**(2026-08-28・Lv8 で4者一致)。
+    # 通知には他セッションの run も出うるので、言われるまま collect すると
+    # 相手の成果物の印を消してしまう。owner が無い古い run は unknown。
+    own = ownership(plan.get("owner"), resolve_session())
+    if own != "mine" and not getattr(args, "force", False):
+        who = (plan.get("owner") or {}).get("session") or "不明"
+        print(
+            f"[cgd plan] この run の所有者は自セッションではありません"
+            f"(owner={who})。他セッションの成果物を検証済みに"
+            f"しないため中断しました。自分のものだと分かっているなら"
+            f" --force を付けてください。",
+            file=sys.stderr,
+        )
+        return EXIT_NG
 
     # WF 内蔵のレビュアー定義で走った場合（args に reviewers を渡さない起動）は、
     # 生ログが**旧形式のパス**に出る。expected_raw_paths_v2 の docstring が
@@ -845,6 +868,10 @@ def main() -> int:
                            ("doctor", "run の状態を表示する")):
         p = sub.add_parser(name, help=helptext)
         p.add_argument("--run", required=True)
+        # 他セッション所有・所有者不明の run を検証済みにする逃げ道。
+        # **既定では拒む**(2026-08-28・Lv8 で4者一致)
+        p.add_argument("--force", action="store_true",
+                       help="所有者が自セッションでない run も検証する")
 
     sub.add_parser("list", help="未検証の run を一覧する")
 
