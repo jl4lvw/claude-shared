@@ -1,3 +1,6 @@
 # AI usage session files (端末ごとのトークン使用量記録・共有しない)
 tools/.deepseek_usage_session.json
 tools/.qwen_usage_session.json
+
+# 実行時ログ(端末ローカル・共有しない)
+tools/logs/

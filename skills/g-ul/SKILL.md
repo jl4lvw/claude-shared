@@ -98,7 +98,7 @@ for t in $TARGETS; do
     # 旧DBが無い端末が履歴を受け取れなくなる）。旧DBは移行時に `.migrated` へ改名され、
     # そちらは除外対象なので、一度同期されたあとは自動的にミラーから外れる。
     robocopy "$SRC_W" "$DST_W" //MIR //NFL //NDL //NP //R:2 //W:1 \
-        //XD __pycache__ ".bootstrap-bak-*" ".migrate-pending-*" \
+        //XD __pycache__ "logs" ".bootstrap-bak-*" ".migrate-pending-*" \
         //XF "*.bak_*" "*.pyc" "*.migrated" "*.migrating.*" \
              ".deepseek_usage_session.json" ".qwen_usage_session.json" ".gemini_usage_session.json" \
              "telemetry.jsonl" "pv_usage_*.sqlite3" "cgd_usage_*.sqlite3" > /dev/null 2>&1
