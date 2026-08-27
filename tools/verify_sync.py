@@ -45,7 +45,9 @@ TARGETS: tuple[str, ...] = ("skills", "commands", "tools", "rules", "memory", "h
 
 # robocopy の除外指定と同じもの。合わせないと「毎回不一致」になって
 # 警告が形骸化する(狼少年になった検証は無いのと同じ)
-EXCLUDE_DIRS: tuple[str, ...] = ("__pycache__", ".bootstrap-bak-*", ".migrate-pending-*")
+# "logs" は端末ローカルの実行時ログ置き場(2026-08-28)。共有しても他端末では意味がなく、
+# 追跡すると verify_sync が恒常的に赤くなって形骸化する
+EXCLUDE_DIRS: tuple[str, ...] = ("__pycache__", "logs", ".bootstrap-bak-*", ".migrate-pending-*")
 EXCLUDE_FILES: tuple[str, ...] = (
     "*.bak_*",
     "*.pyc",
