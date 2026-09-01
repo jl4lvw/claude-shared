@@ -90,9 +90,33 @@ python "C:/ClaudeCode/.claude/skills/remote-control/scripts/remote_control_clien
 
 **返ってきた`status`で分岐する(必須)**:
 - `active` → 通常の新規フロー(手順2へ)。この`active`は「新規作成」と「前タスクが`close`済みで、このroomで新しいセッションが作られた」の両方を含む
-- `waiting_reply` → 前回の質問に対する回答待ちの状態から復帰したことを意味する。**新規指示探索(手順2〜6)は行わず、直ちに手順7(待機ループ)の先頭を実行する**(=まず`heartbeat`+`messages --after-id <waiting_since_message_id>`を確認する。復帰直後に回答や新しい指示が届いている可能性があるため、確認を省略しない)
+- `waiting_reply` → 前回の質問に対する回答待ちの状態から復帰したことを意味する。**新規指示探索(手順2〜6)は行わず、直ちに手順7(待機ループ)の先頭を実行する**(=まず`heartbeat`+`messages --after-id <waiting_since_message_id>`を確認する。復帰直後に回答や新しい指示が届いている可能性があるため、確認を省略しない)。
+  **ただし`ARGUMENTS`に`--auto-resume`が付いている場合はこの限りではない。** 下記「`--auto-resume`(死活監視からの自動再開・無人実行専用)」を参照し、そちらの手順に従う
 
 (`done`/`expired`は`session-start`が対象を探すのが`active`/`waiting_reply`のセッションのみのため、通常はここに現れない。現れた場合は新規セッションが作られている)
+
+#### `--auto-resume`(死活監視からの自動再開・無人実行専用・2026-09-01)
+
+`041.Claude間連携API/scripts/lineworks_session_watchdog.py`が「待受ループが停止している」と
+検出し、kill-switch(既定OFF)が有効な場合にのみ、`claude -p "/remote-control <room_id> <room_type> --auto-resume" --permission-mode dontAsk`のようにヘッドレスで自動起動される。
+**この起動には対話できる人がその場にいない。** 通常フローは「未登録送信者はAskUserQuestionで
+確認する」という安全弁(手順3)に支えられているが、無人時はこの確認が機能しない。そのため
+`--auto-resume`では**新規指示を一切実行しない**、次の専用フローに限定する:
+
+1. `session-start`の結果が`waiting_reply`であることを前提とする(kill-switchはこの状態の
+   セッションにしか発火しないため)。`active`で復帰した場合は異常系(想定外のタイミング)
+   なので、状況をnotifyし、手順2以降には進まずそのままセッションをcloseして終了する
+2. 新規メッセージ探索(手順2〜6)・`heartbeat`+`messages`確認(手順7)は**行わない**
+3. 直ちに次を通知する:
+   ```bash
+   python remote_control_client.py notify <session_id> <lease_token> "待受ループが一時停止していたため自動的に再開しました。中断していたご依頼は改めてお送りください。"
+   ```
+4. 続けて`close`(status=`done`)してプロセスを終了する。中断していた作業の続行は行わない
+   (無人時に未知の指示を実行しない、という安全側の設計判断)。作業の続行が必要な場合は、
+   運用者が通知を見てから改めて指示を送り直す
+
+`--auto-resume`はkill-switch経由の自動起動専用であり、人間が`/loop /remote-control`で
+明示的に起動する通常運用では**絶対に指定しない**。
 
 **新規セッションなら「待受を開始しました」を必ず通知する(必須・省略禁止)。**
 `created_at == updated_at`(=今まさに新規作成された。他プロセスからの引き継ぎではない)であれば、

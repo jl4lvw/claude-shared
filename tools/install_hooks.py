@@ -112,6 +112,28 @@ _HOOKS: tuple[tuple[str, str | None, str, int, str], ...] = (
         15,
         "Claudeが.pyファイルを編集した直後にruff checkを自動実行し指摘を報告(自動修正なし)",
     ),
+    (
+        "Stop",
+        None,
+        ".claude/hooks/session_watchdog_hook.py",
+        5,
+        "セッション死活監視(Track1)。.claude/relay_local/session_watchdog.local.json "
+        "でこのPCをopt-inするまでは即exit 0(無害)。opt-in手順はhook本体のdocstring参照",
+    ),
+    (
+        "SessionStart",
+        None,
+        ".claude/hooks/session_watchdog_hook.py",
+        5,
+        "セッション死活監視(Track1)。Stopと同じ役割、opt-inまでは無害",
+    ),
+    (
+        "SessionEnd",
+        None,
+        ".claude/hooks/session_watchdog_hook.py",
+        5,
+        "セッション死活監視(Track1)。Stopと同じ役割、opt-inまでは無害",
+    ),
 )
 
 

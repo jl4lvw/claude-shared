@@ -77,6 +77,19 @@ cp "C:/Users/user/どこでもキャビネット/SEIFUKU_FUJI/<日付>/<ファ�
   - **既知の罠2**: 「◯月◯日以降」の絞り込みをUTC基準の日付境界で行うと、JSTでは対象日付の
     メールを取りこぼす（2026-08-04 11:45 JST着信のメールがUTC基準では08-04早朝でカットオフの
     外に出ていた）。**日付の絞り込みは必ずJSTへ変換してから比較する**
+- **メールボックスを直接パースするチャネル（ZenPlus・シフトプラス等）は`tools/channel_baseline.py`の
+  基準日ガードを必ず組み込む**（2026-08-25追加・必須）。理由: `furusato_shiftplus.py`を日付指定
+  なしで実行し、2年分のメール履歴から21件の注文JSONを誤って一括生成する事故が実際に発生した
+  （ZenPlusでも同種の事故が起きかけた）。`orders/+sent/+external_done/`の存在チェックだけでは、
+  「チャネル導入前から溜まっている過去メール」を新着と誤認するのを防げない。
+  - 新チャネル導入時、無引数の一括チェックは**基準日が未設定だと`BaselineNotSet`で拒否**される
+    （`channel_baseline.require_baseline(channel)`）
+  - 導入時に「過去メールのどこまでが既に対応済みか」をユーザーに確認し、
+    `channel_baseline.set_baseline(channel, 'YYYY-MM-DD', note, set_at)` で一度だけ設定する
+  - `--date`/`--order-id`など**特定の対象を明示指定**したときは基準日を経由しない
+    （ユーザーが個別に指名した対象は「一括チェックで誤検出」ではないため）
+  - 産経（CSVをdococabフォルダから拾う方式）は元々retention窓が短く同種のリスクが低いが、
+    将来同じ手口のチャネルを追加するなら同様のガードを検討する
 - 新チャネルを追加するとき: `parsers/<チャネル名>.py` を新設し、**`tools/order_model.py` の
   正規化スキーマ**（`ship_to` 9項目・`items[].code/name/qty/wholesale_unit_price`・
   `carrier`・`shipping_kind`・`order_no_token`・`memo`）に合わせて `orders/*.json` を吐けば、
