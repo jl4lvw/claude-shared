@@ -175,7 +175,7 @@ git log -1 --format='%h %ad %s' --date=short HEAD
 push しただけでは終わらない。**結果がそうなっているか**を必ず確かめる。
 
 ```bash
-python "C:/ClaudeCode/.claude/tools/verify_sync.py"
+python "C:/ClaudeCode/900.ClaudeCode/.claude/tools/verify_sync.py"
 ```
 
 - `exit 0` → `.claude` == `claude-shared` == `origin` が揃っている。Step 4 へ

@@ -1,0 +1,270 @@
+<title>cgd レベル早見表</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+  :root {
+    --canvas: #eaecf1;
+    --canvas-ink: #1a1f26;
+    --canvas-muted: #666f7d;
+    --canvas-line: #d3d7e0;
+    --accent: #3454d1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --canvas: #14161c;
+      --canvas-ink: #eef0f3;
+      --canvas-muted: #9aa1ad;
+      --canvas-line: #2a2e38;
+      --accent: #8ca0ff;
+    }
+  }
+  :root[data-theme="dark"] {
+    --canvas: #14161c;
+    --canvas-ink: #eef0f3;
+    --canvas-muted: #9aa1ad;
+    --canvas-line: #2a2e38;
+    --accent: #8ca0ff;
+  }
+
+  /* fixed "paper" tokens — the sheet simulates physical A4 print stock and
+     stays light regardless of viewer theme, like a print-preview pane */
+  :root {
+    --paper: #fbfbf9;
+    --ink: #1c2027;
+    --muted: #666c7c;
+    --line: #d9dce2;
+    --line-strong: #1c2027;
+    --lv0: #6d4aae;
+    --heavy: #ad2c22;
+    --heavy-bg: #fbeae8;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--canvas);
+    color: var(--canvas-ink);
+    font-family: "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", sans-serif;
+  }
+  body { padding: 40px 16px 80px; }
+
+  .toolbar {
+    max-width: 900px;
+    margin: 0 auto 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .toolbar .eyebrow {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 700;
+  }
+  .toolbar p {
+    color: var(--canvas-muted);
+    font-size: 13px;
+    margin: 4px 0 0;
+  }
+  .print-btn {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--canvas);
+    background: var(--accent);
+    border: none;
+    padding: 9px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .print-btn:hover { opacity: .9; }
+
+  .page {
+    width: 210mm;
+    min-height: 297mm;
+    max-width: 100%;
+    margin: 0 auto;
+    background: var(--paper);
+    color: var(--ink);
+    box-shadow: 0 1px 3px rgba(0,0,0,.08), 0 18px 40px -18px rgba(0,0,0,.35);
+    padding: 14mm 15mm;
+    position: relative;
+  }
+
+  .doc-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 2.5px solid var(--line-strong);
+    padding-bottom: 9px;
+    margin-bottom: 5mm;
+  }
+  .doc-head h1 { font-size: 21px; margin: 0 0 4px; font-weight: 900; letter-spacing: .01em; }
+  .doc-head .sub { font-size: 11px; color: var(--muted); }
+  .doc-head .meta {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10px;
+    color: var(--muted);
+    text-align: right;
+    line-height: 1.65;
+  }
+
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 10.3px; }
+  th, td {
+    border: 1px solid var(--line);
+    padding: 4.5px 6px;
+    vertical-align: top;
+    text-align: left;
+    line-height: 1.5;
+  }
+  thead th {
+    background: var(--ink);
+    color: var(--paper);
+    font-size: 9.2px;
+    font-weight: 700;
+    letter-spacing: .03em;
+  }
+  tbody tr:nth-child(even) { background: #f2f2ef; }
+  td.lv { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 13px; white-space: nowrap; }
+  .note { color: var(--muted); font-size: 9.4px; }
+  .tag {
+    display: inline-block;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 8.8px;
+    font-weight: 700;
+    padding: 1.5px 5px;
+    border-radius: 2px;
+    letter-spacing: .03em;
+    background: var(--heavy-bg);
+    color: var(--heavy);
+  }
+  .col-lv{width:6.5%} .col-name{width:13%} .col-part{width:24%}
+  .col-impl{width:17%} .col-scene{width:39.5%}
+
+  .foot-legend {
+    margin-top: 6mm;
+    padding-top: 3.5mm;
+    border-top: 1px solid var(--line);
+    font-size: 9.6px;
+    color: var(--muted);
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .foot-legend b { color: var(--ink); }
+
+  @media print {
+    @page { size: A4; margin: 0; }
+    html, body { background: #fff; padding: 0; }
+    .toolbar { display: none; }
+    .page { box-shadow: none; width: auto; min-height: auto; margin: 0; }
+  }
+
+  @media (max-width: 860px) {
+    .page { padding: 6mm 5mm; }
+  }
+</style>
+
+<div class="toolbar">
+  <div>
+    <div class="eyebrow">Print Reference — A4 / 1 Page</div>
+    <p>ブラウザの印刷（Ctrl+P / ⌘P）で用紙サイズ「A4」を選んでください。1ページに収まるよう調整済みです。</p>
+  </div>
+  <button class="print-btn" onclick="window.print()">この表を印刷</button>
+</div>
+
+<div class="page">
+  <div class="doc-head">
+    <div>
+      <h1>cgd / codex スキル — レベル対応表</h1>
+      <div class="sub">Codex + DeepSeek + Qwen 統合レビュー・実装スキル（Gemini はオプトイン参加）</div>
+    </div>
+    <div class="meta">DOC: CGD-LV-CHART&nbsp;/&nbsp;REV. 2026-08-26<br>SKILL_VERSION 2026-08-26_224214</div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th class="col-lv">Lv</th>
+        <th class="col-name">名称</th>
+        <th class="col-part">構成（参加者）</th>
+        <th class="col-impl">実装 / 自動修正</th>
+        <th class="col-scene">想定シーン・備考</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="lv">Lv0</td>
+        <td>委譲レーン</td>
+        <td>Claude(分解・検証) + DeepSeek/Qwen(実装)</td>
+        <td>実装のみ／1周(Claude書き直し)</td>
+        <td>scaffold・量産・テスト量産・docstring一括生成<br><span class="note">コストレーン(品質レーンと直交)。&lt;100行&amp;&lt;2ファイルの小修正には不向き</span></td>
+      </tr>
+      <tr>
+        <td class="lv">Lv1</td>
+        <td>Codex のみ</td>
+        <td>Codex ×1</td>
+        <td>レビューのみ／なし</td>
+        <td>軽い差分チェック・小修正<br><span class="note">明示指定時のみ選択（自動選択の対象外）</span></td>
+      </tr>
+      <tr>
+        <td class="lv">Lv2</td>
+        <td>Codex + DeepSeek</td>
+        <td>Codex + DeepSeek（既定） / Gemini は任意</td>
+        <td>レビューのみ／なし</td>
+        <td><b>通常開発 — 迷ったらこれ（既定レベル）</b><br><span class="note">「Geminiも」指示で3者に拡張可</span></td>
+      </tr>
+      <tr>
+        <td class="lv">Lv3</td>
+        <td>2社×2視点 4レビュー</td>
+        <td>Codex + DeepSeek（各：技術＋批評）</td>
+        <td>レビューのみ／なし</td>
+        <td>実装するか未定。技術面と使い勝手を先に見ておきたい<br><span class="note">review専用。実装フェーズなし</span></td>
+      </tr>
+      <tr>
+        <td class="lv">Lv4</td>
+        <td>フル相談</td>
+        <td>Claude初期案 → DeepSeek+Qwen(advisor) → Codex</td>
+        <td>実装＋検証＋Codex再レビュー／なし(報告のみ)</td>
+        <td>高リスク変更・設計判断・本番影響大<br><span class="note">Gemini併用時は先頭にGemini案出しが追加</span></td>
+      </tr>
+      <tr>
+        <td class="lv">Lv5</td>
+        <td>フル相談＋自動修正</td>
+        <td>Lv4 と同構成</td>
+        <td>実装＋検証＋Codex再レビュー／1周</td>
+        <td>リリース直前・障害再発防止<br><span class="note">明示指定時のみ（Lv6〜8が上位互換のため自動選択対象外）</span></td>
+      </tr>
+      <tr>
+        <td class="lv">Lv6</td>
+        <td>3者並列レビュー</td>
+        <td>Codex + DeepSeek + Qwen（全員 reviewer）</td>
+        <td>実装＋検証＋Codex再レビュー／1周</td>
+        <td>複眼レビューで盲点を潰したい（広範囲の変更）<br><span class="tag">WORKFLOW必須</span> <span class="note">Gemini併用で4者に拡張</span></td>
+      </tr>
+      <tr>
+        <td class="lv">Lv7</td>
+        <td>Codex集中（多重）</td>
+        <td>Codex×2(medium+high) + DeepSeek + Qwen</td>
+        <td>実装＋検証＋Codex再レビュー／1周(再レビューはmedium単独)</td>
+        <td>関数間整合性・状態管理・大規模モジュールのクロスリファレンス<br><span class="tag">WORKFLOW必須</span> <span class="note">Gemini併用で5者に拡張</span></td>
+      </tr>
+      <tr>
+        <td class="lv">Lv8</td>
+        <td>技術＋批評 最深掘り</td>
+        <td>Lv7構成 + Codex(high)/DeepSeekに批評視点追加（6者）</td>
+        <td>実装＋検証＋Codex再レビュー／1周(技術表の🔴のみ対象)</td>
+        <td>技術の最深掘りと使い勝手の批評を同時にやりたい<br><span class="tag">WORKFLOW必須</span>・最重量級 <span class="note">Gemini併用で7者に拡張</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="foot-legend">
+    <div><b>選択方針：</b>レベル・Codex reasoning・Gemini/critic観点はすべて Claude が自動選択し宣言する（迷えば Lv2）。Lv1 / Lv5 / Lv6 は明示指定時のみ選ばれる（自動選択の対象外）。</div>
+    <div><b>直交軸：</b>Lv0＝実装主体の切替（コストレーン） ／ Lv1〜8＝レビュー強度の選択（品質レーン）</div>
+  </div>
+</div>

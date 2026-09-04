@@ -211,9 +211,14 @@ def check_git(shared: Path) -> list[str]:
 
 
 def main() -> int:
+    # 既定値はこのスクリプト自身の場所(.claude/tools/)から逆算する。
+    # 過去にプロジェクトルートを絶対パスでハードコードしていたところ、
+    # OneDrive フォルダから C:\ClaudeCode\900.ClaudeCode へ移行した際に
+    # 追随できず、検証が常に exit 1 になる事故があった(2026-08-27)。
+    default_claude_dir = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(description="claude-shared への反映を事後検証する")
     parser.add_argument(
-        "--claude-dir", default=r"C:\ClaudeCode\.claude", help=".claude のパス"
+        "--claude-dir", default=str(default_claude_dir), help=".claude のパス"
     )
     parser.add_argument("--shared", default=None, help="claude-shared のパス")
     parser.add_argument("--quiet", action="store_true", help="一致時は何も出さない")

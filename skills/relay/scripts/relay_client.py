@@ -503,7 +503,7 @@ def _handoff_messages(no: int, act_as=None) -> object:
         print(f"    ⚠ 本文を取得できませんでした({type(exc).__name__}: {exc})")
         return None
     if isinstance(got, ApiConflict):
-        print(f"    ⚠ 本文を取得できませんでした(HTTP {got.status})")
+        print(f"    ⚠ 本文を取得できませんでした(HTTP {got.code})")
         print(f"    サーバーが古い可能性があります。着手して読む: "
               f"relay_client.py handoff takeover {no}")
         return None

@@ -216,5 +216,5 @@ python "C:/ClaudeCode/.claude/tools/install_hooks.py"
 `/g-dl` の後も、取り込みが実際に効いたかは `verify_sync.py` で確認できる。
 
 ```
-python "C:/ClaudeCode/.claude/tools/verify_sync.py"
+python "C:/ClaudeCode/900.ClaudeCode/.claude/tools/verify_sync.py"
 ```

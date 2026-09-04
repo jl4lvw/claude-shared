@@ -232,5 +232,5 @@ fi
 `/g-ul` の Step 3 と同じツールを使う（不一致なら非0で落ちる）。
 
 ```
-python "C:/ClaudeCode/.claude/tools/verify_sync.py"
+python "C:/ClaudeCode/900.ClaudeCode/.claude/tools/verify_sync.py"
 ```
