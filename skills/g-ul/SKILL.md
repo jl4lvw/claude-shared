@@ -150,17 +150,38 @@ fi
 echo ""
 echo "=== commit ==="
 echo "message: $MSG"
-git commit -m "$MSG"
+if ! git commit -m "$MSG"; then
+    echo "commit に失敗しました。push していません。" >&2
+    exit 1
+fi
 
 UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)
 echo ""
 echo "=== push ==="
+# push の終了コードは**必ず見る**。見ずに "OK: pushed." を出していたため、
+# リモート先行で reject された push を成功と報告する事故が起きた
+# (2026-09-05。別PCの sync コミットがあり fast-forward できなかった)。
 if [ -z "$UPSTREAM" ]; then
     BRANCH=$(git branch --show-current)
     echo "upstream 未設定。--set-upstream で push ($BRANCH)"
     git push --set-upstream origin "$BRANCH"
+    PUSH_EXIT=$?
 else
     git push
+    PUSH_EXIT=$?
+fi
+
+if [ $PUSH_EXIT -ne 0 ]; then
+    echo ""
+    echo "push に失敗しました (exit=$PUSH_EXIT)。**push できていません**。" >&2
+    echo "リモートが先行している(rejected / fetch first)場合は、他PCが先に /g-ul した状態です。" >&2
+    echo "  1. git fetch origin" >&2
+    echo "  2. git log --oneline HEAD..origin/<branch>            # 相手の変更を見る" >&2
+    echo "  3. comm -12 <(git diff --name-only HEAD...origin/<branch> | sort) \\" >&2
+    echo "             <(git diff --name-only origin/<branch>...HEAD | sort)   # 衝突ファイル" >&2
+    echo "  4. 衝突が無ければ git pull --rebase origin <branch> して push し直す" >&2
+    echo "認証エラーの場合は git remote -v と資格情報を確認する。" >&2
+    exit 1
 fi
 
 echo ""
@@ -209,6 +230,9 @@ push の commit hash と short stat を 1〜2 行で報告。
 - `claude-shared not found` → 新PC は `git clone https://github.com/jl4lvw/claude-shared.git "$USERPROFILE/claude-shared"`
 - `Sanity check FAIL` → .claude/ が極端に少ない（OneDrive 同期途中の可能性）。少し待って再試行
 - `robocopy ERROR (exit>=8)` → ファイルロック / 権限。Claude Code を完全終了して再試行
+- `push に失敗しました (exit=...)` → **成功していない**。表示された手順に従う。
+  最頻は「リモート先行(rejected / fetch first)」で、他PCが先に `/g-ul` した状態。
+  衝突ファイルが無いことを確かめてから `git pull --rebase` して push し直す
 - `git push failed` → 認証エラー。`git remote -v` で確認
 
 ## 実装メモ
