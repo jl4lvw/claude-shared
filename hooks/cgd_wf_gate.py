@@ -87,6 +87,9 @@ except Exception:  # noqa: BLE001 セッション解決が無くても遮断機�
         return "unknown"
 
 BYPASS_PREFIX = "CGD_WF_RUN="
+# 案内メッセージで「そのまま打てるコマンド」を出すための自分のパス。
+# 固定パス直書きは移行後に存在しないファイルを案内していた (2026-09-06)。
+_SELF = Path(__file__).resolve().as_posix()
 
 WF_REQUIRED_LEVELS = (6, 7, 8)
 DEFAULT_TTL_MIN = 90
@@ -368,7 +371,7 @@ def _stale_nonce_note(presented: str, current: str) -> str:
         "再生するため、ゲートを張り直した後だと**前回の nonce** が差し込まれます。\n"
         "→ `resumeFromRunId` を外して**新規実行**してください。\n"
         "  (どうしても resume したい場合は args.wf_nonce に現在の値を明示する:\n"
-        '   python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" nonce)\n'
+        f'   python "{_SELF}" nonce)\n'
     )
 
 
@@ -395,7 +398,7 @@ def _deny_reason(gate: dict, presented_nonce: str | None = None) -> str:
             head
             + f"\n**Workflow は既に {used} に実行済みです。**レビュー段は終わっているので、\n"
             "次のコマンドでゲートを解除してから Step C の再レビューに進んでください:\n"
-            '  python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" disarm\n'
+            f'  python "{_SELF}" disarm\n'
         )
     return (
         head
@@ -404,7 +407,7 @@ def _deny_reason(gate: dict, presented_nonce: str | None = None) -> str:
         "  ※ wf_nonce は WF が自分で取得するので渡す必要はありません。\n"
         "\n手順は cgd/SKILL.md「Workflow 経由実行 (Lv6-WF / Lv7-WF / Lv8-WF)」節。\n"
         "Workflow 完了後は disarm を実行してください（自動解除はしません）:\n"
-        '  python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" disarm\n'
+        f'  python "{_SELF}" disarm\n'
         "\nWorkflow が使えない事情がある場合のみ、正しい nonce を付けて意図的に迂回できます。\n"
         "迂回した理由は必ずユーザーに伝えてください。"
     )
@@ -415,8 +418,8 @@ def _corrupt_reason() -> str:
         "[cgd wf-gate] ゲートファイルが壊れており、Lv6/7/8 の実行中かどうか判定できません。\n"
         "強制が形骸化しないよう安全側に倒して codex を遮断しました。\n"
         "状態を確認して解除してください:\n"
-        '  python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" status\n'
-        '  python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" disarm'
+        f'  python "{_SELF}" status\n'
+        f'  python "{_SELF}" disarm'
     )
 
 

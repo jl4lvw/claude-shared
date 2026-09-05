@@ -27,6 +27,8 @@ except Exception:  # pragma: no cover
     pass
 
 ROOT = Path("C:/tmp-ai/cgd")
+# 案内する collect コマンドは自分の隣の tools/ を指す (固定パス直書きは移行後に嘘になった)。
+_PLAN = (Path(__file__).resolve().parent.parent / "tools" / "cgd_plan.py").as_posix()
 PENDING_NAME = ".pending_verify"
 MAX_SHOW = 3
 
@@ -73,7 +75,7 @@ def main() -> int:
         if others:
             print(f"[cgd] 未検証の run が {len(others)} 件ありますが、"
                   "いずれも自セッションのものではないため一覧しません"
-                  "(必要なら python .claude/tools/cgd_plan.py list)。")
+                  f'(必要なら python "{_PLAN}" list)。')
         return 0
     pendings = mine
 
@@ -91,9 +93,9 @@ def main() -> int:
                 lv = json.loads(plan.read_text(encoding="utf-8")).get("level", "?")
             except (OSError, ValueError):
                 pass
-        lines.append(f'  Lv{lv}: python "C:/ClaudeCode/.claude/tools/cgd_plan.py" collect --run {run}')
+        lines.append(f'  Lv{lv}: python "{_PLAN}" collect --run {run}')
     if len(pendings) > MAX_SHOW:
-        lines.append(f"  … 他 {len(pendings) - MAX_SHOW} 件 (python .claude/tools/cgd_plan.py list)")
+        lines.append(f'  … 他 {len(pendings) - MAX_SHOW} 件 (python "{_PLAN}" list)')
     lines.append("exit 0 を確認すると印が消えてこの通知も止まります。"
                  "使わなくなった run はディレクトリごと消して構いません。")
 

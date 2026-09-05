@@ -984,6 +984,9 @@ def cmd_build(args: argparse.Namespace) -> int:
 
     # Workflow にそのまま渡す args。主 context はこの 1 行をコピーするだけでよい。
     wf_args = {
+        # .claude の場所を WF へ渡す (2026-09-06)。WF は __dirname もファイル読取も使えず、
+        # 固定パス直書きが移行後に Preflight を止めた。build が唯一の出所なのでここで解く。
+        "claude_dir": Path(__file__).resolve().parent.parent.as_posix(),
         "run": run,
         "tasks": [
             {"id": t["id"], "mode": t["mode"], "engine": t["engine"],

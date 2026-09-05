@@ -5,11 +5,11 @@ False (typo・IO 失敗) が捨てられ「保全したつもり」で圧縮を�
 本 CLI は結果を必ず表示し、失敗は exit 1 で返す。
 
 使い方 (SID = セッションID。scratchpad ディレクトリ名から取る):
-  python C:/ClaudeCode/.claude/hooks/ctx_cli.py add  <SID> LIMIT 本文...
-  python C:/ClaudeCode/.claude/hooks/ctx_cli.py drop <SID> STATE 本文...
-  python C:/ClaudeCode/.claude/hooks/ctx_cli.py show <SID>
-  python C:/ClaudeCode/.claude/hooks/ctx_cli.py doctor [<SID>]
-  python C:/ClaudeCode/.claude/hooks/ctx_cli.py selftest
+  python <project>/.claude/hooks/ctx_cli.py add  <SID> LIMIT 本文...
+  python <project>/.claude/hooks/ctx_cli.py drop <SID> STATE 本文...
+  python <project>/.claude/hooks/ctx_cli.py show <SID>
+  python <project>/.claude/hooks/ctx_cli.py doctor [<SID>]
+  python <project>/.claude/hooks/ctx_cli.py selftest
 
 - add は **実際に書かれた行** (正規化・伏字化後) を表示する。drop はこの
   表示行の本文でしか一致しないので、取り消すときはこの出力を使う。

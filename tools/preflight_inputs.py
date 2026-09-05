@@ -36,7 +36,7 @@
 終了コード: 常に 0（判定は呼び出し側が行う。ここで落とすと生 JSON が届かない）
 
 関連インシデント: INC-20260811-1143127833d4 ほか。
-    参照: python C:/ClaudeCode/.claude/tools/incident_log.py show <ID>
+    参照: python .claude/tools/incident_log.py show <ID>
 """
 
 from __future__ import annotations

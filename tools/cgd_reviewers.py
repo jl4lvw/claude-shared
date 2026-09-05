@@ -68,7 +68,10 @@ AUTH_GEMINI = "AuthenticationError / 401 / invalid api key / GEMINI_API_KEY が�
 #   - `set -o pipefail` / `trap ... EXIT` / `$(dirname ...)` などの bash 構文
 # を使う。cmd.exe / PowerShell では動かない（3 者レビューで唯一 3 者一致した指摘）。
 # bash の実在は cgd_doctor.py の shell チェックで確認している。
-TOOLS = "C:/ClaudeCode/.claude/tools"
+# advisor 3 本(deepseek_coder / qwen_advisor / gemini_advisor)は自分と同じ tools/ にある前提。
+# 絶対パス直書きは 2026-08-15 の移行で旧ディレクトリを指し続け、TK 端末で部分故障した
+# (旧パスに advisor だけ残っていて気づかなかった)。LOGFILTER と同じく自分からの相対で解く。
+TOOLS = Path(__file__).resolve().parent.as_posix()
 
 
 def _codex(effort: str, prompt: str) -> str:

@@ -37,6 +37,28 @@ export const meta = {
 let _args = args
 if (typeof _args === 'string') { try { _args = JSON.parse(_args) } catch (_) { _args = {} } }
 if (!_args || typeof _args !== 'object') _args = {}
+// .claude の場所は build (cgd_plan.py) が args.claude_dir で渡す (2026-09-06)。
+// Workflow は __dirname もファイル読取も使えないので、args 以外に知る手段が無い。
+// 固定パス直書きは 2026-08-15 の移行後も旧ディレクトリを指し、Preflight で必ず止まっていた。
+// 旧 build 出力との後方互換で、無ければ従来の固定パスに落とす。
+const CLAUDE_DIR = (typeof _args.claude_dir === 'string' && _args.claude_dir.trim())
+  ? _args.claude_dir.trim().replace(/\\/g, '/').replace(/\/+$/, '')
+  : 'C:/ClaudeCode/.claude'
+// CLAUDE_DIR はシェルコマンド文字列に埋め込まれる。通常は build 生成値しか来ないが、
+// 手動 args で引用符・メタ文字が混ざるとコマンド注入になるので、ここで弾く (Lv2 DS 指摘)。
+if (/["'`$;&|<>]/.test(CLAUDE_DIR)) {
+  return {
+    halt: 'invalid_claude_dir',
+    claude_dir: CLAUDE_DIR,
+    message: 'args.claude_dir にシェルのメタ文字が含まれています。build が出した WORKFLOW_ARGS をそのまま渡してください。',
+  }
+}
+// 欠落時に黙って旧パスへ落ちると、移行後の端末では Preflight が止まる事故を再現する
+// (Lv2 レビュー 2026-09-06 Codex 指摘)。後方互換は残しつつ、必ず見える形で警告する。
+if (!(typeof _args.claude_dir === 'string' && _args.claude_dir.trim())) {
+  log('[preflight] ⚠ args.claude_dir が渡されていないため旧固定パス ' + CLAUDE_DIR + ' に落とします。'
+    + ' 移行後の端末では Preflight が止まります — 最新の cgd_plan.py build が出す WORKFLOW_ARGS をそのまま渡してください。')
+}
 
 // A: input_path is required. Its silent fallback default was removed (2026-08-11);
 // wrong arg names used to still "work" by reading a stale default file.
@@ -125,21 +147,21 @@ let reviewers = [
   },
   ...(includeGemini ? [{
     name: 'gemini',
-    cmd: `python "C:/ClaudeCode/.claude/tools/gemini_advisor.py" --role reviewer "__INPUT_0__"`,
+    cmd: `python "${CLAUDE_DIR}/tools/gemini_advisor.py" --role reviewer "__INPUT_0__"`,
     timeout: 600000,
     usage: true,
     authSignals: 'AuthenticationError / 401 / invalid api key / GEMINI_API_KEY が設定されていません',
   }] : []),
   {
     name: 'deepseek',
-    cmd: `python "C:/ClaudeCode/.claude/tools/deepseek_coder.py" --role reviewer "__INPUT_0__"`,
+    cmd: `python "${CLAUDE_DIR}/tools/deepseek_coder.py" --role reviewer "__INPUT_0__"`,
     timeout: 600000,
     usage: true,
     authSignals: 'AuthenticationError / 401 / invalid api key / DEEPSEEK_API_KEY が設定されていません',
   },
   {
     name: 'qwen',
-    cmd: `python "C:/ClaudeCode/.claude/tools/qwen_advisor.py" --role reviewer "__INPUT_0__"`,
+    cmd: `python "${CLAUDE_DIR}/tools/qwen_advisor.py" --role reviewer "__INPUT_0__"`,
     timeout: 600000,
     usage: true,
     authSignals: 'AuthenticationError / 401 / InvalidApiKey / DASHSCOPE_API_KEY が設定されていません',
@@ -338,10 +360,10 @@ const pre = await agent(
 
 [手順] 次の 2 つのコマンドを Bash で実行し、**標準出力を一字一句そのまま**返してください。
 
-1) python "C:/ClaudeCode/.claude/tools/preflight_inputs.py" ${_targets.map((f) => `"${f}"`).join(' ')}
+1) python "${CLAUDE_DIR}/tools/preflight_inputs.py" ${_targets.map((f) => `"${f}"`).join(' ')}
    → 出力全体を files_json に入れる
 
-2) python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" status --json
+2) python "${CLAUDE_DIR}/hooks/cgd_wf_gate.py" status --json
    → 出力全体を gate_json に入れる
 
 [重要]
@@ -463,7 +485,7 @@ if (!wfNonce && _gateDoc.armed && (_gates.length > 1 || _gates.some((g) => g && 
     gate: _gateDoc,
     message: 'ゲートが複数(または破損)あり、どの nonce を使うべきか決められません。'
       + ' 次のいずれかで解消してください: '
-      + 'python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" disarm --all'
+      + 'python "' + CLAUDE_DIR + '/hooks/cgd_wf_gate.py" disarm --all'
       + ' / 残したいものだけ arm し直す / args.wf_nonce で明示する。',
   }
 }

@@ -29,7 +29,7 @@
     分からず、直しては走らせを繰り返すことになる。全項目を実行してから集計する。
 
 使い方:
-    python C:/ClaudeCode/.claude/tools/verify_cgd.py
+    python .claude/tools/verify_cgd.py
 
 終了コード: 0 = 全部 OK / 1 = どれか失敗
 """

@@ -24,11 +24,32 @@ export const meta = {
   ],
 }
 
-const PY = 'python "C:/ClaudeCode/.claude/tools/pv_plan.py"'
-
 let _args = args
 if (typeof _args === 'string') { try { _args = JSON.parse(_args) } catch (_) { _args = {} } }
 if (!_args || typeof _args !== 'object') _args = {}
+// .claude の場所は build (pv_plan.py) が args.claude_dir で渡す (2026-09-06)。
+// Workflow は __dirname もファイル読取も使えないので、args 以外に知る手段が無い。
+// 固定パス直書きは 2026-08-15 の移行後も旧ディレクトリを指し、Preflight で必ず止まっていた。
+// 旧 build 出力との後方互換で、無ければ従来の固定パスに落とす。
+const CLAUDE_DIR = (typeof _args.claude_dir === 'string' && _args.claude_dir.trim())
+  ? _args.claude_dir.trim().replace(/\\/g, '/').replace(/\/+$/, '')
+  : 'C:/ClaudeCode/.claude'
+// CLAUDE_DIR はシェルコマンド文字列に埋め込まれる。通常は build 生成値しか来ないが、
+// 手動 args で引用符・メタ文字が混ざるとコマンド注入になるので、ここで弾く (Lv2 DS 指摘)。
+if (/["'`$;&|<>]/.test(CLAUDE_DIR)) {
+  return {
+    halt: 'invalid_claude_dir',
+    claude_dir: CLAUDE_DIR,
+    message: 'args.claude_dir にシェルのメタ文字が含まれています。build が出した WORKFLOW_ARGS をそのまま渡してください。',
+  }
+}
+// 欠落時に黙って旧パスへ落ちると、移行後の端末では Preflight が止まる事故を再現する
+// (Lv2 レビュー 2026-09-06 Codex 指摘)。後方互換は残しつつ、必ず見える形で警告する。
+if (!(typeof _args.claude_dir === 'string' && _args.claude_dir.trim())) {
+  log('[preflight] ⚠ args.claude_dir が渡されていないため旧固定パス ' + CLAUDE_DIR + ' に落とします。'
+    + ' 移行後の端末では Preflight が止まります — 最新の pv_plan.py build が出す WORKFLOW_ARGS をそのまま渡してください。')
+}
+const PY = 'python "' + CLAUDE_DIR + '/tools/pv_plan.py"'
 
 // 必須引数。フォールバック既定値は置かない (間違ったまま黙って動く経路を作らない)。
 const _missing = []

@@ -33,7 +33,9 @@ except Exception:  # pragma: no cover
 
 PV_ROOT = Path(os.environ.get("PV_ROOT", r"C:/tmp-ai/pv"))
 PENDING_NAME = ".pending_verify"
-PY = 'python "C:/ClaudeCode/.claude/tools/pv_plan.py"'
+# 案内する pv_plan.py は自分の隣の tools/ を指す (固定パス直書きは移行後に嘘になった)。
+_PV_PLAN = (Path(__file__).resolve().parent.parent / "tools" / "pv_plan.py").as_posix()
+PY = f'python "{_PV_PLAN}"'
 MAX_SHOWN = 5
 
 

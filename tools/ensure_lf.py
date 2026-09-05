@@ -5,7 +5,7 @@
     「script contains control characters that would be hidden in the approval
     dialog」で起動を拒否し、Lv6/7/8 が使用不能になる。
     2026-08-06 と 2026-08-11 の 2 回発生し、2 回とも原因特定に時間を溶かした。
-    参照: python C:/ClaudeCode/.claude/tools/incident_log.py show INC-20260811-144157bce8d2
+    参照: python .claude/tools/incident_log.py show INC-20260811-144157bce8d2
 
 なぜ「テキストとして走査」では見つからないか:
     Windows の Path.read_text() は universal newlines で CR を \\n に潰して隠す。

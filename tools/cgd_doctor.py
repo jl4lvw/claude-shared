@@ -4,8 +4,8 @@ cgd / codex スキル起動前に「使えるレベル」を 1 コマンドで�
 Antigravity の doctor コマンドに相当する位置づけ（Zenn 記事から導入）。
 
 使い方:
-    python C:/ClaudeCode/.claude/tools/cgd_doctor.py          # オフライン環境チェックのみ
-    python C:/ClaudeCode/.claude/tools/cgd_doctor.py --probe  # 各 API に最小プロンプトで疎通テスト
+    python .claude/tools/cgd_doctor.py          # オフライン環境チェックのみ
+    python .claude/tools/cgd_doctor.py --probe  # 各 API に最小プロンプトで疎通テスト
 
 チェック項目（オフライン・既定）:
     - Bash 環境（Git Bash / WSL）
@@ -46,9 +46,12 @@ EXIT_TIMEOUT = 30
 EXIT_NETWORK = 40
 EXIT_INVALID_INPUT = 50
 
-SKILL_PATH = Path("C:/ClaudeCode/.claude/skills/cgd/SKILL.md")
-TOOLS_DIR = Path("C:/ClaudeCode/.claude/tools")
-WORKFLOWS_DIR = Path("C:/ClaudeCode/.claude/skills/cgd/workflows")
+# 自分の置き場所 (<project>/.claude/tools/cgd_doctor.py) から .claude を解く。
+# 絶対パス直書きは移行後に旧ディレクトリを見て NG を誤報していた (2026-09-06 TK 端末)。
+_CLAUDE_DIR = Path(__file__).resolve().parent.parent
+SKILL_PATH = _CLAUDE_DIR / "skills" / "cgd" / "SKILL.md"
+TOOLS_DIR = _CLAUDE_DIR / "tools"
+WORKFLOWS_DIR = _CLAUDE_DIR / "skills" / "cgd" / "workflows"
 TMP_AI_DIR = Path("C:/tmp-ai")
 
 OK = "OK "

@@ -156,13 +156,13 @@ if ! git commit -m "$MSG"; then
 fi
 
 UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)
+BRANCH=$(git branch --show-current)
 echo ""
 echo "=== push ==="
 # push の終了コードは**必ず見る**。見ずに "OK: pushed." を出していたため、
 # リモート先行で reject された push を成功と報告する事故が起きた
 # (2026-09-05。別PCの sync コミットがあり fast-forward できなかった)。
 if [ -z "$UPSTREAM" ]; then
-    BRANCH=$(git branch --show-current)
     echo "upstream 未設定。--set-upstream で push ($BRANCH)"
     git push --set-upstream origin "$BRANCH"
     PUSH_EXIT=$?
@@ -172,14 +172,16 @@ else
 fi
 
 if [ $PUSH_EXIT -ne 0 ]; then
+    # 復旧手順は <branch> のようなプレースホルダでなく実値で出す(失敗直後にそのまま貼れる)
+    REMOTE_REF="${UPSTREAM:-origin/$BRANCH}"
     echo ""
     echo "push に失敗しました (exit=$PUSH_EXIT)。**push できていません**。" >&2
     echo "リモートが先行している(rejected / fetch first)場合は、他PCが先に /g-ul した状態です。" >&2
     echo "  1. git fetch origin" >&2
-    echo "  2. git log --oneline HEAD..origin/<branch>            # 相手の変更を見る" >&2
-    echo "  3. comm -12 <(git diff --name-only HEAD...origin/<branch> | sort) \\" >&2
-    echo "             <(git diff --name-only origin/<branch>...HEAD | sort)   # 衝突ファイル" >&2
-    echo "  4. 衝突が無ければ git pull --rebase origin <branch> して push し直す" >&2
+    echo "  2. git log --oneline HEAD..$REMOTE_REF            # 相手の変更を見る" >&2
+    echo "  3. comm -12 <(git diff --name-only HEAD...$REMOTE_REF | sort) \\" >&2
+    echo "             <(git diff --name-only $REMOTE_REF...HEAD | sort)   # 衝突ファイル" >&2
+    echo "  4. 衝突が無ければ git pull --rebase ${REMOTE_REF%%/*} ${REMOTE_REF#*/} して push し直す" >&2
     echo "認証エラーの場合は git remote -v と資格情報を確認する。" >&2
     exit 1
 fi

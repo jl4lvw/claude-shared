@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 from datetime import datetime
@@ -117,6 +118,11 @@ _HOOKS: tuple[tuple[str, str | None, str, int, str], ...] = (
     # 状況板の目的(何で止まっているか)を果たせない(2026-09-05 A端末報告 #2048)。
     # PreToolUse/PostToolUse は matcher 未指定(=全ツール)。既存の
     # cgd_wf_gate.py(Bash|PowerShell) / ruff_check.py(Edit|Write) とは別グループになる。
+    #
+    # session_watchdog_hook.py(Track1 死活監視)の 3 エントリは 2026-09-05 に意図的に外した。
+    # hq_board.py → hq_push.py が同じ PUT /claude-sessions/{sid} と POST .../end を叩くので
+    # 機能は継承済み(A端末も登録から外し済み)。本ツールは追加のみで削除しないため、
+    # 既登録の端末には watchdog が残る(opt-in 前は即 exit 0 で無害)。新規端末には入らない。
     (
         "Stop",
         None,
@@ -202,9 +208,9 @@ def _norm_matcher(matcher: str | None) -> str | None:
 
 
 def _existing_commands(settings: dict, event: str, matcher: str | None) -> set[str]:
-    """matcher が None の場合は matcher 未指定グループのみ、指定時はそのmatcherの
-    グループのみを見る(PostCompact の auto/manual 等、matcher違いは別グループのため
-    混同してはいけない)。"""
+    """指定 matcher と同じグループのコマンドだけを集める。matcher 未指定・空文字・"*" は
+    _norm_matcher() で 1 つのグループ(全ツール対象)として同一視する。PostCompact の
+    auto/manual のような実マッチャは従来どおり別グループ(混同してはいけない)。"""
     out: set[str] = set()
     want = _norm_matcher(matcher)
     for group in settings.get("hooks", {}).get(event, []) or []:
@@ -216,6 +222,21 @@ def _existing_commands(settings: dict, event: str, matcher: str | None) -> set[s
             if isinstance(cmd, str):
                 out.add(cmd.strip())
     return out
+
+
+def _mentions_hook(command: str, rel: str) -> bool:
+    r"""command がそのフックスクリプト本体を指しているか(登録済み判定のフォールバック)。
+
+    単純な部分一致 `rel in command` は `hq_board.py.bak_*` のような別ファイルにも当たり、
+    逆に Windows の `\` 区切りで手登録された行には当たらない(2026-09-06 Lv7 で 4 者収束)。
+    区切りを `/` に揃え、rel の前後がパス境界(区切り・引用符・空白・終端)であることを見る。
+    settings.local.json は Windows 前提なので大小文字は区別しない。"""
+    if not rel:
+        return False
+    norm_cmd = command.replace("\\", "/")
+    norm_rel = rel.replace("\\", "/")
+    pattern = r"(?:^|[/\"'\s])" + re.escape(norm_rel) + r"(?=[\"'\s]|$)"
+    return re.search(pattern, norm_cmd, re.IGNORECASE) is not None
 
 
 def main() -> int:
@@ -242,7 +263,7 @@ def main() -> int:
         # 手で足したオプションがあるだけで「未登録」と誤判定し、二重登録になる
         # (2026-08-12 に cgd_wf_gate で実際に発生)。**スクリプトのパスで見る**。
         existing = _existing_commands(settings, event, matcher)
-        if cmd in existing or any(rel in c for c in existing):
+        if cmd in existing or any(_mentions_hook(c, rel) for c in existing):
             print(f"  [OK]   登録済: {label} <- {rel}")
             continue
         print(f"  [ADD]  未登録: {label} <- {rel}  ({note})")
