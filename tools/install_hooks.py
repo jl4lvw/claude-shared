@@ -112,27 +112,66 @@ _HOOKS: tuple[tuple[str, str | None, str, int, str], ...] = (
         15,
         "Claudeが.pyファイルを編集した直後にruff checkを自動実行し指摘を報告(自動修正なし)",
     ),
+    # hq_board.py は 8 イベント全てに要る。Stop/SessionStart/SessionEnd の 3 つ
+    # だけだと running / waiting_permission / waiting_question が記録されず、
+    # 状況板の目的(何で止まっているか)を果たせない(2026-09-05 A端末報告 #2048)。
+    # PreToolUse/PostToolUse は matcher 未指定(=全ツール)。既存の
+    # cgd_wf_gate.py(Bash|PowerShell) / ruff_check.py(Edit|Write) とは別グループになる。
     (
         "Stop",
         None,
-        ".claude/hooks/session_watchdog_hook.py",
+        ".claude/hooks/hq_board.py",
         5,
-        "セッション死活監視(Track1)。.claude/relay_local/session_watchdog.local.json "
-        "でこのPCをopt-inするまでは即exit 0(無害)。opt-in手順はhook本体のdocstring参照",
+        "hq: 司令塔の状況板 .hq/board/<sid>.json を更新(hq/SKILL.md 仕組み節)",
     ),
     (
         "SessionStart",
         None,
-        ".claude/hooks/session_watchdog_hook.py",
+        ".claude/hooks/hq_board.py",
         5,
-        "セッション死活監視(Track1)。Stopと同じ役割、opt-inまでは無害",
+        "hq: 司令塔の状況板 .hq/board/<sid>.json を更新(hq/SKILL.md 仕組み節)",
     ),
     (
         "SessionEnd",
         None,
-        ".claude/hooks/session_watchdog_hook.py",
+        ".claude/hooks/hq_board.py",
         5,
-        "セッション死活監視(Track1)。Stopと同じ役割、opt-inまでは無害",
+        "hq: 司令塔の状況板 .hq/board/<sid>.json を更新(hq/SKILL.md 仕組み節)",
+    ),
+    (
+        "UserPromptSubmit",
+        None,
+        ".claude/hooks/hq_board.py",
+        5,
+        "hq: 司令塔の状況板 .hq/board/<sid>.json を更新(hq/SKILL.md 仕組み節)",
+    ),
+    (
+        "PreToolUse",
+        None,
+        ".claude/hooks/hq_board.py",
+        5,
+        "hq: 司令塔の状況板 .hq/board/<sid>.json を更新(hq/SKILL.md 仕組み節)",
+    ),
+    (
+        "PostToolUse",
+        None,
+        ".claude/hooks/hq_board.py",
+        5,
+        "hq: 司令塔の状況板 .hq/board/<sid>.json を更新(hq/SKILL.md 仕組み節)",
+    ),
+    (
+        "Notification",
+        None,
+        ".claude/hooks/hq_board.py",
+        5,
+        "hq: 司令塔の状況板 .hq/board/<sid>.json を更新(hq/SKILL.md 仕組み節)",
+    ),
+    (
+        "PermissionRequest",
+        None,
+        ".claude/hooks/hq_board.py",
+        5,
+        "hq: 司令塔の状況板 .hq/board/<sid>.json を更新(hq/SKILL.md 仕組み節)",
     ),
 )
 
@@ -152,14 +191,25 @@ def _load(settings_path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _norm_matcher(matcher: str | None) -> str | None:
+    """matcher 未指定・空文字・"*" は Claude Code 上どれも「全ツール対象」で同義。
+    別PCが手作業で "*" を書いていると、None と厳密比較しては未登録と誤判定して
+    二重登録になる(2026-09-05 A端末が PreToolUse を "*" で登録していた)。
+    PostCompact の auto/manual のような実マッチャは従来どおり区別される。"""
+    if matcher in (None, "", "*"):
+        return None
+    return matcher
+
+
 def _existing_commands(settings: dict, event: str, matcher: str | None) -> set[str]:
     """matcher が None の場合は matcher 未指定グループのみ、指定時はそのmatcherの
     グループのみを見る(PostCompact の auto/manual 等、matcher違いは別グループのため
     混同してはいけない)。"""
     out: set[str] = set()
+    want = _norm_matcher(matcher)
     for group in settings.get("hooks", {}).get(event, []) or []:
-        group_matcher = (group or {}).get("matcher")
-        if group_matcher != matcher:
+        group_matcher = _norm_matcher((group or {}).get("matcher"))
+        if group_matcher != want:
             continue
         for h in (group or {}).get("hooks", []) or []:
             cmd = h.get("command")
@@ -220,7 +270,7 @@ def main() -> int:
         # matcher が一致する既存グループを探し、あれば相乗り。なければ新規グループ追加。
         target_group = None
         for group in groups:
-            if isinstance(group, dict) and group.get("matcher") == matcher:
+            if isinstance(group, dict) and _norm_matcher(group.get("matcher")) == _norm_matcher(matcher):
                 target_group = group
                 break
         if target_group is not None and isinstance(target_group.get("hooks"), list):
