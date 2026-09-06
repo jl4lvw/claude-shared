@@ -14,6 +14,7 @@ import argparse
 import json
 import mimetypes
 import os
+import socket
 import sys
 import time
 import uuid
@@ -338,7 +339,11 @@ def cmd_send(args: argparse.Namespace) -> None:
         payload["reserve_ttl_sec"] = args.reserve_ttl
 
     act_as = getattr(args, "act_as", None)
-    message = _request_json("POST", "/messages", payload=payload, act_as=act_as)
+    # 送信にも holder を載せる(2026-09-05): サーバーが sender_holder に保存し、
+    # claim 時の「別セッションが既に返信済みか」判定と、自分の claim の heartbeat に使う
+    message = _request_json(
+        "POST", "/messages", payload=payload, act_as=act_as, holder=_session_holder()
+    )
     name = f"{act_as}名義(実行はあなた)" if act_as else "自分名義"
     print(f"送信しました[{name}]: thread_id={message['thread_id']} message_id={message['id']}")
     # **毎回、返信を誰が受け取るかを言う**(2026-08-24)。
@@ -641,12 +646,18 @@ def cmd_check(args: argparse.Namespace) -> None:
         # 他の実行者が処理権を持っているものは触らない(二重処理防止)
         claimed_by = msg.get("claimed_by")
         if claimed_by:
-            # claimed_by は実行者(APIキーの持ち主)なので、代理でも自分なら SELF_USER_ID
-            note = (
-                "自分が処理中"
-                if claimed_by == SELF_USER_ID
-                else f"{claimed_by} が処理中 → 手を出さない"
-            )
+            # claimed_by は実行者(APIキーの持ち主)なので、代理でも自分なら SELF_USER_ID。
+            # ただし同じ名義でも holder(セッション)が違えば別主体 → 手を出さない(2026-09-05)
+            claimed_holder = msg.get("claimed_holder")
+            mine = _session_holder()
+            if claimed_by != SELF_USER_ID:
+                note = f"{claimed_by} が処理中 → 手を出さない"
+            elif claimed_holder and claimed_holder != mine:
+                note = f"同じ名義の別セッション(holder={claimed_holder})が処理中 → 手を出さない"
+            elif claimed_holder is None and mine is not None:
+                note = "自分名義の旧クライアントが処理中(holder 不明) → 二重処理に注意"
+            else:
+                note = "自分が処理中"
             print(f"  ※ 処理権: {note} (claimed_at={_fmt_local(msg.get('claimed_at'))})")
         print(msg["content"])
 
@@ -693,7 +704,8 @@ def cmd_edit(args: argparse.Namespace) -> None:
 def cmd_done(args: argparse.Namespace) -> None:
     act_as = getattr(args, "act_as", None)
     message = _request_json(
-        "POST", f"/messages/{args.message_id}/done", act_as=act_as
+        "POST", f"/messages/{args.message_id}/done", act_as=act_as,
+        holder=_session_holder(),
     )
     print(f"既読処理済にしました: message_id={message['id']} "
           f"completed_at={_fmt_local(message['completed_at'])}")
@@ -729,27 +741,56 @@ def cmd_claim(args: argparse.Namespace) -> None:
     同じ受信箱を複数の実行者が見ている(A端末のGUI + 手動セッション、
     A端末の代理処理 + TK端末本人)ため、claimを取らずに処理すると
     同じ依頼へ二重に返信してしまう。409なら他が着手済みなのでスキップする。
+
+    排他は (actor, holder) 単位(2026-09-05)。同じ名義でも別セッション(常駐GUI等)が
+    持っていれば 409 になる。holder は _session_holder() が決める。
     """
     act_as = getattr(args, "act_as", None)
+    holder = _session_holder()
+    params = {"force": "true"} if getattr(args, "force", False) else None
     result = _request_json(
-        "POST", f"/messages/{args.message_id}/claim", act_as=act_as, soft_status=(409,)
+        "POST", f"/messages/{args.message_id}/claim", params=params,
+        act_as=act_as, soft_status=(409,), holder=holder,
     )
     if isinstance(result, ApiConflict):
-        print(f"処理権を取得できませんでした(他の実行者が処理中): {result.detail}")
-        print("このメッセージには手を出さず、スキップしてください。")
+        code, message, detail = _conflict_detail(result)
+        if code == "held_by_other_holder":
+            print(f"処理権を取得できませんでした(同じ名義の別セッションが処理中): {message}")
+        elif code == "already_replied_by_other_holder":
+            print(f"処理権を取得できませんでした(別セッションが既に返信済み): {message}")
+            print("  → 二重返信になります。引き取る必要があるときだけ --force を付けてください")
+        elif code == "already_done":
+            print(f"処理権を取得できませんでした(完了済み): {message}")
+        else:
+            print(f"処理権を取得できませんでした(他の実行者が処理中): {message}")
+        print("→ このメッセージはスキップしてください(返信も done もしない)")
         sys.exit(EXIT_CLAIM_CONFLICT)
     print(
-        f"処理権を取得しました: message_id={result['id']} "
-        f"claimed_by={result['claimed_by']} at={_fmt_local(result['claimed_at'])}"
+        f"処理権を取得しました: message_id={result['id']} claimed_by={result['claimed_by']}"
+        f" holder={result.get('claimed_holder') or '(なし)'}"
     )
-    print("これで他の端末はこのメッセージをdoneできません。処理後に done を実行してください。")
+    if result.get("holder_warning"):
+        print(f"  ⚠ {result['holder_warning']}")
+    prior = result.get("prior_replies") or []
+    if prior:
+        ids = ", ".join(f"#{i}" for i in prior)
+        print(
+            f"  ⚠ この件より後に自分名義の発言 {ids} が既にあります(送信元セッション不明)。"
+            "二重返信でないか確認してから進めてください"
+        )
+    if result.get("claimed_holder"):
+        print("これで他の端末・同じ名義の別セッションはこのメッセージを done できません。処理後に done を実行してください。")
+    else:
+        # holder 無し(旧挙動)は同じ名義の別セッションを止められない。過剰な保証を書かない(Lv7 DS 🟡)
+        print("これで他の端末はこのメッセージを done できません(同じ名義の別セッションは検知できません)。処理後に done を実行してください。")
 
 
 def cmd_unclaim(args: argparse.Namespace) -> None:
     """自分が取った処理権を解除する(処理を中断してほかに任せるとき)。"""
     act_as = getattr(args, "act_as", None)
     message = _request_json(
-        "DELETE", f"/messages/{args.message_id}/claim", act_as=act_as
+        "DELETE", f"/messages/{args.message_id}/claim", act_as=act_as,
+        holder=_session_holder(),
     )
     print(
         f"処理権を解除しました: message_id={message['id']} "
@@ -811,6 +852,64 @@ def cmd_revoke(args: argparse.Namespace) -> None:
 
 _WAIT_TIMEOUT_EXIT = 3   # 返信が来ないまま待ち時間切れ(異常終了1と区別する)
 _WAIT_LOST_EXIT = 4      # 予約を失った(期限切れ後に他が取得した等)
+
+
+_SESSION_HOLDER: Optional[str] = None
+_SESSION_HOLDER_RESOLVED = False
+
+
+def _session_holder() -> Optional[str]:
+    """処理権(claim)用のクライアント識別子。**同じセッション内では常に同じ値**を返す。
+
+    claim は (actor, holder) で排他する(2026-09-05)。この値がリクエストごとに変わると、
+    自分の再claimが「別主体」と見なされて 409 になり、リトライ安全が壊れる。
+    逆に別のセッション同士で同じ値になると排他が効かない。優先順:
+      1. RELAY_HOLDER … 明示指定(テストや特殊運用)
+      2. RELAY_AGENT=1 … 常駐GUIのエージェント。プロセスが変わっても同じ値にする
+         (再起動のたびに前の claim が TTL まで残ってしまわないため)。同一PCで GUI を
+         2つ動かすと区別できないが、それは single_instance.py が防いでいる前提
+      3. CLAUDE_CODE_SESSION_ID … Claude Code の対話セッション。セッション内で不変
+      4. どれも無ければ None(警告を出し、holder 無しで送る = 旧挙動)
+
+    **同じヘッダ X-Relay-Holder を 2 用途で使っている**(Lv7 DS 🟡): check/wait では
+    スレッド予約(lease)の holder(`send --reserve` が採番する `cli:<uuid>`)、
+    claim/done/unclaim/send ではこの関数の値(処理権の主体)。値は別でよいが、
+    取り違えないこと — lease の holder をここへ流用すると再起動で別主体扱いになる。
+    """
+    global _SESSION_HOLDER, _SESSION_HOLDER_RESOLVED
+    if _SESSION_HOLDER_RESOLVED:
+        return _SESSION_HOLDER
+    _SESSION_HOLDER_RESOLVED = True
+    explicit = os.environ.get("RELAY_HOLDER", "").strip()
+    if explicit:
+        _SESSION_HOLDER = explicit
+    elif os.environ.get("RELAY_AGENT", "").strip().lower() in ("1", "true", "yes"):
+        host = (socket.gethostname() or "host").split(".")[0]
+        _SESSION_HOLDER = f"gui:{SELF_USER_ID}@{host}"
+    else:
+        sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
+        if sid:
+            _SESSION_HOLDER = f"cli:{sid[:12]}"
+    if _SESSION_HOLDER is None:
+        print(
+            "警告: クライアント識別子(holder)を決められません(RELAY_HOLDER / CLAUDE_CODE_SESSION_ID"
+            " のいずれも無い)。同じ名義の別セッションとの二重処理を検知できません",
+            file=sys.stderr,
+        )
+    return _SESSION_HOLDER
+
+
+def _conflict_detail(result: "ApiConflict") -> tuple[Optional[str], str, dict]:
+    """409 の detail を (code, message, dict) に正規化する。dict でも文字列でも受ける。"""
+    raw = result.detail
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return None, str(raw), {}
+    detail = parsed.get("detail") if isinstance(parsed, dict) else parsed
+    if isinstance(detail, dict):
+        return detail.get("code"), str(detail.get("message") or detail), detail
+    return None, str(detail), {}
 
 
 def _new_holder() -> str:
@@ -1226,6 +1325,10 @@ def main() -> None:
     )
     claim_parser.add_argument("message_id", type=int, help="処理権を取るメッセージのID")
     _add_as_option(claim_parser)
+    claim_parser.add_argument(
+        "--force", action="store_true",
+        help="別セッションが返信済み / 完了済みでも処理権を取る(引き取るときだけ)",
+    )
     claim_parser.set_defaults(func=cmd_claim)
 
     unclaim_parser = subparsers.add_parser(
