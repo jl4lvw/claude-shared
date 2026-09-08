@@ -134,17 +134,30 @@ def check_codex_version() -> Result:
     return (OK, "codex CLI 版", out[0] if out else "(版文字列が空)")
 
 
-def _codex_config() -> dict:
-    """~/.codex/config.toml を読む。無ければ空 dict(CLI 既定で動く)。"""
+def _codex_config() -> tuple[dict, str | None]:
+    """~/.codex/config.toml を読む。
+
+    戻り値: (設定dict, 判定不能理由 or None)。
+    - ファイルが無い場合は ({}, None) — CLI既定で動く、正常な「未設定」
+    - TOMLパーサ(tomllib/tomli)が無い、または構文エラーの場合は
+      ({}, "理由文字列") — 「未設定」と混同しない「判定不能」
+    """
     path = CODEX_HOME / "config.toml"
     if not path.exists():
-        return {}
+        return {}, None
     try:
-        import tomllib
-
-        return tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, ImportError):
-        return {}
+        import tomllib as _toml  # Python 3.11+
+    except ImportError:
+        try:
+            import tomli as _toml  # type: ignore[no-redef]  # Python 3.10以下のフォールバック
+        except ImportError:
+            return {}, "TOMLパーサ無し(tomllib/tomli とも未インストール, Python 3.10以下?)"
+    try:
+        return _toml.loads(path.read_text(encoding="utf-8")), None
+    except OSError as exc:
+        return {}, f"読み込みエラー: {type(exc).__name__}: {exc}"
+    except ValueError as exc:
+        return {}, f"TOML構文エラー: {exc}"
 
 
 def _codex_models() -> list[dict]:
@@ -166,13 +179,19 @@ def _codex_models() -> list[dict]:
 
 def check_codex_model() -> list[Result]:
     """config.toml の model / 推論強度が、サーバーが返す一覧と噛み合っているか。"""
-    cfg = _codex_config()
+    cfg, cfg_err = _codex_config()
     models = _codex_models()
     model = cfg.get("model")
     effort = cfg.get("model_reasoning_effort")
     out: list[Result] = []
 
     label = f"{model or '(未設定=CLI既定)'} / effort={effort or '(未設定=モデル既定)'}"
+    if cfg_err:
+        out.append((
+            WARN, "codex モデル設定",
+            f"{label} — 判定不能: config.toml を読めません ({cfg_err})",
+        ))
+        return out
     if not models:
         out.append((WARN, "codex モデル設定", f"{label} — models_cache.json が読めず照合不可"))
         return out
