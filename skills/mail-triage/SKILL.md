@@ -4,7 +4,7 @@ description: 期間内の受信メールを全件列挙し、除外ルール(exc
 trigger: 「返信が必要なメールはないか」「対応漏れ・見落としがないか」「ここ数日のメールを確認して」のように、特定のメールを探すのではなく網羅的に確認したいとき
 ---
 
-<!-- SKILL_VERSION: 2026-09-08_112448 -->
+<!-- SKILL_VERSION: 2026-09-08_190014 -->
 
 # mail-triage — 受信メールのトリアージ(除外方式)
 
@@ -57,6 +57,7 @@ python triage.py --days 3 --grep キャンセル --grep 返金   # 候補の中�
 python triage.py --days 3 --group-by sender               # 差出人別に集計
 python triage.py --days 3 --group-by subject              # 件名パターン別(数字はNに正規化)
 python triage.py --days 3 --show-excluded                 # 何がどのルールで落ちたか
+python triage.py --days 3 --no-auto-close                 # 返信済みも候補に残す
 python triage.py --days 3 --json                          # 後段処理へ渡す
 ```
 
@@ -92,6 +93,27 @@ Claude が判断してよいのは**ここだけ**:
 - キー名を間違えたルールは起動時に「使えていないルール」として警告される。
   `tests/test_triage.py::test_production_rules_are_all_usable` でも落ちる
 
+## 返信済みの自動クローズ
+
+送信箱を突き合わせ、**同じ相手・同じ件名(Re: 等を剥がしたもの)へ、そのメールより後に
+送信していた**候補を「対応済み」として畳む(`scripts/reply_state.py`)。実測で 3日 86→79 件。
+
+**落とすのは3条件が揃ったときだけ。** 次はいずれも落とさない側に倒してある:
+
+| 状況 | 扱い |
+|---|---|
+| 返信した**後**に相手から追いメールが来た | **残す**(この仕組みで最も重要。落とすと急ぎの用件が消える) |
+| 同じ相手だが**別件名** | 残す。`ℹ この相手には MM/DD に返信あり（別件名）`と付記だけ |
+| 問い合わせフォーム経由(差出人が自社 `shopmaster@`) | 残す。顧客アドレスは本文中にあり宛先と突き合わせられない |
+| `Date` が壊れて受信時刻が不明 / 件名が空 | 残す |
+| Cc だけで返信した | 残す(索引は `To` しか持っていない) |
+
+畳んだ分は**必ず「返信済みとしてクローズ」節に全件表示する**(黙って消えると
+「返信したつもり」の取り違えに気づけない)。挙動を疑うときは `--no-auto-close` で全部戻す。
+
+`tests/test_reply_state.py` がこの境界を固定している。3種のミューテーション
+(時系列ガード除去 / 件名なしガード除去 / アドレス一致だけで閉じる)で赤くなることを確認済み。
+
 ## /mail-search との使い分け
 
 | 目的 | 使うもの |
@@ -117,8 +139,8 @@ Claude が判断してよいのは**ここだけ**:
   `rakuten@` / `yahoo@` など**モール宛アドレスを集約する唯一の受信先**で、一度外して
   索引を消したところ楽天・Yahoo の受注/キャンセル/問い合わせが丸ごと消えた(2026-09-08)。
   外す前に必ず `to_header` の分布を数え、そのアカウントにしか来ない宛先が無いか確認する
-- 送信済み(`Sent`)は索引に**入っている**が、triage の候補からは除外ルールで外している。
-  「自分が返信済み＝対応完了」の判定に将来使える
+- 送信済み(`Sent`)は索引に**入っている**。triage の候補からは除外ルールで外しつつ、
+  下記の「返信済みの自動クローズ」で参照している
 - フォルダ移動で移動元に残る削除済みメール(`X-Mozilla-Status` の EXPUNGED)は索引に入れない
 
 ## 重複排除
@@ -153,6 +175,7 @@ cd "C:/ClaudeCode/900.ClaudeCode/mail-search" && python -m pytest tests/ -q
 ## 関連ファイル
 
 - `900.ClaudeCode/mail-search/scripts/triage.py` — 本体
+- `900.ClaudeCode/mail-search/scripts/reply_state.py` — 返信済み判定
 - `900.ClaudeCode/mail-search/exclude_rules.json` — 除外ルール
 - 長期記憶: `feedback_mail_triage_exclusion_not_keyword.md` / `project_mail_search_fts5_index.md`
 - 関連スキル: `/mail-search`(探す用途)
