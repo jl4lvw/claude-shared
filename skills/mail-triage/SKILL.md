@@ -4,7 +4,7 @@ description: 期間内の受信メールを全件列挙し、除外ルール(exc
 trigger: 「返信が必要なメールはないか」「対応漏れ・見落としがないか」「ここ数日のメールを確認して」のように、特定のメールを探すのではなく網羅的に確認したいとき
 ---
 
-<!-- SKILL_VERSION: 2026-09-08_215504 -->
+<!-- SKILL_VERSION: 2026-09-09_065236 -->
 
 # mail-triage — 受信メールのトリアージ(除外方式)
 
@@ -182,6 +182,32 @@ Claude が判断してよいのは**ここだけ**:
 `--show-excluded` と `--since 2024-11-01` を使う。2026-09-08 の導入時はこの手順で
 龍谷大学の1件を見つけた。
 
+## 在庫通知は別スクリプトで見る
+
+在庫の通知は件数が多く(30日で211件)、triage に混ぜると本来の「返信が必要なメール」が
+埋もれる。かといって捨てると補充判断が漏れるので、専用スクリプトで扱う。
+
+```bash
+cd "C:/ClaudeCode/900.ClaudeCode/mail-search/scripts" && python stock_notices.py --days 7
+```
+
+| 系統 | 差出人 | 中身 | triage |
+|---|---|---|---|
+| Eストアー | `sp@estore.co.jp` | 「在庫切れのお知らせ（商品番号）」在庫 0 | **候補に出す**(2026-09-09にユーザーが除外を解除) |
+| GoQ在庫連携 | `stock2-notification@goqsystem.com` | 在庫数が **-1**＝売り越し | 除外(このスクリプトで見る) |
+
+**通知そのものではなく「今どうなっているか」を出す。** 023.商品マスタDB で現在庫を
+引き直し、まだ 0 以下のものだけを要対応にする(実測 30日 139種 → 要対応 43種)。
+売り越しは受注が成立済みなので在庫切れより先に並べる。
+
+商品コードの引き当ては `estore_item_code` → `rakuten_merchant_sku` → `sku` の順。
+**GoQ の通知は楽天のフルSKU(`G2193-GL-L`)で来る**ので estore_item_code だけでは引けない。
+同じ商品を GoQ が `U0143<>5L`、Eストアーが `U0143` と別表記で送ってくるため、
+集約は `<>` の親側(`base_code`)で行う。大文字小文字は無視する(`g2117` 表記が実在)。
+
+**在庫が引けないものは要対応に倒す。** 023 に無い商品(セット品・Eストアー専用品)や
+API が落ちているときに「対応不要」側へ倒すと、補充漏れが黙って起きる。
+
 ## /mail-search との使い分け
 
 | 目的 | 使うもの |
@@ -227,7 +253,7 @@ Claude が判断してよいのは**ここだけ**:
 
 - 既読/未読は見ていない(既読でも未対応はあるため、2026-09-08ユーザー判断)
 - Date ヘッダが読めないメールは期間で落とさず「日付不明」として必ず表示する
-- GoQ の在庫数通知は除外済み。**別途これ専用のスクリプトを作る方針**(2026-09-08ユーザー決定)
+- 在庫通知は `stock_notices.py` で扱う(上記の節を参照)
 - 大量に再構築するときは定期タスク `MailSearchIndexSync` を止めてから回し、**必ず戻す**
   (二重処理で同じ mbox を両方が rebuild すると重複挿入が起きうる)
 
@@ -245,6 +271,7 @@ cd "C:/ClaudeCode/900.ClaudeCode/mail-search" && python -m pytest tests/ -q
 - `900.ClaudeCode/mail-search/scripts/triage.py` — 本体
 - `900.ClaudeCode/mail-search/scripts/reply_state.py` — 返信済み判定
 - `900.ClaudeCode/mail-search/scripts/webform.py` — 問い合わせフォームの本文パーサ
+- `900.ClaudeCode/mail-search/scripts/stock_notices.py` — 在庫通知の集約(在庫切れ/売り越し)
 - `900.ClaudeCode/mail-search/exclude_rules.json` — 除外ルール
 - 長期記憶: `feedback_mail_triage_exclusion_not_keyword.md` / `project_mail_search_fts5_index.md`
 - 関連スキル: `/mail-search`(探す用途)
