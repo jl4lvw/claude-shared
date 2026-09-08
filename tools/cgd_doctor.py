@@ -110,6 +110,121 @@ def check_codex_login() -> Result:
     return (NG, "codex login", f"未ログイン: {out[:120]}")
 
 
+CODEX_HOME = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+# cgd が把握している推論強度。**サーバー側にこれ以外が増えると、古い CLI は
+# 「unknown variant」でモデル一覧の読み込みごと失敗する**(2026-09-08 TK 端末で発生し
+# 丸一日 Codex が使えなくなった)。増えていたら CLI 更新の予兆として WARN を出す。
+KNOWN_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+
+
+def check_codex_version() -> Result:
+    codex = shutil.which("codex")
+    if not codex:
+        return (NG, "codex CLI 版", "codex CLI 不在のため判定不可")
+    use_shell = os.name == "nt"
+    cmd: str | list[str] = "codex --version" if use_shell else ["codex", "--version"]
+    try:
+        proc = subprocess.run(
+            cmd, shell=use_shell, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return (WARN, "codex CLI 版", f"取得できず: {type(exc).__name__}: {exc}")
+    out = (proc.stdout or proc.stderr or "").strip().splitlines()
+    return (OK, "codex CLI 版", out[0] if out else "(版文字列が空)")
+
+
+def _codex_config() -> dict:
+    """~/.codex/config.toml を読む。無ければ空 dict(CLI 既定で動く)。"""
+    path = CODEX_HOME / "config.toml"
+    if not path.exists():
+        return {}
+    try:
+        import tomllib
+
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, ImportError):
+        return {}
+
+
+def _codex_models() -> list[dict]:
+    """~/.codex/models_cache.json のモデル一覧。読めなければ空。"""
+    path = CODEX_HOME / "models_cache.json"
+    if not path.exists():
+        return []
+    try:
+        import json
+
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    models = data.get("models", data) if isinstance(data, dict) else data
+    if isinstance(models, dict):
+        models = models.get("models", [])
+    return [m for m in models if isinstance(m, dict)] if isinstance(models, list) else []
+
+
+def check_codex_model() -> list[Result]:
+    """config.toml の model / 推論強度が、サーバーが返す一覧と噛み合っているか。"""
+    cfg = _codex_config()
+    models = _codex_models()
+    model = cfg.get("model")
+    effort = cfg.get("model_reasoning_effort")
+    out: list[Result] = []
+
+    label = f"{model or '(未設定=CLI既定)'} / effort={effort or '(未設定=モデル既定)'}"
+    if not models:
+        out.append((WARN, "codex モデル設定", f"{label} — models_cache.json が読めず照合不可"))
+        return out
+
+    known = {str(m.get("slug") or m.get("id")): m for m in models}
+    # サーバー側に未知の強度が増えていないか(古い CLI が壊れる予兆)
+    server_efforts = {
+        str(e.get("effort"))
+        for m in models
+        for e in (m.get("supported_reasoning_levels") or [])
+        if isinstance(e, dict)
+    }
+    unknown = sorted(server_efforts - set(KNOWN_EFFORTS))
+    if unknown:
+        out.append((
+            WARN, "codex 推論強度の世代",
+            f"cgd が知らない強度がサーバーにあります: {unknown} — 古い CLI は"
+            " モデル一覧の読み込みごと失敗します。codex CLI の更新を検討してください",
+        ))
+
+    if model is None:
+        out.append((WARN, "codex モデル設定", f"{label} — model 未設定のため照合できません"))
+        return out
+    if model not in known:
+        out.append((
+            NG, "codex モデル設定",
+            f"{label} — このモデルはサーバー一覧にありません"
+            f" (利用可: {', '.join(sorted(known)[:6])}…)",
+        ))
+        return out
+
+    entry = known[model]
+    supported = [
+        str(e.get("effort"))
+        for e in (entry.get("supported_reasoning_levels") or [])
+        if isinstance(e, dict)
+    ]
+    default = entry.get("default_reasoning_level")
+    detail = f"{label} — 対応: {'/'.join(supported) or '(不明)'} 既定: {default}"
+    if effort and supported and effort not in supported:
+        out.append((NG, "codex モデル設定", detail + f" ← effort={effort} は非対応"))
+    else:
+        out.append((OK, "codex モデル設定", detail))
+
+    if entry.get("retirement_at"):
+        out.append((
+            WARN, "codex モデル廃止予告",
+            f"{model} に廃止予告あり (retirement_at={entry['retirement_at']})",
+        ))
+    return out
+
+
 def check_env_var(name: str, required_for: str) -> Result:
     if os.environ.get(name):
         return (OK, name, f"設定済（{required_for}）")
@@ -314,6 +429,8 @@ def main() -> None:
     results.append(check_openai_lib())
     results.append(check_codex_cli())
     results.append(check_codex_login())
+    results.append(check_codex_version())
+    results.extend(check_codex_model())
     results.append(check_env_var("GEMINI_API_KEY", "Geminiオプトイン時のみ・既定では不要"))
     results.append(check_env_var("DEEPSEEK_API_KEY", "Lv0/Lv2-7"))
     results.append(check_env_var("DASHSCOPE_API_KEY", "Lv0/Lv4-7"))

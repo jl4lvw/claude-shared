@@ -2,7 +2,7 @@
 name: cgd
 description: Codex+DeepSeek+Qwen の統合コードレビュー・設計相談・実装・委譲・検証スキル（**Gemini は2026-07にAPIエラー多発のため既定オフのオプトイン参加に格下げ済み**）。**9段階レベル（Lv0〜Lv8）**でトークン消費・所要時間・実装主体が決まる。**レベル・Codex reasoning(low/medium/high)・Gemini/critic観点はすべてClaudeが対象から自動選択して宣言する（ユーザーに選ばせない・明示指示が最優先）**。**Lv0=委譲レーン**（DS/Qwenにコード生成を任せClaudeは分解と検証に専念・scaffold/量産タスク/コスト節約・Antigravity Plugin相当） / Lv1=Codex単独 / Lv2=Codex+DeepSeek並列（既定推奨。旧/codex等価のC+G構成は「Geminiも」等の明示指示で再現可） / Lv3=Codex+DeepSeekの技術×批評「2社×2視点」4レビュー（実装なし・review専用） / Lv4=Claude初期案→[DS+Qwen並列advisor]→Codex直列フル相談+再レビュー（Gemini併用時は先頭にGemini案出しが直列で入る） / Lv5=Lv4+🔴重大指摘の自動修正1周 / Lv6=Codex+DS+Qwen 3者並列レビュー（全員reviewer役、Gemini併用で4者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周（**Workflow実行必須**） / Lv7=Codex多重(medium+high)+補助(DS/Qwen)の4者並列「Codex集中」構成（Gemini併用で5者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周（最深掘り・**Workflow実行必須**） / Lv8=Lv7の技術構成そのまま+Codex(high)とDeepSeekにLv3同様の批評視点を追加した6者並列（Gemini併用で7者）+実装+検証+Codex再レビュー+🔴自動修正1周（技術の最深掘り+複眼批評、最重量級・**Workflow実行必須**）。Lv0=実装主体の切替（コストレーン）、Lv1-8=レビュー強度の選択（品質レーン）で直交。Lv4-5はDS/Qwenをadvisor役で別案出し、Lv6は横並びreviewer、Lv7は深いintegrationバグ検出を狙ってCodex多重化+DS/Qwenに関連関数抜粋を渡して補助役を強化。差分レビュー、設計判断、別案出し、実装、委譲、検証まで一気通貫。**旧 `/codex` `/gemini` 単体スキルは廃止され、本スキル（`/cgd` または `/codex` 起動）が必ずレベル自動決定から始まる**。全Lv共通の任意オプションで『critic観点』（辛口ユーザー視点＝ITに疎い現場担当者の使い勝手の不満 + あるべき論＝本来この仕様はどうあるべきかの批判を Claude本体+DS criticで評価）を追加でき、技術的正しさとは別軸で使い勝手・仕様の妥当性を否定的にチェックする。環境チェックは `python C:/ClaudeCode/.claude/tools/cgd_doctor.py` で一括。「委譲」「scaffold」「量産」「DSで書かせる」「Qwenで書かせる」「コスト節約」「3者に相談」「フルパイプ」「4者レビュー」「Codex多重」「Codex集中」「辛口レビュー」「ユーザー視点」「あるべき論」「critic」「cgd」「Codexにレビュー」「セカンドオピニオン」「C+G」「cg」「Geminiも」などのキーワードで起動。重要な設計判断・難しいバグ・大きめのリファクタの検討時には積極的に提案すること。既存 /generate-by-deepseek（DS単発コード生成→Claudeレビュー）は薄い構成で並立。
 ---
-<!-- SKILL_VERSION: 2026-08-28_000940 -->
+<!-- SKILL_VERSION: 2026-09-08_182729 -->
 
 # cgd — Codex + DeepSeek + Qwen 統合スキル（Lv0〜8、Gemini はオプトイン）
 
@@ -221,8 +221,50 @@ Lv7 の 4 者は Lv8 の技術枠と `cmd` / `timeout` まで完全に一致す�
 | 差分 50 行未満・単一関数・設定/文言変更 | `low` |
 | **通常の差分レビュー（既定）** | `medium` |
 | 複数ファイル横断・状態管理/並行処理・本番データ書込・原因不明の障害調査 | `high` |
+| `xhigh` / `max` / `ultra` | **自動では選ばない**（下記） |
 
 Lv7 / Lv8 は `medium + high` の多重が構成の本質なので、この選択自体が不要（固定）。
+
+#### サーバー側の推論強度は 3 段階では終わっていない（2026-09-08 追記）
+
+`codex` が扱える推論強度は **モデルによって low / medium / high / xhigh / max / ultra** まである。
+実測値（`~/.codex/models_cache.json`、2026-09-08 時点）:
+
+| model | 既定 | 対応段階 |
+|---|---|---|
+| gpt-5.6-sol | low | low / medium / high / xhigh / max / ultra |
+| gpt-5.6-terra | medium | low / medium / high / xhigh / max / ultra |
+| gpt-5.6-luna | medium | low / medium / high / xhigh / max |
+| gpt-5.5 | medium | low / medium / high / xhigh |
+| gpt-5.3-codex-spark | high | low / medium / high / xhigh |
+
+**それでも自動選択は low / medium / high のまま据え置く**（2026-09-08 運用者判断）。
+`high` で不足したというデータが無く、上げるとサブスククォータの消費だけが増えるため。
+cgd は「周回数を上げ直すのは実測データが溜まってから」という方針を Step C2 でも採っており、
+ここも同じ扱いにする。**ユーザーが「max で」「ultra で」と明示したときだけ**その値を使う
+（使う前に対象モデルの対応段階に含まれるか `cgd_doctor` で確かめる）。
+
+#### ⚠️ スキルの版が一致していても、CLI とモデルの版ずれで止まる
+
+2026-09-08、TK 端末で Codex が丸一日使えなくなった。原因は **CLI が古く、サーバーが返す
+モデル一覧に増えた `max` を解釈できず**、モデル一覧の読み込みごと失敗していたこと。
+
+```
+ERROR codex_models_manager::cache: failed to load models cache:
+  unknown variant `max`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
+```
+
+**Step 0 の SKILL_VERSION 照合では検出できない。** スキルの版と、CLI・モデルの版は別の軸で、
+スタンプは一致したまま「OK」と出る。切り分けは `cgd_doctor` に任せる:
+
+```bash
+python C:/ClaudeCode/.claude/tools/cgd_doctor.py
+```
+
+`codex CLI 版` / `codex モデル設定` / `codex 推論強度の世代` / `codex モデル廃止予告` の
+4 行を見る。設定モデルがサーバー一覧に無い、指定した強度が非対応、の 2 つは **NG（exit 1）**。
+サーバーに cgd の知らない強度が増えている場合は WARN が出る（**古い CLI が壊れる予兆**なので、
+出たら CLI を更新する）。
 
 ### Gemini 観点・critic 観点の自動選択
 
@@ -499,7 +541,7 @@ Step 1 の「Codex reasoning の自動選択」表で決める（既定 `medium`
 ### Step 2-1B: Codex 単独実行
 
 ```bash
-mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="<low|medium|high>" --sandbox read-only --skip-git-repo-check "<Codex プロンプト>" < /dev/null
+mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="<low|medium|high|xhigh|max>" --sandbox read-only --skip-git-repo-check "<Codex プロンプト>" < /dev/null
 ```
 
 ### Step 2-1C: 3 列レビュー表で出力
@@ -526,7 +568,7 @@ Gemini を追加参加させる指示（「Geminiも」「C+G」等）があっ�
 
 ```bash
 # Bash #1（Codex）
-mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="<low|medium|high>" --sandbox read-only --skip-git-repo-check "<Codex プロンプト>" < /dev/null
+mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="<low|medium|high|xhigh|max>" --sandbox read-only --skip-git-repo-check "<Codex プロンプト>" < /dev/null
 
 # Bash #2（DeepSeek reviewer）— プロンプトを先にファイル化してパス渡し
 #   cat > "C:/tmp-ai/review_input.txt" <<'EOF' ... <レビュー対象+観点> ... EOF を先に書く
@@ -595,13 +637,13 @@ EOF
 
 ```bash
 # Bash #1（Codex 技術レビュー）
-mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="<low|medium|high>" --sandbox read-only --skip-git-repo-check "まず C:/tmp-ai/review_input.txt の全文を読み、バグ・設計上の懸念・セキュリティ・副作用・既存仕様との整合性を厳密にレビューしてください。必要なら対象実ファイルも読んでよい。日本語で回答。" < /dev/null
+mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="<low|medium|high|xhigh|max>" --sandbox read-only --skip-git-repo-check "まず C:/tmp-ai/review_input.txt の全文を読み、バグ・設計上の懸念・セキュリティ・副作用・既存仕様との整合性を厳密にレビューしてください。必要なら対象実ファイルも読んでよい。日本語で回答。" < /dev/null
 
 # Bash #2（DeepSeek 技術レビュー）
 python "C:/ClaudeCode/.claude/tools/deepseek_coder.py" --role reviewer "C:/tmp-ai/review_input.txt"
 
 # Bash #3（Codex 批評レビュー）
-mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="<low|medium|high>" --sandbox read-only --skip-git-repo-check "まず C:/tmp-ai/review_input.txt の全文を読んでください。あなたは辛口の評価者です。技術的な正しさ（バグの有無）ではなく『使う人が困らないか』『本来この仕様はどうあるべきか』の観点で、遠慮なく否定的に評価してください。次の2つの立場を併せ持ってください: (1) ITに疎い現場担当者 — 実際に使うときの使いにくさ・わかりにくさ・手数の多さ・エラー時の困りごとを利用者の生の言葉で指摘する。(2) 熟練ITアーキテクト — 『本来この仕様はどうあるべきか』を理想形から逆算し、現状の妥協・場当たり対応・本質を外した設計・優先度の誤りを批判する。出力は次の構造で: 1.現場の不満（各項目に困り度: 高/中/低を付ける） 2.あるべき論とのギャップ 3.そもそも論（この機能は本当に要るか） 4.辛口総評（1〜2行で断言）。擁護・肯定・『概ね良い』は禁止。技術的なバグ指摘には深入りしない。日本語で回答。" < /dev/null
+mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="<low|medium|high|xhigh|max>" --sandbox read-only --skip-git-repo-check "まず C:/tmp-ai/review_input.txt の全文を読んでください。あなたは辛口の評価者です。技術的な正しさ（バグの有無）ではなく『使う人が困らないか』『本来この仕様はどうあるべきか』の観点で、遠慮なく否定的に評価してください。次の2つの立場を併せ持ってください: (1) ITに疎い現場担当者 — 実際に使うときの使いにくさ・わかりにくさ・手数の多さ・エラー時の困りごとを利用者の生の言葉で指摘する。(2) 熟練ITアーキテクト — 『本来この仕様はどうあるべきか』を理想形から逆算し、現状の妥協・場当たり対応・本質を外した設計・優先度の誤りを批判する。出力は次の構造で: 1.現場の不満（各項目に困り度: 高/中/低を付ける） 2.あるべき論とのギャップ 3.そもそも論（この機能は本当に要るか） 4.辛口総評（1〜2行で断言）。擁護・肯定・『概ね良い』は禁止。技術的なバグ指摘には深入りしない。日本語で回答。" < /dev/null
 
 # Bash #4（DeepSeek 批評レビュー）
 python "C:/ClaudeCode/.claude/tools/deepseek_coder.py" --role critic "C:/tmp-ai/review_input.txt"
@@ -944,7 +986,7 @@ EOF
 
 ```bash
 # Bash #1（Codex）
-mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="<low|medium|high>" --sandbox read-only --skip-git-repo-check "まず C:/tmp-ai/review_input.txt の全文を読み、記載の差分・対象・評価観点に従ってレビュー。必要なら対象実ファイルも読んでよい。日本語で回答。" < /dev/null
+mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="<low|medium|high|xhigh|max>" --sandbox read-only --skip-git-repo-check "まず C:/tmp-ai/review_input.txt の全文を読み、記載の差分・対象・評価観点に従ってレビュー。必要なら対象実ファイルも読んでよい。日本語で回答。" < /dev/null
 
 # Bash #2（DeepSeek reviewer — 推論寄り）
 python "C:/ClaudeCode/.claude/tools/deepseek_coder.py" --role reviewer "C:/tmp-ai/review_input.txt"
