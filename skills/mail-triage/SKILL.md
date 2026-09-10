@@ -4,7 +4,7 @@ description: 期間内の受信メールを全件列挙し、除外ルール(exc
 trigger: 「返信が必要なメールはないか」「対応漏れ・見落としがないか」「ここ数日のメールを確認して」のように、特定のメールを探すのではなく網羅的に確認したいとき
 ---
 
-<!-- SKILL_VERSION: 2026-09-09_213141 -->
+<!-- SKILL_VERSION: 2026-09-10_093224 -->
 
 # mail-triage — 受信メールのトリアージ(除外方式)
 
@@ -289,6 +289,26 @@ cd "C:/ClaudeCode/900.ClaudeCode/mail-search/scripts" && python stock_notices.py
 **在庫が引けないものは要対応に倒す。** 023 に無い商品(セット品・Eストアー専用品)や
 API が落ちているときに「対応不要」側へ倒すと、補充漏れが黙って起きる。
 
+## 他のセッションへメールを渡す
+
+`spawn_task` などで別セッションに仕事を渡すとき、**注文内容を指示文へ書き写さない**。
+書き写した時点で写し間違いが起こりうるし、向こうは原文に当たれない。
+
+```bash
+cd "C:/ClaudeCode/900.ClaudeCode/mail-search/scripts" && python mail_export.py --subject 3Y6-2CUQ
+```
+
+`C:\tmp-ai\mail\日時_件名_索引ID.md` を書き出すので、**指示文にはこのパスだけ**書く。
+`--id 318919`(索引ID指定) / `--all`(一致した全通。既定は最新1通) / `--cleanup-only`。
+
+- ヘッダ表に **索引ID と保管フォルダ**を必ず入れてある。切り詰められていても原本へ戻れる
+- 添付は**ファイル名だけ**(2026-09-10 ユーザー決定)。実体は mbox が原本のまま。
+  取り出すなら `attachments.extract_attachments()`
+- 本文が 2万字を超えると切り詰める(`--max-body`)。HTML メールはタグを落として貼る
+- 保存先は**リポジトリ外**。本文は機密なので、索引を `~/.mail-search-index/` に
+  置いているのと同じ理由で `C:\tmp-ai` に出す
+- **30日より古い `.md` は実行のたびに自動削除**する。渡した先が読み終えている前提
+
 ## /mail-search との使い分け
 
 | 目的 | 使うもの |
@@ -356,6 +376,7 @@ cd "C:/ClaudeCode/900.ClaudeCode/mail-search" && python -m pytest tests/ -q
 - `900.ClaudeCode/mail-search/scripts/reply_state.py` — 返信済み判定
 - `900.ClaudeCode/mail-search/scripts/webform.py` — 問い合わせフォームの本文パーサ
 - `900.ClaudeCode/mail-search/scripts/stock_notices.py` — 在庫通知の集約(在庫切れ/連携在庫マイナス)
+- `900.ClaudeCode/mail-search/scripts/mail_export.py` — 受信メールを Markdown へ書き出す(他セッションへ渡す用)
 - `900.ClaudeCode/mail-search/exclude_rules.json` — 除外ルール
 - 長期記憶: `feedback_mail_triage_exclusion_not_keyword.md` / `project_mail_search_fts5_index.md`
 - 関連スキル: `/mail-search`(探す用途)
