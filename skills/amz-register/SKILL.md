@@ -4,7 +4,7 @@ description: 022.Amazon在庫PWAで新規商品(親+バリエーション子)を
 trigger: 「Gxxxxを登録したい」「Amazonに新規出品したい」等、023マスタの商品番号(G####)をAmazonへ新規登録したいとき
 ---
 
-<!-- SKILL_VERSION: 2026-09-09_140000 -->
+<!-- SKILL_VERSION: 2026-09-11_120000 -->
 
 # amz-register — Amazon新規商品登録
 
@@ -131,18 +131,56 @@ VALIDATION_PREVIEW再実行やスキル更新まで自動で続けてしまい�
 サムネイルグリッドでアーティファクトにまとめる。除外を勧めたい画像(レビュー画面・
 マーケティングバッジ等)にはキャプションで理由を添えるが、候補からは外さない。
 
-#### クリック選択式アーティファクト(2026-09-09確定・必須)
+#### クリック選択式アーティファクト(2026-09-09確定・2026-09-11テンプレート化・必須)
 
-`artifact-capabilities` スキルを読み込んだうえで、`capabilities: {"db": {}}` を宣言した
-アーティファクトを作る。各サムネイル(`<figure data-letter="A">`等)にクリックハンドラを
-付け、クリック順に選択済みリスト(最大6件)へ追加/解除するJSを実装する。選択順は
-右上にバッジ(①②③…)で表示し、変更のたびに
-`db.doc("{G番号}/other_image_selection").set({order: [...], updated_at})` へ自動保存する。
-ユーザーから「選び終えた」と言われたら `read_db`(`db_op: "get"`, 該当doc)で選択順を
-読み取り、その順番をそのまま `other_1`以降への割当順として扱う。実装テンプレは
-このスキル更新時のセッションで作成した `build_g2195_image_picker_v2.py` を参照
-(データ属性でletterを持たせる・selected配列のindexで①②③…を出す・db書き込みは
-try/catchで包み失敗してもUIは壊さない、などのパターンをそのまま踏襲してよい)。
+**このスキル直下の `template_image_picker.html` + `build_image_picker.py` を必ず使う。
+その場でHTML/JSを書き起こさない。** 2026-09-11に手書きで作り直した際、
+`.format()`用の`{{`/`}}`エスケープが中途半端に残ってCSS/JSが壊れ(クリックしても
+選択できない)、ユーザーに実害が出た。以後は「同じものを毎回同じ品質で再現する」
+ため、このテンプレート+ビルドスクリプト以外の経路でこの種のアーティファクトを
+作ってはいけない(amz-candidate-pickerスキルの設計思想と同じ)。
+
+`artifact-capabilities` スキルを読み込んだうえで、`capabilities: {"db": {}}` を
+宣言してpublishする。
+
+**手順**:
+
+1. 候補画像をJSON配列にする(`{"name": "sub_02", "label": "正面・純白背景", "url": "..."}`
+   の配列。`name`は画像ディレクトリ配下の`<name>.jpg`を指す。`url`は任意(省略可)だが
+   **極力付ける**(2026-09-11追加) — 023商品マスタDBの`product_images`テーブルの
+   `rakuten_location`から
+   `https://image.rakuten.co.jp/{RAKUTEN_SHOP_URL}/cabinet{rakuten_location}`で
+   組み立てられる(`server.services.rakuten_image_import.build_image_url()`と同じ規則。
+   `RAKUTEN_SHOP_URL`は`seifukunofuji`)。付けておくと、アーティファクト上で画像を
+   長押し(600ms)してその画像の取得元URLをクリップボードへコピーできる —
+   ユーザーが選定後に別PCでmain画像を加工する際、検索し直さず元画像に辿り着ける
+   ようにするための機能(ユーザー要望で追加)
+2. ビルド:
+   ```bash
+   python C:/ClaudeCode/.claude/skills/amz-register/build_image_picker.py \
+     --candidates candidates.json \
+     --img-dir "C:/ProductMaster/images/{G番号}" \
+     --output out.html \
+     --slug {G番号など・カテゴリ/色ごとに一意} \
+     --title-tag "{G番号} 画像候補(クリック選択)" \
+     --eyebrow "{G番号} — other画像 クリック選択(最大6枚)" \
+     --h1 "{商品名}"
+   ```
+   `--note`で在庫切れ等の注意書きを追加できる(省略可)。`--max-select`で選択上限を
+   変更できる(既定6)。
+3. Artifact publish (`capabilities: {"db": {}}`)
+4. 公開直後、生成物に`{{`や`}}`が残っていないか機械的に確認する
+   (`grep -c '{{' out.html` が0であること)。**手書き修正・sedでの複製は禁止**
+   (別G番号への使い回しでlabel/IMG_DIRの置換漏れが起きた実例が複数ある —
+   `付録:既知の落とし穴`参照)。修正が要る場合はテンプレート側
+   (`template_image_picker.html`)を直し、全カテゴリで再ビルドする
+5. ユーザーから「選び終えた」と言われたら `read_db`(`db_op: "get"`,
+   `collection: "{slug}"`, `doc_id: "other_image_selection"`)で選択順を読み取り、
+   その順番をそのまま `other_1`以降への割当順として扱う
+
+選択順は右上にバッジ(①②③…)で表示され、変更のたびに
+`db.doc("{slug}/other_image_selection").set({order: [...], updated_at})` へ自動保存される
+(テンプレート側に実装済み・変更不要)。
 
 ### Step 4: アップロード
 
@@ -361,6 +399,17 @@ FBA用に払い出されたFNSKUバーコードを、**自社発送(LCL)分の7S
 
 ## 付録: 既知の落とし穴
 
+- **クリック選択式アーティファクトはテンプレート(`template_image_picker.html`+
+  `build_image_picker.py`)以外の経路で作らない(2026-09-11実例)**。その場で
+  Python文字列(f-string/`.format()`)にHTML/CSS/JSを埋め込んで手書きした際、
+  `.format()`用に`{{`/`}}`と二重化したブレースが、実際には`.replace()`方式に
+  切り替えたため単体の`{`/`}`に戻し忘れて残った。結果、CSS宣言・JSの関数定義が
+  すべて壊れ、生成自体は成功(HTTP 200・画像も表示される)するのに**クリックしても
+  何も起きない**という、見た目だけでは気づきにくい壊れ方をした。ユーザー指摘で
+  発覚。教訓: **同じUIパーツを2回以上作るなら、必ず独立した`.html`テンプレート
+  ファイル+ビルドスクリプトに切り出す**(Pythonの三重引用符文字列に長いHTML/JS
+  を埋め込むと、この種のエスケープ事故が起きやすい)。生成後は
+  `grep -c '{{' out.html`が0であることを機械的に確認する
 - **同種商品の前回スクリプトを`sed`で一括複製しない(2026-09-09実例)**。前の商品の
   build/page-simスクリプトを`sed 's/g2195/g2221/g'`のように小文字置換だけで複製すると、
   `Path(r"C:/ProductMaster/images/G2195")`のような**大文字G番号を含む行が置換されず
@@ -382,6 +431,15 @@ FBA用に払い出されたFNSKUバーコードを、**自社発送(LCL)分の7S
   アップロードすると安定する
 - **サイズ表を商品説明に載せる場合、ユーザーが明示的に不要と言った注記文は削除する**
   (「※参考値です」等を機械的に付けない — 2026-08-27の実例で指摘された)
+- **カラーコード(color属性のASCII表記)はその場で略語を推測しない(2026-09-11実例)**。
+  ネイビーを`NVY`、ブラックを`BLK`と、英単語から自己流で略語を作って2回連続で
+  ユーザーに訂正された(正しくは`NV`/`BK`)。022 `inventory_items`の実SKU162件を
+  調べたところ、この業務では`NV`/`GL`/`BK`/`WH`/`OD`(2文字)と`GLD`/`SLV`(3文字)
+  という実績のある略語体系が既にあり、単語から桁数を推測すると高確率で外れる。
+  対策: 色名からcolor属性コードを決める前に必ず
+  `python C:/ClaudeCode/.claude/skills/amz-register/lookup_color_code.py <色名>`
+  を実行する。`color_codes.json`に無い新色は、その場で作らずユーザーに確認して
+  `color_codes.json`へ追記してから使う(`--list`で登録済み一覧を確認できる)
 - **COLLECTIBLE_COINS(記念コイン)はSHIRTと属性体系が全く別**(2026-09-09追加)。
   `item_diameter`/`material`/`mint_mark`/`denomination_unit`/`series_title`/
   `model_year`/`graded_by`/`grade_rating`等が必要で、`target_gender`/`department`/

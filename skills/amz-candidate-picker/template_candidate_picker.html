@@ -259,8 +259,9 @@
 
   function matchesText(row) {
     if (!state.filterText) return true;
-    var q = state.filterText;
-    return (row.g + " " + row.sku + " " + row.name).toLowerCase().indexOf(q) >= 0;
+    var terms = state.filterText.split(/\s+/).filter(Boolean);
+    var haystack = (row.g + " " + row.sku + " " + row.name).toLowerCase();
+    return terms.every(function (t) { return haystack.indexOf(t) >= 0; });
   }
 
   function visibleRows() {

@@ -86,7 +86,11 @@ def main() -> None:
     ap.add_argument("--subtitle", required=True, help="タイトル下の説明文")
     ap.add_argument("--footer", required=True, help="ページ下部の出典・注意書き")
     ap.add_argument("--slug", required=True, help="db保存先の識別子(英数字とアンダースコア推奨、他の候補セレクターと衝突しないユニークな値)")
-    ap.add_argument("--search-placeholder", default="G番号・SKU・商品名で検索", help="検索欄のプレースホルダ")
+    ap.add_argument(
+        "--search-placeholder",
+        default="G番号・SKU・商品名で検索(スペース区切りでAND)",
+        help="検索欄のプレースホルダ",
+    )
     args = ap.parse_args()
 
     candidates = load_candidates(args.input)

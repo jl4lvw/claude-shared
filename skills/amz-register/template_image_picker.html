@@ -1,0 +1,241 @@
+<title>__TITLE_TAG__</title>
+<style>
+  :root {
+    --bg: #eef0f2; --surface: #ffffff; --surface-2: #f6f7f9; --border: #d7dbe1;
+    --text: #1c2128; --text-dim: #5b6472; --text-faint: #8993a3;
+    --accent: #9c6f1f; --accent-soft: #f2e6d0;
+    --ok: #2f7d4f; --ok-soft: #e3f2e8;
+    --shadow: 0 1px 2px rgba(20,24,30,.06), 0 8px 24px rgba(20,24,30,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#12161d; --surface:#1a2029; --surface-2:#212836; --border:#2b3341;
+      --text:#e7e9ec; --text-dim:#a2aab8; --text-faint:#6d7684;
+      --accent:#d5a84f; --accent-soft:#34291a;
+      --ok:#5cb884; --ok-soft:#16261d;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 28px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#12161d; --surface:#1a2029; --surface-2:#212836; --border:#2b3341;
+    --text:#e7e9ec; --text-dim:#a2aab8; --text-faint:#6d7684;
+    --accent:#d5a84f; --accent-soft:#34291a;
+    --ok:#5cb884; --ok-soft:#16261d;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 28px rgba(0,0,0,.35);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo", "Segoe UI", sans-serif;
+    line-height: 1.6; -webkit-font-smoothing: antialiased;
+  }
+  .page { max-width: 1120px; margin: 0 auto; padding: 30px 20px 90px; display: flex; flex-direction: column; gap: 16px; }
+  .eyebrow { font-size: 11.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
+  h1 { margin: 0; font-size: 21px; font-weight: 800; }
+  .sub { color: var(--text-dim); font-size: 13.5px; max-width: 78ch; }
+  .note { font-size: 13px; color: var(--text); background: var(--ok-soft); border-radius: 8px; padding: 10px 12px; }
+
+  .status-bar { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; box-shadow: var(--shadow); }
+  .status-bar .order { font-family: ui-monospace, Consolas, monospace; font-size: 14px; font-weight: 700; color: var(--text); flex: 1; min-width: 200px; }
+  .status-bar .count { font-size: 12.5px; color: var(--text-dim); }
+  .status-bar .count.full { color: var(--ok); font-weight: 700; }
+  .status-bar button { border: 1px solid var(--border); background: var(--surface-2); color: var(--text); border-radius: 8px; padding: 7px 14px; font-size: 12.5px; cursor: pointer; font-weight: 700; }
+  .status-bar button:hover { background: var(--accent-soft); }
+  .save-indicator { font-size: 11.5px; color: var(--text-faint); }
+  .save-indicator.saved { color: var(--ok); }
+
+  .grid { display: grid; grid-template-columns: repeat(5,1fr); gap: 12px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: repeat(3,1fr); } }
+  @media (max-width: 560px) { .grid { grid-template-columns: repeat(2,1fr); } }
+  figure { margin: 0; background: var(--surface); border: 2px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); overflow: hidden; display: flex; flex-direction: column; position: relative; cursor: pointer; transition: border-color .12s; user-select: none; }
+  figure:hover { border-color: var(--accent); }
+  figure.selected { border-color: var(--ok); }
+  figure .letter { position: absolute; top: 8px; left: 8px; width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #fff; font-weight: 800; font-size: 13px; display: flex; align-items: center; justify-content: center; box-shadow: var(--shadow); z-index: 1; }
+  figure .order-badge { position: absolute; top: 8px; right: 8px; width: 28px; height: 28px; border-radius: 50%; background: var(--ok); color: #fff; font-weight: 800; font-size: 14px; display: none; align-items: center; justify-content: center; box-shadow: var(--shadow); z-index: 1; }
+  figure.selected .order-badge { display: flex; }
+  figure img { width: 100%; aspect-ratio: 1/1; object-fit: cover; display: block; background: #fff; pointer-events: none; }
+  figcaption { padding: 7px 9px; pointer-events: none; }
+  figcaption .name { font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; font-weight: 700; color: var(--text); display: block; }
+  figcaption .label { font-size: 10.5px; color: var(--text-dim); }
+  figcaption .url-hint { font-size: 9px; color: var(--text-faint); display: block; margin-top: 2px; }
+
+  footer.note-foot { font-size: 12px; color: var(--text-faint); text-align: center; padding-top: 4px; }
+
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(12px); opacity: 0;
+    background: var(--text); color: var(--bg); font-size: 12.5px; font-weight: 700; padding: 10px 18px;
+    border-radius: 999px; box-shadow: var(--shadow); pointer-events: none; transition: opacity .15s, transform .15s; z-index: 20; max-width: 90vw; text-align: center; }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+</style>
+
+<div class="page">
+  <div>
+    <div class="eyebrow">__EYEBROW__</div>
+    <h1>__H1__</h1>
+    <div class="sub">__SUBTITLE__</div>
+  </div>
+__NOTE_BLOCK__
+  <div class="status-bar">
+    <div class="order" id="orderText">未選択</div>
+    <div class="count" id="countText">0 / __MAX__</div>
+    <span class="save-indicator" id="saveIndicator"></span>
+    <button id="resetBtn" type="button">リセット</button>
+  </div>
+
+  <div class="grid" id="grid">
+__CARDS__
+  </div>
+
+  <footer class="note-foot">__FOOTER__</footer>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  var MAX_SELECT = __MAX__;
+  var selected = [];
+  var grid = document.getElementById('grid');
+  var orderText = document.getElementById('orderText');
+  var countText = document.getElementById('countText');
+  var saveIndicator = document.getElementById('saveIndicator');
+  var resetBtn = document.getElementById('resetBtn');
+  var toast = document.getElementById('toast');
+  var db = null;
+
+  var toastTimer = null;
+  function showToast(msg) {
+    toast.textContent = msg;
+    toast.classList.add('show');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toast.classList.remove('show'); }, 1800);
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try { document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta);
+    return Promise.resolve();
+  }
+
+  // 長押し(600ms)で画像取得元URLをクリップボードへコピーする。
+  // 長押しが成立したら直後の click(=選択トグル)を1回だけ無視する。
+  var LONG_PRESS_MS = 600;
+  var pressTimer = null;
+  var pressFig = null;
+  var suppressNextClick = false;
+
+  function clearPressTimer() {
+    if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+    pressFig = null;
+  }
+
+  grid.addEventListener('pointerdown', function (ev) {
+    var fig = ev.target.closest('figure');
+    if (!fig) return;
+    pressFig = fig;
+    pressTimer = setTimeout(function () {
+      var url = fig.getAttribute('data-url');
+      var name = fig.getAttribute('data-letter');
+      pressTimer = null;
+      suppressNextClick = true;
+      if (url) {
+        copyText(url).then(function () {
+          showToast(name + ' の画像URLをコピーしました');
+        }).catch(function () {
+          showToast('コピーに失敗しました');
+        });
+      } else {
+        showToast('この画像には元URLがありません');
+      }
+    }, LONG_PRESS_MS);
+  });
+  grid.addEventListener('pointerup', clearPressTimer);
+  grid.addEventListener('pointerleave', clearPressTimer);
+  grid.addEventListener('pointercancel', clearPressTimer);
+
+  function render() {
+    var figs = grid.querySelectorAll('figure');
+    figs.forEach(function (fig) {
+      var letter = fig.getAttribute('data-letter');
+      var idx = selected.indexOf(letter);
+      var badge = fig.querySelector('.order-badge');
+      if (idx >= 0) {
+        fig.classList.add('selected');
+        badge.textContent = String(idx + 1);
+      } else {
+        fig.classList.remove('selected');
+        badge.textContent = '';
+      }
+    });
+    orderText.textContent = selected.length ? selected.join(' → ') : '未選択';
+    countText.textContent = selected.length + ' / ' + MAX_SELECT;
+    countText.classList.toggle('full', selected.length === MAX_SELECT);
+  }
+
+  async function save() {
+    if (!db) return;
+    try {
+      saveIndicator.textContent = '保存中…';
+      saveIndicator.classList.remove('saved');
+      await db.doc('__SLUG__/other_image_selection').set({ order: selected, updated_at: new Date().toISOString() });
+      saveIndicator.textContent = '保存済み';
+      saveIndicator.classList.add('saved');
+    } catch (e) {
+      saveIndicator.textContent = '保存失敗';
+      saveIndicator.classList.remove('saved');
+    }
+  }
+
+  grid.addEventListener('click', function (ev) {
+    if (suppressNextClick) {
+      suppressNextClick = false;
+      return;
+    }
+    var fig = ev.target.closest('figure');
+    if (!fig) return;
+    var letter = fig.getAttribute('data-letter');
+    var idx = selected.indexOf(letter);
+    if (idx >= 0) {
+      selected.splice(idx, 1);
+    } else {
+      if (selected.length >= MAX_SELECT) return;
+      selected.push(letter);
+    }
+    render();
+    save();
+  });
+
+  resetBtn.addEventListener('click', function () {
+    selected = [];
+    render();
+    save();
+  });
+
+  render();
+
+  if (window.claude && typeof window.claude.use === 'function') {
+    window.claude.use('db').then(function (ns) {
+      db = ns;
+      if (db) {
+        db.doc('__SLUG__/other_image_selection').get().then(function (doc) {
+          if (doc && Array.isArray(doc.order)) {
+            selected = doc.order.slice(0, MAX_SELECT);
+            render();
+          }
+        }).catch(function () {});
+      }
+    }).catch(function () {});
+  }
+})();
+</script>

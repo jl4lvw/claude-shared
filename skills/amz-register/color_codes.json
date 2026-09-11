@@ -1,0 +1,46 @@
+{
+  "_comment": "Amazon出品SKUのカラーコード正式表。022 inventory_items の実SKU162件(FJ-*-WP-*/FJ-*-CO-*)から抽出した実績コードのみを正とする。新しい色が必要な場合はここに追記してから使うこと(その場で略語を作らない)。",
+  "_source": "python one-off query on 022.Amazon在庫PWA/server/amzinv.db inventory_items, 2026-09-11",
+  "codes": {
+    "NV": {
+      "code": "NV",
+      "aliases": ["ネイビー", "紺", "紺色", "NAVY", "NAVY BLUE"],
+      "note": "実績1件(単独NV)。旧SKUの大半はLowNV(46件)だが、現行の新規登録はプレーンなNVを使う(2026-09-11 G2138で確定)"
+    },
+    "GL": {
+      "code": "GL",
+      "aliases": ["グレー", "グレイ", "GRAY", "GREY"],
+      "note": "旧SKUはLowGL(3件)。現行の新規登録はプレーンなGL(2026-09-11 G2138で確定)"
+    },
+    "BK": {
+      "code": "BK",
+      "aliases": ["ブラック", "黒", "黒色", "BLACK"],
+      "note": "実績3件。BLKではない(2026-09-11 G2139でユーザー訂正)"
+    },
+    "WH": {
+      "code": "WH",
+      "aliases": ["ホワイト", "白", "白色", "WHITE"],
+      "note": "実績1件"
+    },
+    "OD": {
+      "code": "OD",
+      "aliases": ["オリーブドラブ", "OLIVE", "OLIVE DRAB"],
+      "note": "実績1件(プレーン)。旧SKUはLowOD(1件)"
+    },
+    "GLD": {
+      "code": "GLD",
+      "aliases": ["ゴールド", "金", "金色", "GOLD"],
+      "note": "実績16件。3文字が正(コイン系で多用)"
+    },
+    "SLV": {
+      "code": "SLV",
+      "aliases": ["シルバー", "銀", "銀色", "SILVER"],
+      "note": "実績3件。3文字が正"
+    },
+    "BLU": {
+      "code": "BLU",
+      "aliases": ["ブルー", "青", "青色", "BLUE"],
+      "note": "実績なし(SKU一覧に無し)だがG2179で新規に確定・登録済み(2026-09-11)。今後はこの表が正"
+    }
+  }
+}
