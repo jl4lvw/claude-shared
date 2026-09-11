@@ -1,0 +1,406 @@
+<title>__TITLE__</title>
+<style>
+  :root {
+    --bg: #f3f1e7;
+    --surface: #ffffff;
+    --surface-2: #eae6d5;
+    --border: #d8d3bd;
+    --text: #26251c;
+    --text-dim: #6b6752;
+    --text-faint: #948e72;
+    --accent: #5b6b3f;
+    --accent-soft: #e3e8d3;
+    --accent-strong: #46542f;
+    --gold: #8a6a1f;
+    --gold-soft: #f3e6c8;
+    --stock-ok: #2f6b52;
+    --stock-ok-soft: #dcefe3;
+    --stock-zero: #8a3b2f;
+    --stock-zero-soft: #f5e2dd;
+    --hidden-badge: #6b5a8a;
+    --hidden-badge-soft: #eae2f5;
+    --shadow: 0 1px 2px rgba(30,28,15,.07), 0 8px 24px rgba(30,28,15,.07);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #181a13; --surface: #20231a; --surface-2: #262a1d; --border: #34382a;
+      --text: #e9e7d8; --text-dim: #b3ae95; --text-faint: #82806c;
+      --accent: #9db06e; --accent-soft: #2b3320; --accent-strong: #c3d494;
+      --gold: #d7ac52; --gold-soft: #332a15;
+      --stock-ok: #7dc9a0; --stock-ok-soft: #1b2f24;
+      --stock-zero: #e08a76; --stock-zero-soft: #3a1f19;
+      --hidden-badge: #b79bdb; --hidden-badge-soft: #2a2035;
+      --shadow: 0 1px 2px rgba(0,0,0,.35), 0 8px 28px rgba(0,0,0,.4);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #181a13; --surface: #20231a; --surface-2: #262a1d; --border: #34382a;
+    --text: #e9e7d8; --text-dim: #b3ae95; --text-faint: #82806c;
+    --accent: #9db06e; --accent-soft: #2b3320; --accent-strong: #c3d494;
+    --gold: #d7ac52; --gold-soft: #332a15;
+    --stock-ok: #7dc9a0; --stock-ok-soft: #1b2f24;
+    --stock-zero: #e08a76; --stock-zero-soft: #3a1f19;
+    --hidden-badge: #b79bdb; --hidden-badge-soft: #2a2035;
+    --shadow: 0 1px 2px rgba(0,0,0,.35), 0 8px 28px rgba(0,0,0,.4);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "Zen Kaku Gothic New", -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo", sans-serif;
+    line-height: 1.6; -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: ui-monospace, Consolas, "SF Mono", monospace; font-variant-numeric: tabular-nums; }
+
+  .page { max-width: 1080px; margin: 0 auto; padding: 28px 20px 140px; display: flex; flex-direction: column; gap: 18px; }
+
+  .eyebrow { font-size: 11.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--accent-strong); }
+  h1 { margin: 4px 0 0; font-size: 23px; font-weight: 800; text-wrap: balance; }
+  .sub { color: var(--text-dim); font-size: 13.5px; max-width: 72ch; margin-top: 4px; }
+
+  .toolbar {
+    position: sticky; top: 0; z-index: 5;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 12px 14px; box-shadow: var(--shadow);
+  }
+  .search-wrap { position: relative; flex: 1 1 240px; min-width: 200px; }
+  .search-wrap svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); width: 15px; height: 15px; color: var(--text-faint); pointer-events: none; }
+  #search {
+    width: 100%; padding: 9px 12px 9px 32px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface-2); color: var(--text); font-size: 13.5px; font-family: inherit;
+  }
+  #search:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  #search::placeholder { color: var(--text-faint); }
+
+  .chip-filters { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip {
+    border: 1px solid var(--border); background: var(--surface-2); color: var(--text-dim);
+    border-radius: 999px; padding: 6px 12px; font-size: 12px; font-weight: 700; cursor: pointer;
+    font-family: inherit; white-space: nowrap;
+  }
+  .chip:hover { border-color: var(--accent); color: var(--text); }
+  .chip.active { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+
+  .count-text { font-size: 12px; color: var(--text-faint); white-space: nowrap; padding-left: 2px; }
+  .count-text b { color: var(--text); }
+
+  .table-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  /* NOTE: the scroll+sticky-header pair below is scoped to THIS box only (max-height +
+     overflow:auto on .table-scroll, thead th sticky top:0 relative to it). Do not make
+     the outer .toolbar and this thead both sticky against the page scroll with a fixed
+     top:Npx offset on the thead -- if the toolbar's rendered height ever differs from N
+     (e.g. it wraps to two lines on a narrower viewport), the thead sits at the wrong
+     offset and a sliver of an already-scrolled-past row peeks through above it. Keeping
+     the table's own scroll container makes the header's sticky position self-contained
+     and immune to the toolbar's height. (Found and fixed 2026-09-11.) */
+  .table-scroll { overflow: auto; max-height: min(58vh, 520px); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 720px; }
+  thead th {
+    text-align: left; padding: 10px 14px; background: var(--surface-2); color: var(--text-dim);
+    font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+    border-bottom: 1px solid var(--border); position: sticky; top: 0;
+  }
+  thead th.num, td.num { text-align: right; }
+  thead th.chk, td.chk { width: 40px; text-align: center; }
+  tbody tr { border-bottom: 1px solid var(--border); cursor: pointer; transition: background .1s; }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: var(--accent-soft); }
+  tbody tr.selected { background: var(--accent-soft); }
+  tbody tr.selected td.name { font-weight: 700; }
+  td { padding: 9px 14px; vertical-align: top; }
+  td.g { font-weight: 700; color: var(--accent-strong); white-space: nowrap; }
+  td.sku { color: var(--text-dim); white-space: nowrap; }
+  td.name { color: var(--text); max-width: 420px; }
+  td.price { color: var(--gold); font-weight: 700; white-space: nowrap; }
+  input[type="checkbox"] {
+    width: 17px; height: 17px; accent-color: var(--accent); cursor: pointer; vertical-align: middle;
+  }
+  .badge {
+    display: inline-block; font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+    white-space: nowrap;
+  }
+  .badge.ok { background: var(--stock-ok-soft); color: var(--stock-ok); }
+  .badge.zero { background: var(--stock-zero-soft); color: var(--stock-zero); }
+  .badge.hidden-b { background: var(--hidden-badge-soft); color: var(--hidden-badge); margin-left: 5px; }
+
+  .empty-row td { text-align: center; padding: 34px; color: var(--text-faint); font-size: 13px; }
+
+  .selection-bar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+    background: var(--surface); border-top: 1px solid var(--border); box-shadow: 0 -8px 24px rgba(0,0,0,.08);
+  }
+  .selection-inner {
+    max-width: 1080px; margin: 0 auto; padding: 12px 20px 16px; display: flex; flex-direction: column; gap: 8px;
+  }
+  .selection-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .selection-head .label { font-size: 12.5px; font-weight: 700; color: var(--text-dim); }
+  .selection-head .n { color: var(--accent-strong); font-size: 15px; }
+  .selection-actions { margin-left: auto; display: flex; gap: 8px; }
+  .btn {
+    border: 1px solid var(--border); background: var(--surface-2); color: var(--text); border-radius: 8px;
+    padding: 7px 14px; font-size: 12.5px; font-weight: 700; cursor: pointer; font-family: inherit;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .save-indicator { font-size: 11px; color: var(--text-faint); }
+  .save-indicator.saved { color: var(--stock-ok); }
+
+  .chips-row { display: flex; flex-wrap: wrap; gap: 6px; max-height: 62px; overflow-y: auto; }
+  .sel-chip {
+    display: inline-flex; align-items: center; gap: 6px; background: var(--accent-soft); color: var(--accent-strong);
+    border-radius: 999px; padding: 4px 6px 4px 11px; font-size: 12px; font-weight: 700;
+  }
+  .sel-chip button {
+    border: none; background: transparent; color: var(--accent-strong); cursor: pointer; font-size: 14px;
+    line-height: 1; padding: 2px 5px; border-radius: 50%; font-family: inherit;
+  }
+  .sel-chip button:hover { background: rgba(0,0,0,.08); }
+  .empty-sel { font-size: 12px; color: var(--text-faint); }
+
+  footer.note-foot { font-size: 11.5px; color: var(--text-faint); }
+
+  @media (max-width: 620px) {
+    .toolbar { position: static; }
+  }
+</style>
+
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@500;700;900&display=swap">
+
+<div class="page">
+  <div>
+    <div class="eyebrow">__EYEBROW__</div>
+    <h1>__TITLE__</h1>
+    <div class="sub">__SUBTITLE__</div>
+  </div>
+
+  <div class="toolbar">
+    <div class="search-wrap">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+      <input id="search" type="text" placeholder="__SEARCH_PLACEHOLDER__" autocomplete="off">
+    </div>
+    <div class="chip-filters" id="chipFilters">
+      <button class="chip active" data-filter="all" type="button">すべて</button>
+      <button class="chip" data-filter="instock" type="button">在庫あり</button>
+      <button class="chip" data-filter="zero" type="button">在庫0</button>
+      <button class="chip" data-filter="hidden" type="button">非公開</button>
+    </div>
+    <div class="count-text" id="countText"></div>
+  </div>
+
+  <div class="table-card">
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th class="chk"></th>
+            <th>G番号</th>
+            <th>Eストア SKU</th>
+            <th>商品名</th>
+            <th class="num">価格</th>
+            <th>在庫</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <footer class="note-foot">__FOOTER_NOTE__</footer>
+</div>
+
+<div class="selection-bar">
+  <div class="selection-inner">
+    <div class="selection-head">
+      <span class="label">選択中: <span class="n" id="selCount">0</span> / <span id="totalCount">0</span></span>
+      <span class="save-indicator" id="saveIndicator"></span>
+      <div class="selection-actions">
+        <button class="btn" id="clearBtn" type="button">全解除</button>
+        <button class="btn primary" id="copyBtn" type="button">G番号をコピー</button>
+      </div>
+    </div>
+    <div class="chips-row" id="chipsRow">
+      <span class="empty-sel">まだ何も選択されていません。行をクリックして選んでください。</span>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var DATA = __DATA__;
+  var DB_DOC = "__DB_DOC__";
+
+  var state = { selected: new Set(), filterText: "", quickFilter: "all" };
+  var db = null;
+  var saveTimer = null;
+
+  var tbody = document.getElementById("tbody");
+  var searchInput = document.getElementById("search");
+  var countText = document.getElementById("countText");
+  var selCount = document.getElementById("selCount");
+  var totalCount = document.getElementById("totalCount");
+  var chipsRow = document.getElementById("chipsRow");
+  var saveIndicator = document.getElementById("saveIndicator");
+  var chipFilters = document.getElementById("chipFilters");
+
+  totalCount.textContent = DATA.length;
+
+  function matchesQuick(row) {
+    if (state.quickFilter === "instock") return typeof row.stock === "number" && row.stock > 0;
+    if (state.quickFilter === "zero") return row.stock === 0;
+    if (state.quickFilter === "hidden") return row.status === "hidden";
+    return true;
+  }
+
+  function matchesText(row) {
+    if (!state.filterText) return true;
+    var q = state.filterText;
+    return (row.g + " " + row.sku + " " + row.name).toLowerCase().indexOf(q) >= 0;
+  }
+
+  function visibleRows() {
+    return DATA.filter(function (r) { return matchesQuick(r) && matchesText(r); });
+  }
+
+  function stockBadge(row) {
+    if (row.stock === null || row.stock === undefined) {
+      return '<span class="badge" style="background:var(--surface-2);color:var(--text-faint)">親(子で管理)</span>';
+    }
+    if (row.stock > 0) return '<span class="badge ok">在庫 ' + row.stock + '</span>';
+    return '<span class="badge zero">在庫0</span>';
+  }
+
+  function render() {
+    var rows = visibleRows();
+    countText.textContent = DATA.length + "件中 " + rows.length + "件表示";
+
+    if (rows.length === 0) {
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="6">条件に一致する候補がありません。</td></tr>';
+    } else {
+      tbody.innerHTML = rows.map(function (r) {
+        var checked = state.selected.has(r.g) ? "checked" : "";
+        var selCls = state.selected.has(r.g) ? " selected" : "";
+        var hiddenBadge = r.status === "hidden" ? '<span class="badge hidden-b">非公開</span>' : "";
+        return (
+          '<tr class="' + selCls.trim() + '" data-g="' + r.g + '">' +
+            '<td class="chk"><input type="checkbox" ' + checked + ' data-g="' + r.g + '"></td>' +
+            '<td class="g mono">' + r.g + '</td>' +
+            '<td class="sku mono">' + r.sku + '</td>' +
+            '<td class="name">' + r.name + hiddenBadge + '</td>' +
+            '<td class="price mono num">¥' + r.price.toLocaleString() + '</td>' +
+            '<td>' + stockBadge(r) + '</td>' +
+          '</tr>'
+        );
+      }).join("");
+    }
+
+    renderSelection();
+  }
+
+  function renderSelection() {
+    selCount.textContent = state.selected.size;
+    if (state.selected.size === 0) {
+      chipsRow.innerHTML = '<span class="empty-sel">まだ何も選択されていません。行をクリックして選んでください。</span>';
+      return;
+    }
+    var items = DATA.filter(function (r) { return state.selected.has(r.g); });
+    chipsRow.innerHTML = items.map(function (r) {
+      return '<span class="sel-chip">' + r.g + '<button type="button" data-g="' + r.g + '" aria-label="' + r.g + 'を解除">×</button></span>';
+    }).join("");
+  }
+
+  function setSelected(g, on) {
+    if (on) state.selected.add(g); else state.selected.delete(g);
+    render();
+    scheduleSave();
+  }
+
+  function scheduleSave() {
+    if (!db) return;
+    saveIndicator.textContent = "保存中…";
+    saveIndicator.classList.remove("saved");
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(function () {
+      db.doc(DB_DOC).set({
+        selected: Array.from(state.selected),
+        updated_at: new Date().toISOString()
+      }).then(function () {
+        saveIndicator.textContent = "保存済み";
+        saveIndicator.classList.add("saved");
+      }).catch(function () {
+        saveIndicator.textContent = "保存失敗";
+        saveIndicator.classList.remove("saved");
+      });
+    }, 400);
+  }
+
+  tbody.addEventListener("click", function (ev) {
+    var checkboxEl = ev.target.closest('input[type="checkbox"]');
+    var tr = ev.target.closest("tr[data-g]");
+    if (!tr) return;
+    var g = tr.getAttribute("data-g");
+    if (checkboxEl) {
+      setSelected(g, checkboxEl.checked);
+      return;
+    }
+    setSelected(g, !state.selected.has(g));
+  });
+
+  chipsRow.addEventListener("click", function (ev) {
+    var btn = ev.target.closest("button[data-g]");
+    if (!btn) return;
+    setSelected(btn.getAttribute("data-g"), false);
+  });
+
+  document.getElementById("clearBtn").addEventListener("click", function () {
+    state.selected.clear();
+    render();
+    scheduleSave();
+  });
+
+  document.getElementById("copyBtn").addEventListener("click", function () {
+    var list = Array.from(state.selected).join("\n");
+    if (!list) return;
+    navigator.clipboard.writeText(list).then(function () {
+      var btn = document.getElementById("copyBtn");
+      var orig = btn.textContent;
+      btn.textContent = "コピーしました";
+      setTimeout(function () { btn.textContent = orig; }, 1400);
+    }).catch(function () {});
+  });
+
+  searchInput.addEventListener("input", function () {
+    state.filterText = searchInput.value.trim().toLowerCase();
+    render();
+  });
+
+  chipFilters.addEventListener("click", function (ev) {
+    var chip = ev.target.closest(".chip");
+    if (!chip) return;
+    chipFilters.querySelectorAll(".chip").forEach(function (c) { c.classList.remove("active"); });
+    chip.classList.add("active");
+    state.quickFilter = chip.getAttribute("data-filter");
+    render();
+  });
+
+  render();
+
+  if (window.claude && typeof window.claude.use === "function") {
+    window.claude.use("db").then(function (ns) {
+      db = ns;
+      if (!db) return;
+      db.doc(DB_DOC).get().then(function (doc) {
+        if (doc && Array.isArray(doc.selected)) {
+          state.selected = new Set(doc.selected);
+          render();
+        }
+      }).catch(function () {});
+    }).catch(function () {});
+  }
+})();
+</script>

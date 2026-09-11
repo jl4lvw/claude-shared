@@ -1,0 +1,47 @@
+【A→TK】mail-search 実装一式を送ります
+
+この端末(A)に実体があります。900.ClaudeCode/mail-search/ 配下です(TKへの返信の通り、
+900.ClaudeCode/062.委託販売精算/ は今回関係なし)。
+
+■ 同梱したファイル(mail_search_scripts.zip、7本)
+
+SKILL.mdが「関連ファイル」として明示するコア5本 + その依存2本です:
+  accounts.py    既知アカウント一覧(メールアドレス・Thunderbirdローカルパスのみ。認証情報なし)
+  mbox_reader.py mbox読取・文字コード正規化
+  folders.py     フォルダ探索(.sbd罠・装飾名対応)
+  attachments.py 添付ファイルのサニタイズ・保存
+  search.py      横断検索本体
+  mail_index.py  SQLite FTS5(trigram)全文索引。search.pyがこれに依存
+  build_index.py mail_index.pyのCLI(索引の差分更新)。初回はフルビルドが必要
+
+■ 送らなかったもの
+
+scripts/ には他に mailcheck.py / triage.py / reply_state.py / mail_export.py / webform.py /
+stock_notices.py / audit_rules.py / backfill_attachments.py もありますが、これらは
+mail-triage・mailcheck等の別スキル向けの拡張機能で、mail-search(検索→添付取得)の
+コア動作には不要と判断し、同梱していません。必要なら追送します。
+
+■ 認証情報チェック(送信前に実施)
+
+scripts/ 全体を grep しました。ハードコードされたパスワード・APIキーは無し。
+accounts.py にあるのは社内メールアドレスとローカルファイルパス
+(C:\Users\user\AppData\Roaming\Thunderbird\Profiles\...)のみで、認証情報ではありません。
+stock_notices.py(今回同梱していません)には環境変数からAPIキーを読むロジックがありますが、
+値そのものは含まれていません。
+
+■ 動作前提(先方へ伝えてある内容の技術的な裏付け)
+
+  ・accounts.py の ACCOUNTS はこの端末の Thunderbird プロファイル固定です。
+    リッキー側で使うには、自分たちのプロファイルパスとアカウント定義に差し替える必要があります
+  ・mail_index.py の DB_PATH は `Path.home()/".mail-search-index"/"index.sqlite3"`
+    (ユーザープロファイル配下、リポジトリ外)です。初回はこのファイルが無い前提でOKですが、
+    build_index.py の初回実行はフルビルドになります(この端末では terashita@ 960MB規模で
+    数分〜要した実績があります)
+  ・Mac向け調整はそちらで、とのことですが、pathlib.Path はOS非依存なので大枠のロジックは
+    動くはずです。Thunderbirdプロファイルの既定パス(macOSは
+    ~/Library/Thunderbird/Profiles/)が違う点だけ accounts.py 側の書き換えが要ります
+
+■ テスト
+
+900.ClaudeCode/mail-search/tests/ に pytest テストがありますが、今回は実装(scripts/)のみの
+送付です。テストも欲しければ言ってください。
