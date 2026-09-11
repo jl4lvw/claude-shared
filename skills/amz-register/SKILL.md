@@ -4,7 +4,7 @@ description: 022.Amazon在庫PWAで新規商品(親+バリエーション子)を
 trigger: 「Gxxxxを登録したい」「Amazonに新規出品したい」等、023マスタの商品番号(G####)をAmazonへ新規登録したいとき
 ---
 
-<!-- SKILL_VERSION: 2026-09-11_150000 -->
+<!-- SKILL_VERSION: 2026-09-11_160000 -->
 
 # amz-register — Amazon新規商品登録
 
@@ -381,6 +381,14 @@ FBA用に払い出されたFNSKUバーコードを、**自社発送(LCL)分の7S
 
 ## 付録: 既知の落とし穴
 
+- **TOWEL(タオル)はFABRIC_APPLIQUE_PATCHと必須属性が異なる**(2026-09-11実例、
+  G0062で発覚)。`item_shape`は使わず`item_length_width`(cm)+`fabric_type`+
+  `number_of_items`+`unit_count`を使う。`country_of_origin`は親・子**両方**に必要
+  (ワッペン系と同じパターン)。子レベルで`list_price`(税抜)と`size`(自由記述文字列、
+  例:「110cm×35cm」)も必須 — `size`はレガシー扱いで無視されるSHIRTのケースと違い、
+  TOWELでは実際にこの属性名のまま検証対象になる。実績兄弟SKU(`FJ-G2010-TW-SPTNYD-BL`
+  等)の`recommended_browse_nodes`は3件(392384011/3467741051/268268011)で、
+  ワッペン系(10432785051)とは別のノード
 - **クリック選択式アーティファクトはテンプレート(`template_image_picker.html`+
   `build_image_picker.py`)以外の経路で作らない(2026-09-11実例)**。その場で
   Python文字列(f-string/`.format()`)にHTML/CSS/JSを埋め込んで手書きした際、
