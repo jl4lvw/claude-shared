@@ -4,7 +4,7 @@ description: 期間内の受信メールを全件列挙し、除外ルール(exc
 trigger: 「返信が必要なメールはないか」「対応漏れ・見落としがないか」「ここ数日のメールを確認して」のように、特定のメールを探すのではなく網羅的に確認したいとき
 ---
 
-<!-- SKILL_VERSION: 2026-09-10_093224 -->
+<!-- SKILL_VERSION: 2026-09-09_065236 -->
 
 # mail-triage — 受信メールのトリアージ(除外方式)
 
@@ -38,63 +38,6 @@ trigger: 「返信が必要なメールはないか」「対応漏れ・見落�
   同じ no-reply アドレスから「問い合わせ」「発送依頼」「キャンセル」を送ってくる。
   件名との AND で絞ること
 - 迷ったルールを入れない。**残す側が安全**(取りこぼしはゼロに、ノイズは後から削れる)
-
-## `mc` — 前回チェック以降だけを見る
-
-ユーザーが **`mc`**（全角 `ｍｃ` も）と打ったらこれ。1日に何度も呼ぶための入口。
-
-```bash
-cd "C:/ClaudeCode/900.ClaudeCode/mail-search/scripts" && python mailcheck.py
-```
-
-索引同期 → 前回 `mc` 以降を抽出 → 除外 → 返信済みクローズ → **その相手への最終送信**と
-**添付ファイル名**を添えて表示、までを一括で行う。時刻は
-`~/.mail-search-index/last_check.json` に持つ（初回・破損時は直近3日へ倒す）。
-
-`--days N` / `--since` で期間を上書き、`--no-mark` で「見た」記録を残さず下読み。
-
-**報告の決まり**:
-
-- 候補0でも「新着なし」と即断しない。**索引の鮮度と Thunderbird の稼働**を必ず見る
-  （止まっていると受信自体が進まない。2026-09-09 に実際に止まっていた）
-- **「候補に出ている＝未対応」ではない。** 添えてある「その相手への最終送信」を見てから言う
-- 営業メールは件数だけ。**判断が要るものだけ**を前に出す
-
-### 添付ファイル名は索引に入っている
-
-`attachments` テーブル（`message_id` / `part_index` / `filename` / `extension` /
-`content_type` / `size`）。中身は保存せず、mbox が原本のまま。
-
-**ファイル名そのものが用件**であることが多い（「見積書_20260904.pdf」）。件名も本文も
-空で添付だけ、というメールが実在し、名前を出さないと判断材料がゼロになる
-（2026-09-09 に「送信テストか誤送信」と誤読した）。
-
-- 検索: `SELECT ... FROM attachments a JOIN messages m ON m.id=a.message_id WHERE a.filename LIKE ?`
-- 実測 19万通中、添付ありは 6,025通・13,100件。ただし 4,196件は HTMLメールの埋め込み画像
-  （`embed0`〜、`image/png`）でノイズ
-- 既存索引への充填は `backfill_attachments.py`（19万通で8分半）
-
-## 除外ルールの巻き込み点検
-
-ルールは増える一方で、消しているものを見返す機会が無い。増えたら回す。
-
-```bash
-cd "C:/ClaudeCode/900.ClaudeCode/mail-search/scripts" && python audit_rules.py --days 30
-```
-
-**巻き込みの判定に主観を使わない。**「除外したのに、その相手へ**後から返信している**」を
-巻き込みとみなす。返信した＝対応が必要だった、という動かせない事実だから。
-自社が出したメール（送信箱・自社ドメイン発）は対象外にしないと、自分宛の送信控えで
-埋まって本来の巻き込みが見えなくなる。
-
-併せて出るもの:
-
-- 個人のフリーメールを落としているルール（営業は独自ドメインが大半なので、出たら覗く）
-- 官公庁・学校・団体を落としているルール（**保護の穴**。`unless` で意図的に外したものは
-  ここに出続けるので、「うっかり」と「承知のうえ」を見分けられる）
-- 期間内で一度も当たらなかったルール
-
-**「保護で救済 N 行」を必ず見る。** 0 のまま気づかず放置したのが 2026-09-09 の穴だった。
 
 ## 手順
 
@@ -145,9 +88,7 @@ Claude が判断してよいのは**ここだけ**:
 ```
 
 - `match` 内は AND、ルール同士は OR。値は小文字化した部分一致
-- 使えるキー: `from_` `to_` `subject_` `body_` `folder_` `account_` `sender_`
-  `formmail_` `formsubject_` `formname_` × `_contains` / `_equals`
-  （`sender_` = フォームなら本文のアドレス、通常メールなら差出人。保護はこれで書く）
+- 使えるキー: `from_` `to_` `subject_` `body_` `folder_` `account_` × `_contains` / `_equals`
 - 追加したら**必ず除外内訳を確認**する。1ルールで全体の50%以上を消すと警告が出る
 - キー名を間違えたルールは起動時に「使えていないルール」として警告される。
   `tests/test_triage.py::test_production_rules_are_all_usable` でも落ちる
@@ -204,8 +145,7 @@ Claude が判断してよいのは**ここだけ**:
 
 | ルールのキー | 中身 |
 |---|---|
-| `sender_contains` | **実際の送信者。フォームなら本文のアドレス、通常メールなら差出人ヘッダ。** 保護ルールは必ずこれで書く |
-| `formmail_contains` | 本文の「メールアドレス」（フォーム経由**のみ**）。**ドメインで書けば部分一致でサブドメインも捕まる**（`alc.co.jp` が `gsuite.alc.co.jp` に逃げていた実例あり） |
+| `formmail_contains` | 本文の「メールアドレス」。**ドメインで書けば部分一致でサブドメインも捕まる**（`alc.co.jp` が `gsuite.alc.co.jp` に逃げていた実例あり） |
 | `formsubject_contains` | 「題名」（ショップ側は「商品名」） |
 | `formname_contains` | 「差出人」「お名前」 |
 
@@ -221,25 +161,7 @@ Claude が判断してよいのは**ここだけ**:
 
 ### 🔴 保護リスト（`exclude_rules.json` の `protect`）
 
-**除外ルールより先に評価し、当たったら必ず候補に残す。** 書式は除外ルールと同じで、
-加えて `unless`（例外・配列）を書ける。
-
-```json
-{ "id": "protect-gov",
-  "match":  {"sender_contains": ".go.jp"},
-  "unless": [{"sender_contains": "kakikoza@ide.go.jp"},
-             {"sender_contains": "scc-event@jetro.go.jp"}] }
-```
-
-**保護は `sender_contains` で書くこと。`formmail_contains` で書いてはいけない。**
-formmail はフォーム経由のメールにしか値が入らないため、通常のメールで届く官公庁を
-素通しで除外する。2026-09-09 の点検までこの状態で、**救済実績が30日間で0件**、
-呉市 `city.kure.lg.jp` が7件落ちていた（気づけたのは「保護で救済 N 行」を数えたから）。
-
-**`.go.jp` を丸ごと守ると、官公庁の配信専用メルマガまで永久に候補へ残る。**
-アジア経済研究所の公開講座（`kakikoza@ide.go.jp`）、ジェトロのイベント案内
-（`scc-event@jetro.go.jp`）がそれ。`unless` で個別に外す。範囲を狭めて対処しない
-（狭めると肝心の発注・見積依頼を守れなくなる）。
+**除外ルールより先に評価し、当たったら必ず候補に残す。** 書式は除外ルールと同じ。
 
 現在は `.go.jp` `.ac.jp` `.ed.jp` `.lg.jp` `.or.jp` を登録している。実際に
 
@@ -272,14 +194,11 @@ cd "C:/ClaudeCode/900.ClaudeCode/mail-search/scripts" && python stock_notices.py
 | 系統 | 差出人 | 中身 | triage |
 |---|---|---|---|
 | Eストアー | `sp@estore.co.jp` | 「在庫切れのお知らせ（商品番号）」在庫 0 | **候補に出す**(2026-09-09にユーザーが除外を解除) |
-| GoQ在庫連携 | `stock2-notification@goqsystem.com` | 連携在庫が **マイナス** | 除外(このスクリプトで見る) |
+| GoQ在庫連携 | `stock2-notification@goqsystem.com` | 在庫数が **-1**＝売り越し | 除外(このスクリプトで見る) |
 
 **通知そのものではなく「今どうなっているか」を出す。** 023.商品マスタDB で現在庫を
 引き直し、まだ 0 以下のものだけを要対応にする(実測 30日 139種 → 要対応 43種)。
-**「-1」を売り越しと呼んではいけない。** この店は実在庫より少なく、5個程度の余裕を
-残して連携在庫を登録している(2026-09-09 ユーザー指摘)。-1 は「登録した連携在庫を
-使い切った」の意味で、実物はまだ残っていることが多い。とはいえ連携が止まると
-モールで売れなくなるので、在庫切れより先に並べる。
+売り越しは受注が成立済みなので在庫切れより先に並べる。
 
 商品コードの引き当ては `estore_item_code` → `rakuten_merchant_sku` → `sku` の順。
 **GoQ の通知は楽天のフルSKU(`G2193-GL-L`)で来る**ので estore_item_code だけでは引けない。
@@ -288,26 +207,6 @@ cd "C:/ClaudeCode/900.ClaudeCode/mail-search/scripts" && python stock_notices.py
 
 **在庫が引けないものは要対応に倒す。** 023 に無い商品(セット品・Eストアー専用品)や
 API が落ちているときに「対応不要」側へ倒すと、補充漏れが黙って起きる。
-
-## 他のセッションへメールを渡す
-
-`spawn_task` などで別セッションに仕事を渡すとき、**注文内容を指示文へ書き写さない**。
-書き写した時点で写し間違いが起こりうるし、向こうは原文に当たれない。
-
-```bash
-cd "C:/ClaudeCode/900.ClaudeCode/mail-search/scripts" && python mail_export.py --subject 3Y6-2CUQ
-```
-
-`C:\tmp-ai\mail\日時_件名_索引ID.md` を書き出すので、**指示文にはこのパスだけ**書く。
-`--id 318919`(索引ID指定) / `--all`(一致した全通。既定は最新1通) / `--cleanup-only`。
-
-- ヘッダ表に **索引ID と保管フォルダ**を必ず入れてある。切り詰められていても原本へ戻れる
-- 添付は**ファイル名だけ**(2026-09-10 ユーザー決定)。実体は mbox が原本のまま。
-  取り出すなら `attachments.extract_attachments()`
-- 本文が 2万字を超えると切り詰める(`--max-body`)。HTML メールはタグを落として貼る
-- 保存先は**リポジトリ外**。本文は機密なので、索引を `~/.mail-search-index/` に
-  置いているのと同じ理由で `C:\tmp-ai` に出す
-- **30日より古い `.md` は実行のたびに自動削除**する。渡した先が読み終えている前提
 
 ## /mail-search との使い分け
 
@@ -370,13 +269,9 @@ cd "C:/ClaudeCode/900.ClaudeCode/mail-search" && python -m pytest tests/ -q
 ## 関連ファイル
 
 - `900.ClaudeCode/mail-search/scripts/triage.py` — 本体
-- `900.ClaudeCode/mail-search/scripts/mailcheck.py` — `mc`(前回チェック以降だけ)
-- `900.ClaudeCode/mail-search/scripts/audit_rules.py` — 除外ルールの巻き込み点検
-- `900.ClaudeCode/mail-search/scripts/backfill_attachments.py` — 添付名の充填(移行用)
 - `900.ClaudeCode/mail-search/scripts/reply_state.py` — 返信済み判定
 - `900.ClaudeCode/mail-search/scripts/webform.py` — 問い合わせフォームの本文パーサ
-- `900.ClaudeCode/mail-search/scripts/stock_notices.py` — 在庫通知の集約(在庫切れ/連携在庫マイナス)
-- `900.ClaudeCode/mail-search/scripts/mail_export.py` — 受信メールを Markdown へ書き出す(他セッションへ渡す用)
+- `900.ClaudeCode/mail-search/scripts/stock_notices.py` — 在庫通知の集約(在庫切れ/売り越し)
 - `900.ClaudeCode/mail-search/exclude_rules.json` — 除外ルール
 - 長期記憶: `feedback_mail_triage_exclusion_not_keyword.md` / `project_mail_search_fts5_index.md`
 - 関連スキル: `/mail-search`(探す用途)

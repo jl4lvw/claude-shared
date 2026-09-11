@@ -41,6 +41,21 @@
       "code": "BLU",
       "aliases": ["ブルー", "青", "青色", "BLUE"],
       "note": "実績なし(SKU一覧に無し)だがG2179で新規に確定・登録済み(2026-09-11)。今後はこの表が正"
+    },
+    "LowNV": {
+      "code": "LowNV",
+      "aliases": ["ロービジネイビー", "ロービジ紺", "LOW VIS NAVY", "LOW-VIS NAVY", "LOWVIS NAVY"],
+      "note": "実績46件(この業務で最多の色コード)。NVとは別物 — 商品説明に「ロービジカラー」と明記された刺繍ワッペン系で使う(2026-09-11 G2198/G1481/G2150/G2185/G2186/G2187で使用確定)。プレーンなNVと混同しない"
+    },
+    "LowGL": {
+      "code": "LowGL",
+      "aliases": ["ロービジグレー", "ロービジグレイ", "LOW VIS GRAY", "LOW-VIS GRAY"],
+      "note": "実績3件。LowNVのグレー版"
+    },
+    "LowOD": {
+      "code": "LowOD",
+      "aliases": ["ロービジオリーブドラブ", "LOW VIS OLIVE", "LOW-VIS OLIVE"],
+      "note": "実績1件。LowNVのオリーブドラブ版"
     }
   }
 }

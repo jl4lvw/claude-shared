@@ -140,7 +140,10 @@ const FINDING_SCHEMA = {
 let reviewers = [
   {
     name: 'codex',
-    cmd: `mkdir -p /c/tmp-ai && cd /c/tmp-ai && CGD_WF_RUN=__WF_NONCE__ codex exec -c model_reasoning_effort="${reasoning}" --sandbox read-only --skip-git-repo-check "まず __INPUT_0__ の全文を読み、記載の差分・対象・評価観点に従ってコードレビュー。関連関数の抜粋は入力に同梱済み。追加で開くのは最大5ファイルまでとし、超えるなら読まずに『情報不足: <欲しいファイル>』と書いて終えること。日本語で回答。" < /dev/null`,
+    // 2026-09-11: Codex CLI v0.154.0 で exec_command(ファイルオープン)が blocked by policy
+    // になり、"まず <path> を読み" 方式が成立しなくなったため stdin 経由に変更
+    // (INC-20260911-123532bde1cc)。プロンプト全文を printf+cat で組み立て、パイプで渡す。
+    cmd: `mkdir -p /c/tmp-ai && cd /c/tmp-ai && set -o pipefail && { printf '%s\\n\\n' '記載の差分・対象・評価観点に従ってコードレビューしてください。関連関数の抜粋は下に同梱済みです。対象ファイルを直接開くことはできません（環境ポリシーによりシェル実行不可）。判断に必要な情報はすべてこの入力に含まれています。不足があれば『情報不足: <欲しい情報>』とだけ書いて終えてください。日本語で回答。'; cat "__INPUT_0__"; } | CGD_WF_RUN=__WF_NONCE__ codex exec -c model_reasoning_effort="${reasoning}" --sandbox read-only --skip-git-repo-check -`,
     timeout: reasoning === 'high' ? 600000 : 300000,
     usage: false,
     authSignals: 'Not logged in / 401 / unauthorized',

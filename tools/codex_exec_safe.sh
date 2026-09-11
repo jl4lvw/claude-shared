@@ -27,10 +27,17 @@ fi
 
 # --foreground: timeoutが子プロセスのプロセスグループを直接killできるようにする
 # (バックグラウンドジョブとして起動されてもtimeout自体のシグナル配送を妨げない)
+#
+# 2026-09-11: Codex CLI v0.154.0で、Codex自身がexec_commandでファイルを開こうとすると
+# blocked by policyで全面拒否されるようになった(INC-20260911-123532bde1cc)。従来の
+# "$(cat "$PROMPT_FILE")" はargv展開でARG_MAX超過(62KB程度で発生)のリスクもあったため、
+# プロンプトファイルの内容をstdin経由でそのまま流し込む方式に変更する(サイズ上限なし・
+# Codexが自分でファイルを開く必要も無くなる)。PROMPT_FILEには指示文+対象データを
+# 事前にすべて書き込んでおくこと。
 timeout --foreground "${TIMEOUT_SEC}s" \
   codex exec -c model_reasoning_effort="$EFFORT" --skip-git-repo-check \
-  "$(cat "$PROMPT_FILE")" \
-  < /dev/null \
+  - \
+  < "$PROMPT_FILE" \
   > "$OUT_FILE" \
   2>&1
 STATUS=$?

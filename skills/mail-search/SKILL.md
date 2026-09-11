@@ -4,7 +4,7 @@ description: Thunderbirdローカルmbox(terashita@等の既知4アカウント)
 trigger: 過去にやり取りしたメールを探したいとき、特定の相手先からのメールや添付ファイルを探して何かに使いたいとき
 ---
 
-<!-- SKILL_VERSION: 2026-09-11_104106 -->
+<!-- SKILL_VERSION: 2026-09-08_085647 -->
 
 # mail-search — Thunderbirdメール横断検索
 
@@ -168,35 +168,6 @@ cd "C:/ClaudeCode/900.ClaudeCode/mail-search" && python -m pytest tests/ -q
 
 ---
 
-## FBAマルチチャネル出荷の送り状番号を GoQ へ回す
-
-自社サイト・楽天・Yahoo! の注文を Amazon の FBA 在庫から出荷すると、
-**出荷したことも送り状番号も GoQ には入らない。** Amazon から通知が1通届くだけで、
-写し忘れるとお客様には出荷済みなのに GoQ は未出荷のまま残る。
-
-専用スクリプトがある。**自分で探索を書き直さないこと。**
-
-```
-python scripts/fba_mcf_ship.py                                 # 直近14日の出荷通知
-python scripts/fba_mcf_ship.py --order CONSUMER-2026911-12914
-python scripts/fba_mcf_ship.py --order CONSUMER-... --goq 112-034        # 登録用の行
-python scripts/fba_mcf_ship.py --order CONSUMER-... --goq 112-034 --csv  # CSV書き出し
-```
-
-見るのは `fba-jp-noreply@amazon.co.jp` からの「注文出荷のお知らせ(CONSUMER-...)」だけ。
-除外ルールには掛かっていないので `/mail-triage` にも必ず出る。
-
-🔴 **通知に注文元の番号は入らない。** 入っているのは Amazon の依頼番号
-(`CONSUMER-YYYYMMDD-NNNNN`)と、お届け先の**都道府県・郵便番号だけ**（氏名も番地も
-伏せられている）。GoQ の受注番号との対応は人が渡す（`--goq`）。依頼を出すときに
-`CONSUMER-...` を控えていない出荷は、後から機械的には結び付けられない。
-
-出力は 103.GoQ出荷処理サポート の `toGoqShipData.py` と同じ列で、
-`~/Downloads/toGoQship_fba.csv` に書く。**アップロードはしない**（人が GoQ の画面で
-取り込む）。配送業者は Amazon の英字表記を GoQ の表記へ読み替えるが、
-**対応表に無い表記は推測せず生のまま残して警告する**（GoQ に無い業者名を入れると
-取り込みが黙って失敗するため）。
-
 ## 関連ファイル
 
 - `scripts/accounts.py` — 既知アカウント一覧(4件)
@@ -204,6 +175,5 @@ python scripts/fba_mcf_ship.py --order CONSUMER-... --goq 112-034 --csv  # CSV�
 - `scripts/folders.py` — IMAP Modified UTF-7デコード・フォルダ探索(`.sbd`罠+装飾名対応)
 - `scripts/attachments.py` — 添付ファイルのサニタイズ・保存
 - `scripts/search.py` — アカウント×フォルダ横断検索の本体
-- `scripts/fba_mcf_ship.py` — FBAマルチチャネル出荷通知→送り状番号→GoQ登録用CSV
 - 長期記憶: `reference_thunderbird_terashita_accounts.md`(4アカウント構成・大容量mboxの注意)
 - 委譲元(後方互換レイヤー): `062.委託販売精算/scripts/thunderbird_mail.py`

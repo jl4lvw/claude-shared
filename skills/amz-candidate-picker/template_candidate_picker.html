@@ -99,7 +99,7 @@
      the table's own scroll container makes the header's sticky position self-contained
      and immune to the toolbar's height. (Found and fixed 2026-09-11.) */
   .table-scroll { overflow: auto; max-height: min(58vh, 520px); }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 720px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 780px; }
   thead th {
     text-align: left; padding: 10px 14px; background: var(--surface-2); color: var(--text-dim);
     font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
@@ -107,6 +107,11 @@
   }
   thead th.num, td.num { text-align: right; }
   thead th.chk, td.chk { width: 40px; text-align: center; }
+  thead th.thumb-col, td.thumb { width: 56px; text-align: center; }
+  td.thumb img {
+    width: 44px; height: 44px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border);
+    background: #fff; display: block; margin: 0 auto;
+  }
   tbody tr { border-bottom: 1px solid var(--border); cursor: pointer; transition: background .1s; }
   tbody tr:last-child { border-bottom: none; }
   tbody tr:hover { background: var(--accent-soft); }
@@ -199,6 +204,7 @@
         <thead>
           <tr>
             <th class="chk"></th>
+            <th class="thumb-col"></th>
             <th>G番号</th>
             <th>Eストア SKU</th>
             <th>商品名</th>
@@ -281,7 +287,7 @@
     countText.textContent = DATA.length + "件中 " + rows.length + "件表示";
 
     if (rows.length === 0) {
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="6">条件に一致する候補がありません。</td></tr>';
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="7">条件に一致する候補がありません。</td></tr>';
     } else {
       tbody.innerHTML = rows.map(function (r) {
         var checked = state.selected.has(r.g) ? "checked" : "";
@@ -290,6 +296,7 @@
         return (
           '<tr class="' + selCls.trim() + '" data-g="' + r.g + '">' +
             '<td class="chk"><input type="checkbox" ' + checked + ' data-g="' + r.g + '"></td>' +
+            '<td class="thumb">' + (r.thumb ? '<img src="' + r.thumb + '" alt="' + r.g + '" loading="lazy">' : '') + '</td>' +
             '<td class="g mono">' + r.g + '</td>' +
             '<td class="sku mono">' + r.sku + '</td>' +
             '<td class="name">' + r.name + hiddenBadge + '</td>' +

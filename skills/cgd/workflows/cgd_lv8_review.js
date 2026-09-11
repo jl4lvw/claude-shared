@@ -163,16 +163,22 @@ const CRITIC_SCHEMA = {
 }
 
 // ---- 批評プロンプト (SKILL.md Step 2-8D Bash #5 と同一文面) ----
+// 2026-09-11: Codex CLI v0.154.0でexec_command(ファイルオープン)がblocked by policyに
+// なり "まず<path>を読み" 方式が成立しなくなったため、stdin経由(printf+cat)に変更。
+// あわせて「追加で開いてよい(最大5ファイル)」は原理的に不可能になったため削除
+// (INC-20260911-123532bde1cc)。
 const CRITIC_PROMPT =
-  'まず __INPUT_0__ の全文を読んでください。あなたは辛口の評価者です。' +
+  'あなたは辛口の評価者です。' +
   '技術的な正しさ（バグの有無）ではなく『使う人が困らないか』『本来この仕様はどうあるべきか』の観点で、' +
   '遠慮なく否定的に評価してください。次の2つの立場を併せ持ってください: ' +
   '(1) ITに疎い現場担当者 — 実際に使うときの使いにくさ・わかりにくさ・手数の多さ・エラー時の困りごとを利用者の生の言葉で指摘する。' +
   '(2) 熟練ITアーキテクト — 『本来この仕様はどうあるべきか』を理想形から逆算し、現状の妥協・場当たり対応・本質を外した設計・優先度の誤りを批判する。' +
   '出力は次の構造で: 1.現場の不満（各項目に困り度: 高/中/低を付ける） 2.あるべき論とのギャップ 3.そもそも論（この機能は本当に要るか） 4.辛口総評（1〜2行で断言）。' +
   '擁護・肯定・『概ね良い』は禁止。技術的なバグ指摘には深入りしない。' +
-  '追加で開くのは最大5ファイルまでとし、超えるなら読まずに『情報不足: <欲しいファイル>』と' +
-  '書いて終えること(探索は1回約3,000トークン消費する)。日本語で回答。'
+  '対象ファイルを直接開くことはできません。判断に必要な情報はすべて下に同梱済みです。' +
+  '不足があれば『情報不足: <欲しい情報>』とだけ書いて終えてください。日本語で回答。'
+
+const CODEX_REVIEW_INSTRUCTION = '記載の差分・対象・評価観点に従ってコードレビューしてください。関連関数の抜粋は下に同梱済みです。対象ファイルを直接開くことはできません（環境ポリシーによりシェル実行不可）。判断に必要な情報はすべてこの入力に含まれています。不足があれば『情報不足: <欲しい情報>』とだけ書いて終えてください。日本語で回答。'
 
 // ---- レビュアー定義 ----
 //   技術: Codex(med) / Codex(high) / DS / Qwen  (+ Gemini オプトイン)
@@ -181,13 +187,13 @@ const CRITIC_PROMPT =
 let reviewers = [
   {
     name: 'codex_med', kind: 'tech',
-    cmd: `mkdir -p /c/tmp-ai && cd /c/tmp-ai && CGD_WF_RUN=__WF_NONCE__ codex exec -c model_reasoning_effort="medium" --sandbox read-only --skip-git-repo-check "まず __INPUT_0__ の全文を読み、記載の差分・対象・評価観点に従ってコードレビュー。関連関数の抜粋は入力に同梱済み。追加で開くのは最大5ファイルまでとし、超えるなら読まずに『情報不足: <欲しいファイル>』と書いて終えること。日本語で回答。" < /dev/null`,
+    cmd: `mkdir -p /c/tmp-ai && cd /c/tmp-ai && set -o pipefail && { printf '%s\\n\\n' '${CODEX_REVIEW_INSTRUCTION}'; cat "__INPUT_0__"; } | CGD_WF_RUN=__WF_NONCE__ codex exec -c model_reasoning_effort="medium" --sandbox read-only --skip-git-repo-check -`,
     timeout: 300000, usage: false, isCodex: true,
     authSignals: 'Not logged in / 401 / unauthorized',
   },
   {
     name: 'codex_high', kind: 'tech',
-    cmd: `mkdir -p /c/tmp-ai && cd /c/tmp-ai && CGD_WF_RUN=__WF_NONCE__ codex exec -c model_reasoning_effort="high" --sandbox read-only --skip-git-repo-check "まず __INPUT_0__ の全文を読み、記載の差分・対象・評価観点に従ってコードレビュー。関連関数の抜粋は入力に同梱済み。追加で開くのは最大5ファイルまでとし、超えるなら読まずに『情報不足: <欲しいファイル>』と書いて終えること。日本語で回答。" < /dev/null`,
+    cmd: `mkdir -p /c/tmp-ai && cd /c/tmp-ai && set -o pipefail && { printf '%s\\n\\n' '${CODEX_REVIEW_INSTRUCTION}'; cat "__INPUT_0__"; } | CGD_WF_RUN=__WF_NONCE__ codex exec -c model_reasoning_effort="high" --sandbox read-only --skip-git-repo-check -`,
     timeout: 600000, usage: false, isCodex: true,
     authSignals: 'Not logged in / 401 / unauthorized',
   },
@@ -211,7 +217,7 @@ let reviewers = [
   },
   {
     name: 'codex_critic', kind: 'critic',
-    cmd: `mkdir -p /c/tmp-ai && cd /c/tmp-ai && CGD_WF_RUN=__WF_NONCE__ codex exec -c model_reasoning_effort="high" --sandbox read-only --skip-git-repo-check "${CRITIC_PROMPT}" < /dev/null`,
+    cmd: `mkdir -p /c/tmp-ai && cd /c/tmp-ai && set -o pipefail && { printf '%s\\n\\n' '${CRITIC_PROMPT}'; cat "__INPUT_0__"; } | CGD_WF_RUN=__WF_NONCE__ codex exec -c model_reasoning_effort="high" --sandbox read-only --skip-git-repo-check -`,
     timeout: 600000, usage: false, isCodex: true,
     authSignals: 'Not logged in / 401 / unauthorized',
   },

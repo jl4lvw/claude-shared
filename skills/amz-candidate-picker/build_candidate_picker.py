@@ -11,7 +11,8 @@ candidates.json のスキーマ (各要素、キー名は固定):
         "name": "PVCワッペン ( 潜水艦せきりゅう )",  # 商品名(必須)
         "price": 990,              # 価格。int(必須)
         "stock": 90,               # 在庫数。int。親SKU等で子側管理の場合は null
-        "status": "public"         # "public" / "hidden" のいずれか(必須)
+        "status": "public",        # "public" / "hidden" のいずれか(必須)
+        "thumb": "data:image/jpeg;base64,..."  # サムネイル画像(任意)。無ければ省略可
     }
 
 使い方:
@@ -49,6 +50,7 @@ def load_candidates(path: Path) -> list[dict]:
         if missing:
             raise SystemExit(f"[amz-candidate-picker] {i}番目の要素にキーが不足しています: {missing} row={row}")
         row.setdefault("stock", None)
+        row.setdefault("thumb", "")
     return data
 
 

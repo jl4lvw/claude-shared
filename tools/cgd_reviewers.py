@@ -27,14 +27,24 @@ from pathlib import Path
 # 自分の隣に置く前提。posix 形式にするのは Git Bash 上で python に渡すため。
 LOGFILTER = (Path(__file__).resolve().parent / "cgd_logfilter.py").as_posix()
 
+# 2026-09-11: Codex CLI v0.154.0 で、Codex自身がexec_commandツールでファイルを
+# 開こうとすると `CreateProcess { ... rejected: blocked by policy }` で全面拒否される
+# ようになったことを実機確認した（--sandbox read-only / workspace-write とも同様）。
+# そのため「まず <path> の全文を読み」とファイルを開かせる指示は現行CLIで一切成立せず、
+# 「対象実ファイルも追加で読んでよい(最大5個まで)」という探索許可も同時に無効になった。
+# 対策: プロンプト本文にファイルパスを書かせず、対象データ自体を _codex() が
+# stdin 経由でそのまま流し込む（Codexは自分でファイルを開く必要が無くなる）。
+# 詳細・再現手順: INC-20260911-123532bde1cc
 CODEX_PROMPT = (
-    "まず {input} の全文を読み、記載の差分・対象・評価観点に従ってコードレビュー。"
-    "関連関数の抜粋は入力に同梱済み。追加で開くのは最大5ファイルまでとし、"
-    "超えるなら読まずに『情報不足: <欲しいファイル>』と書いて終えること。日本語で回答。"
+    "記載の差分・対象・評価観点に従ってコードレビューしてください。"
+    "関連関数の抜粋は下に同梱済みです。"
+    "対象ファイルを直接開くことはできません（環境ポリシーによりシェル実行不可）。"
+    "判断に必要な情報はすべてこの入力に含まれています。"
+    "不足があれば『情報不足: <欲しい情報>』とだけ書いて終えてください。日本語で回答。"
 )
 
 CRITIC_PROMPT = (
-    "まず {input} の全文を読んでください。あなたは辛口の評価者です。"
+    "あなたは辛口の評価者です。"
     "技術的な正しさ（バグの有無）ではなく『使う人が困らないか』"
     "『本来この仕様はどうあるべきか』の観点で、遠慮なく否定的に評価してください。"
     "次の2つの立場を併せ持ってください: "
@@ -46,8 +56,8 @@ CRITIC_PROMPT = (
     "2.あるべき論とのギャップ 3.そもそも論（この機能は本当に要るか） "
     "4.辛口総評（1〜2行で断言）。"
     "擁護・肯定・『概ね良い』は禁止。技術的なバグ指摘には深入りしない。"
-    "追加で開くのは最大5ファイルまでとし、超えるなら読まずに"
-    "『情報不足: <欲しいファイル>』と書いて終えること(探索は1回約3,000トークン消費する)。"
+    "対象ファイルを直接開くことはできません。判断に必要な情報はすべて下に同梱済みです。"
+    "不足があれば『情報不足: <欲しい情報>』とだけ書いて終えてください。"
     "日本語で回答。"
 )
 
@@ -74,12 +84,38 @@ AUTH_GEMINI = "AuthenticationError / 401 / invalid api key / GEMINI_API_KEY が�
 TOOLS = Path(__file__).resolve().parent.as_posix()
 
 
-def _codex(effort: str, prompt: str) -> str:
-    """codex の起動コマンド。nonce は実行時に WF が置換する。"""
+def _codex(effort: str, prefix: str, input_path: str) -> str:
+    """codex の起動コマンド。
+
+    2026-09-11 以降、プロンプト本文は **stdin 経由**で丸ごと流し込む
+    （`{ printf 指示文; cat 入力ファイル; } | codex exec ... -`）。
+    以前は `codex exec ... "まず <path> の全文を読み..."` という、Codex自身に
+    ファイルを開かせる形だったが、Codex CLI v0.154.0 でこの exec_command が
+    `blocked by policy` で全面拒否されるようになったため成立しない
+    (INC-20260911-123532bde1cc)。stdin 経由に変えると、Codexは自分で
+    ファイルを開く必要が無くなるので回避できる。副次効果として、従来
+    "ファイルパス渡し" で回避していた ARG_MAX 超過（`Argument list too long`）
+    も stdin には引数長の上限が無いため同時に解消する（97KB 相当で実測確認済み）。
+
+    nonce は実行時に WF が置換する。prefix は指示文（短文・API側の定数）、
+    input_path は差分＋背景等を書き込んだ入力ファイルの絶対パス。
+
+    `set -o pipefail` を **ここで直接**入れる（wrap() 側の pipefail に依存しない）。
+    build_reviewers() が `raw_paths` 付きで呼ばれれば wrap() 側でも二重に設定される
+    だけで無害だが、`raw_paths` 省略時（契約テスト用・後方互換パス）は wrap() を
+    経由しないため、ここで入れておかないと `cat` の失敗がパイプ越しに隠れ、
+    不完全なレビューが成功扱いになる（2026-09-11 Codex Step C 再レビューで検出、
+    cgd_lv6/7/8_review.js 側の builtin テンプレートとの契約テストでも同時に発覚）。
+    `cat` の対象は JS 側の `cat "__INPUT_0__"` 形式（常時ダブルクォート）に合わせる
+    ため、`shlex.quote()` の条件付きクォートではなく固定でダブルクォートを付ける
+    （test_python_reviewers_match_workflow_builtin が両者の完全一致を検査する）。
+    """
+    q_prefix = shlex.quote(prefix)
     return (
-        "mkdir -p /c/tmp-ai && cd /c/tmp-ai && CGD_WF_RUN=__WF_NONCE__ "
-        f'codex exec -c model_reasoning_effort="{effort}" '
-        f'--sandbox read-only --skip-git-repo-check "{prompt}" < /dev/null'
+        "mkdir -p /c/tmp-ai && cd /c/tmp-ai && set -o pipefail && "
+        f'{{ printf \'%s\\n\\n\' {q_prefix}; cat "{input_path}"; }} | '
+        f'CGD_WF_RUN=__WF_NONCE__ codex exec -c model_reasoning_effort="{effort}" '
+        "--sandbox read-only --skip-git-repo-check -"
     )
 
 
@@ -182,28 +218,32 @@ def build_reviewers(level: int, codex_input: str, aux_input: str | None,
     (WF 内蔵定義との契約テスト用・および後方互換)。
     """
     aux = aux_input or codex_input          # lv6 は 1 入力（3 者に同じものを渡す）
-    cx = CODEX_PROMPT.format(input=codex_input)
 
     if level == 6:
         rows = [
-            {"name": "codex", "kind": "tech", "cmd": _codex(reasoning, cx),
+            {"name": "codex", "kind": "tech",
+             "cmd": _codex(reasoning, CODEX_PROMPT, codex_input),
              "timeout": 600000 if reasoning == "high" else 300000,
              "usage": False, "isCodex": True, "authSignals": AUTH_CODEX},
         ]
         gemini_at = 1
     elif level == 7:
         rows = [
-            {"name": "codex_med", "kind": "tech", "cmd": _codex("medium", cx),
+            {"name": "codex_med", "kind": "tech",
+             "cmd": _codex("medium", CODEX_PROMPT, codex_input),
              "timeout": 300000, "usage": False, "isCodex": True, "authSignals": AUTH_CODEX},
-            {"name": "codex_high", "kind": "tech", "cmd": _codex("high", cx),
+            {"name": "codex_high", "kind": "tech",
+             "cmd": _codex("high", CODEX_PROMPT, codex_input),
              "timeout": 600000, "usage": False, "isCodex": True, "authSignals": AUTH_CODEX},
         ]
         gemini_at = 2
     elif level == 8:
         rows = [
-            {"name": "codex_med", "kind": "tech", "cmd": _codex("medium", cx),
+            {"name": "codex_med", "kind": "tech",
+             "cmd": _codex("medium", CODEX_PROMPT, codex_input),
              "timeout": 300000, "usage": False, "isCodex": True, "authSignals": AUTH_CODEX},
-            {"name": "codex_high", "kind": "tech", "cmd": _codex("high", cx),
+            {"name": "codex_high", "kind": "tech",
+             "cmd": _codex("high", CODEX_PROMPT, codex_input),
              "timeout": 600000, "usage": False, "isCodex": True, "authSignals": AUTH_CODEX},
         ]
         gemini_at = 2
@@ -227,7 +267,7 @@ def build_reviewers(level: int, codex_input: str, aux_input: str | None,
     if level == 8:
         rows += [
             {"name": "codex_critic", "kind": "critic",
-             "cmd": _codex("high", CRITIC_PROMPT.format(input=codex_input)),
+             "cmd": _codex("high", CRITIC_PROMPT, codex_input),
              "timeout": 600000, "usage": False, "isCodex": True, "authSignals": AUTH_CODEX},
             {"name": "deepseek_critic", "kind": "critic",
              "cmd": _py("deepseek_coder.py", "critic", aux),

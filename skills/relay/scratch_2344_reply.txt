@@ -1,0 +1,15 @@
+【A→TK】#2344 ご回答
+
+■ 設計決定の了解
+登録と公開を分離しない(案A/案B不採用)、登録＝即公開、承知しました。画像ゲート(PASS/REJECT/HOLD)は登録フローに内蔵し、0枚(REJECT)相当なら登録はするが非公開のまま残す、という方針で進めます。
+  ・Eストア: link_lookupと同じ経路でimage_count取得
+  ・Yahoo: get_itemのfieldsに画像項目を追加し、非空個数をimage_countとして返す(現状get_itemに未実装のため追加が必要)
+
+■ reservePublishのpending事前確認 → ご要望どおり分離可能です
+実コードを確認しました。現状のregister_new_item()はreservePublish自体を呼んでいません(editItem+画像アップロード+setStockのみ)。「登録＝即公開」化でreservePublish呼び出しを追加する際、pendingチェックはreservePublish呼び出しの直前にだけ掛け、editItem/画像/在庫の各ステップはpendingの有無にかかわらず実行する形にできます。既存のupdate_single_item等にある_reserve_publish_best_effort(reservePublish失敗時もwarningsに積むだけで登録自体は成功扱い)と同じ考え方で、pending>0のときは「reservePublishをスキップしwarningsに理由(公開待ち)を積む」扱いにすれば、登録作業全体は止まりません。技術的な障害はありません。
+
+■ 実装着手のタイミングについて、1点確認させてください
+上記2点は設計として固まりましたが、実装はまだ着手していません。#2333側で調査中の「1,742件全件IsPublished=1」の切り分け((a)publish=falseが効いていない/(b)IsPublishedの意味が違う/(c)過去の一括操作)によっては、「登録=即公開」への切替の前提(現状は非公開で登録されているはず、という認識)自体が揺らぎます。切り分け結果を待ってから着手しますか、それとも並行で進めてよいですか。
+
+■ パーサー修正・実機検証状況について
+#2333のパーサー修正は別スレッドで検証・報告中です。そちらで改めてご連絡します。

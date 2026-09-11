@@ -2,7 +2,7 @@
 name: cgd
 description: Codex+DeepSeek+Qwen の統合コードレビュー・設計相談・実装・委譲・検証スキル（**Gemini は2026-07にAPIエラー多発のため既定オフのオプトイン参加に格下げ済み**）。**9段階レベル（Lv0〜Lv8）**でトークン消費・所要時間・実装主体が決まる。**レベル・Codex reasoning(low/medium/high)・Gemini/critic観点はすべてClaudeが対象から自動選択して宣言する（ユーザーに選ばせない・明示指示が最優先）**。**Lv0=委譲レーン**（DS/Qwenにコード生成を任せClaudeは分解と検証に専念・scaffold/量産タスク/コスト節約・Antigravity Plugin相当） / Lv1=Codex単独 / Lv2=Codex+DeepSeek並列（既定推奨。旧/codex等価のC+G構成は「Geminiも」等の明示指示で再現可） / Lv3=Codex+DeepSeekの技術×批評「2社×2視点」4レビュー（実装なし・review専用） / Lv4=Claude初期案→[DS+Qwen並列advisor]→Codex直列フル相談+再レビュー（Gemini併用時は先頭にGemini案出しが直列で入る） / Lv5=Lv4+🔴重大指摘の自動修正1周 / Lv6=Codex+DS+Qwen 3者並列レビュー（全員reviewer役、Gemini併用で4者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周（**Workflow実行必須**） / Lv7=Codex多重(medium+high)+補助(DS/Qwen)の4者並列「Codex集中」構成（Gemini併用で5者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周（最深掘り・**Workflow実行必須**） / Lv8=Lv7の技術構成そのまま+Codex(high)とDeepSeekにLv3同様の批評視点を追加した6者並列（Gemini併用で7者）+実装+検証+Codex再レビュー+🔴自動修正1周（技術の最深掘り+複眼批評、最重量級・**Workflow実行必須**）。Lv0=実装主体の切替（コストレーン）、Lv1-8=レビュー強度の選択（品質レーン）で直交。Lv4-5はDS/Qwenをadvisor役で別案出し、Lv6は横並びreviewer、Lv7は深いintegrationバグ検出を狙ってCodex多重化+DS/Qwenに関連関数抜粋を渡して補助役を強化。差分レビュー、設計判断、別案出し、実装、委譲、検証まで一気通貫。**旧 `/codex` `/gemini` 単体スキルは廃止され、本スキル（`/cgd` または `/codex` 起動）が必ずレベル自動決定から始まる**。全Lv共通の任意オプションで『critic観点』（辛口ユーザー視点＝ITに疎い現場担当者の使い勝手の不満 + あるべき論＝本来この仕様はどうあるべきかの批判を Claude本体+DS criticで評価）を追加でき、技術的正しさとは別軸で使い勝手・仕様の妥当性を否定的にチェックする。環境チェックは `python C:/ClaudeCode/.claude/tools/cgd_doctor.py` で一括。「委譲」「scaffold」「量産」「DSで書かせる」「Qwenで書かせる」「コスト節約」「3者に相談」「フルパイプ」「4者レビュー」「Codex多重」「Codex集中」「辛口レビュー」「ユーザー視点」「あるべき論」「critic」「cgd」「Codexにレビュー」「セカンドオピニオン」「C+G」「cg」「Geminiも」などのキーワードで起動。重要な設計判断・難しいバグ・大きめのリファクタの検討時には積極的に提案すること。既存 /generate-by-deepseek（DS単発コード生成→Claudeレビュー）は薄い構成で並立。
 ---
-<!-- SKILL_VERSION: 2026-09-08_192533 -->
+<!-- SKILL_VERSION: 2026-09-11_130532 -->
 
 # cgd — Codex + DeepSeek + Qwen 統合スキル（Lv0〜8、Gemini はオプトイン）
 
@@ -10,7 +10,7 @@ Claude Code は司令塔。Codex / DeepSeek / Qwen を **役割分担** で使�
 
 | エージェント | 役割 | 呼び出し |
 |---|---|---|
-| Codex | コードレビュー・厳密な品質ゲート（Lv7 では medium + high の **多重実行** で深さ・別視点を並列取得） | `codex exec -c model_reasoning_effort="<low\|medium\|high>" ...` |
+| Codex | コードレビュー・厳密な品質ゲート（Lv7 では medium + high の **多重実行** で深さ・別視点を並列取得。プロンプトは**stdin経由**で流し込む。2026-09-11以降ファイルを自分で開けない） | `codex exec -c model_reasoning_effort="<low\|medium\|high>" ... - < "<入力ファイル>"` |
 | DeepSeek | **Lv2 既定第2エンジン**（reviewer） / Lv4-5: 推論寄り別案出し (`--role advisor`) / Lv6: 並列 reviewer / Lv7: 補助 reviewer（**関連関数抜粋 + 差分**で表層指摘を減らす） | `python "<絶対パス>/deepseek_coder.py" --role <advisor\|reviewer> "..."` |
 | Qwen3-Coder-Plus | Lv4-5: 実装寄り別案出し / Lv6: 並列 reviewer / Lv7: 補助 reviewer（**関連関数抜粋 + 差分**で表層指摘を減らす） | `python "<絶対パス>/qwen_advisor.py" --role <advisor\|reviewer> "..."` |
 | Claude Code | 統合判断・実装・検証（Lv7 では事前に **Serena**(利用可能なら優先。`mcp__serena__find_symbol`+`find_referencing_symbols`) または grep + Read で関連関数を抜粋して DS/Qwen に渡す） | （本体） |
@@ -497,8 +497,9 @@ git -C "$REPO_ROOT" ls-files -z -o --exclude-standard | xargs -0 -r -- git -C "$
 git -C "$REPO_ROOT" diff > "C:/tmp-ai/delegate_diff.patch"
 [ -s "C:/tmp-ai/delegate_diff.patch" ] || { echo "ERROR: delegate_diff.patch が空。git add -N の対象と REPO_ROOT を確認してください"; exit 1; }
 
-# 3. Codex に読ませる
-mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="medium" --sandbox read-only --skip-git-repo-check "委譲生成コードの差分レビュー。バグ・設計・規約逸脱を厳密評価。まず C:/tmp-ai/delegate_diff.patch を読む。日本語回答。" < /dev/null
+# 3. Codex にレビューさせる（stdin経由でdiffを直接流し込む。「読ませる」方式は
+#    Codex CLI v0.154.0でblocked by policyになり成立しない。INC-20260911-123532bde1cc）
+mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && set -o pipefail && { printf '%s\n\n' "委譲生成コードの差分レビュー。バグ・設計・規約逸脱を厳密評価。対象ファイルは開けないので、以下のdiff本文だけで判断すること。日本語回答。"; cat "C:/tmp-ai/delegate_diff.patch"; } | codex exec -c model_reasoning_effort="medium" --sandbox read-only --skip-git-repo-check -
 ```
 
 **git add -N の限界（明示）**:
@@ -546,8 +547,10 @@ Step 1 の「Codex reasoning の自動選択」表で決める（既定 `medium`
 
 ### Step 2-1B: Codex 単独実行
 
+対象・観点・背景は **先にファイルへ書き**（`C:/tmp-ai/review_input.txt` 等）、`codex exec` にはプロンプト引数を渡さず **stdin 経由でファイル全文を流し込む**（`- < "<file>"`）。Codex 自身にファイルを開かせる「まず `<path>` を読み」方式は Codex CLI v0.154.0 で `blocked by policy` になり成立しない（INC-20260911-123532bde1cc）。
+
 ```bash
-mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="<low|medium|high|xhigh|max>" --sandbox read-only --skip-git-repo-check "<Codex プロンプト>" < /dev/null
+mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="<low|medium|high|xhigh|max>" --sandbox read-only --skip-git-repo-check - < "C:/tmp-ai/review_input.txt"
 ```
 
 ### Step 2-1C: 3 列レビュー表で出力
@@ -573,8 +576,9 @@ Gemini を追加参加させる指示（「Geminiも」「C+G」等）があっ�
 ### Step 2-2B: 並列起動（既定は **1 メッセージで Bash 2 個**、Gemini併用時は3個）
 
 ```bash
-# Bash #1（Codex）
-mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="<low|medium|high|xhigh|max>" --sandbox read-only --skip-git-repo-check "<Codex プロンプト>" < /dev/null
+# Bash #1（Codex）— プロンプト引数は渡さず stdin 経由でファイル全文を流し込む
+#   （「まず <path> を読み」方式は Codex CLI v0.154.0 で blocked by policy になり不可。INC-20260911-123532bde1cc）
+mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="<low|medium|high|xhigh|max>" --sandbox read-only --skip-git-repo-check - < "C:/tmp-ai/review_input.txt"
 
 # Bash #2（DeepSeek reviewer）— プロンプトを先にファイル化してパス渡し
 #   cat > "C:/tmp-ai/review_input.txt" <<'EOF' ... <レビュー対象+観点> ... EOF を先に書く
@@ -641,21 +645,23 @@ EOF
 
 ### Step 2-3C: 4件並列起動（**1 メッセージで Bash 4 個**）
 
+Codex にはプロンプト引数を渡さず、**指示文＋対象データを stdin 経由で流し込む**（`- < <(...)` 相当。「まず `<path>` を読み」方式は Codex CLI v0.154.0 で `blocked by policy` になり不可。INC-20260911-123532bde1cc）。指示文は printf、対象データ（`review_input.txt`）は cat で連結してパイプする。
+
 ```bash
 # Bash #1（Codex 技術レビュー）
-mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="<low|medium|high|xhigh|max>" --sandbox read-only --skip-git-repo-check "まず C:/tmp-ai/review_input.txt の全文を読み、バグ・設計上の懸念・セキュリティ・副作用・既存仕様との整合性を厳密にレビューしてください。必要なら対象実ファイルも読んでよい。日本語で回答。" < /dev/null
+mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && set -o pipefail && { printf '%s\n\n' "バグ・設計上の懸念・セキュリティ・副作用・既存仕様との整合性を厳密にレビューしてください。対象ファイルは開けないので、以下の内容だけで判断すること。日本語で回答。"; cat "C:/tmp-ai/review_input.txt"; } | codex exec -c model_reasoning_effort="<low|medium|high|xhigh|max>" --sandbox read-only --skip-git-repo-check -
 
 # Bash #2（DeepSeek 技術レビュー）
 python "C:/ClaudeCode/.claude/tools/deepseek_coder.py" --role reviewer "C:/tmp-ai/review_input.txt"
 
 # Bash #3（Codex 批評レビュー）
-mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="<low|medium|high|xhigh|max>" --sandbox read-only --skip-git-repo-check "まず C:/tmp-ai/review_input.txt の全文を読んでください。あなたは辛口の評価者です。技術的な正しさ（バグの有無）ではなく『使う人が困らないか』『本来この仕様はどうあるべきか』の観点で、遠慮なく否定的に評価してください。次の2つの立場を併せ持ってください: (1) ITに疎い現場担当者 — 実際に使うときの使いにくさ・わかりにくさ・手数の多さ・エラー時の困りごとを利用者の生の言葉で指摘する。(2) 熟練ITアーキテクト — 『本来この仕様はどうあるべきか』を理想形から逆算し、現状の妥協・場当たり対応・本質を外した設計・優先度の誤りを批判する。出力は次の構造で: 1.現場の不満（各項目に困り度: 高/中/低を付ける） 2.あるべき論とのギャップ 3.そもそも論（この機能は本当に要るか） 4.辛口総評（1〜2行で断言）。擁護・肯定・『概ね良い』は禁止。技術的なバグ指摘には深入りしない。日本語で回答。" < /dev/null
+mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && set -o pipefail && { printf '%s\n\n' "あなたは辛口の評価者です。技術的な正しさ（バグの有無）ではなく『使う人が困らないか』『本来この仕様はどうあるべきか』の観点で、遠慮なく否定的に評価してください。次の2つの立場を併せ持ってください: (1) ITに疎い現場担当者 — 実際に使うときの使いにくさ・わかりにくさ・手数の多さ・エラー時の困りごとを利用者の生の言葉で指摘する。(2) 熟練ITアーキテクト — 『本来この仕様はどうあるべきか』を理想形から逆算し、現状の妥協・場当たり対応・本質を外した設計・優先度の誤りを批判する。出力は次の構造で: 1.現場の不満（各項目に困り度: 高/中/低を付ける） 2.あるべき論とのギャップ 3.そもそも論（この機能は本当に要るか） 4.辛口総評（1〜2行で断言）。擁護・肯定・『概ね良い』は禁止。技術的なバグ指摘には深入りしない。対象ファイルは開けないので、以下の内容だけで判断すること。日本語で回答。"; cat "C:/tmp-ai/review_input.txt"; } | codex exec -c model_reasoning_effort="<low|medium|high|xhigh|max>" --sandbox read-only --skip-git-repo-check -
 
 # Bash #4（DeepSeek 批評レビュー）
 python "C:/ClaudeCode/.claude/tools/deepseek_coder.py" --role critic "C:/tmp-ai/review_input.txt"
 ```
 
-`cd "C:/tmp-ai"` は日本語 CWD 文字化け回避。Codex は `< /dev/null` でハング防止（必須）。DS は `DEEPSEEK_API_KEY` が要る。
+`cd "C:/tmp-ai"` は日本語 CWD 文字化け回避。DS は `DEEPSEEK_API_KEY` が要る。
 
 **使用量表示（必須・転記、DS 2 回分とも）**:
 - DS スクリプトが stderr に `[DS Usage] 今回: ... / 累計: ...` を呼出しごとに 2 行出力（reviewer / critic それぞれ）
@@ -807,7 +813,9 @@ cat > "C:/tmp-ai/codex_prompt.txt" <<'EOF'
 <絶対パス>
 EOF
 
-mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="medium" --sandbox read-only --skip-git-repo-check "まず C:/tmp-ai/codex_prompt.txt の全文を読み、記載の実装方針を厳密にレビュー。必要なら対象実ファイルも読んでよい。日本語で回答。" < /dev/null
+# codex_prompt.txt に指示文・対象を書き込み済みなので、プロンプト引数は渡さず stdin で丸ごと流し込む
+# （「まず <path> を読み」方式は Codex CLI v0.154.0 で blocked by policy になり不可。INC-20260911-123532bde1cc）
+mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="medium" --sandbox read-only --skip-git-repo-check - < "C:/tmp-ai/codex_prompt.txt"
 ```
 
 ### Step 2-4F: Claude 相談まとめ（既定6列、Gemini併用時7列統合表）
@@ -977,8 +985,8 @@ cat > "C:/tmp-ai/review_input.txt" <<'EOF'
 バグ・設計上の懸念・セキュリティ・副作用・既存仕様との整合性を厳密に評価してください。
 日本語で回答。AGENTS.md / CLAUDE.md がある場合はそれに従う。
 
-[探索の上限 — 必須]
-追加で開いてよい実ファイルは**最大5個まで**。超えるなら読まずに「情報不足: <欲しいファイル>」と書いて終えること（探索1回で約3,000トークン消費するため）。
+[探索不可 — 必須]
+Codex は対象ファイルを直接開けません（環境ポリシーによりシェル実行不可・INC-20260911-123532bde1cc）。判断に必要な情報は下記にすべて含めてください。不足があれば「情報不足: <欲しい情報>」とだけ書いて終えること。
 
 [対象（絶対パスまたは内容）]
 <差分内容または絶対パス>
@@ -991,8 +999,9 @@ EOF
 **並列起動（既定・3個）**:
 
 ```bash
-# Bash #1（Codex）
-mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="<low|medium|high|xhigh|max>" --sandbox read-only --skip-git-repo-check "まず C:/tmp-ai/review_input.txt の全文を読み、記載の差分・対象・評価観点に従ってレビュー。必要なら対象実ファイルも読んでよい。日本語で回答。" < /dev/null
+# Bash #1（Codex）— プロンプト引数は渡さず stdin 経由でファイル全文を流し込む
+#   （「まず <path> を読み」方式は Codex CLI v0.154.0 で blocked by policy になり不可）
+mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="<low|medium|high|xhigh|max>" --sandbox read-only --skip-git-repo-check - < "C:/tmp-ai/review_input.txt"
 
 # Bash #2（DeepSeek reviewer — 推論寄り）
 python "C:/ClaudeCode/.claude/tools/deepseek_coder.py" --role reviewer "C:/tmp-ai/review_input.txt"
@@ -1004,7 +1013,7 @@ python "C:/ClaudeCode/.claude/tools/qwen_advisor.py" --role reviewer "C:/tmp-ai/
 python "C:/ClaudeCode/.claude/tools/gemini_advisor.py" --role reviewer "C:/tmp-ai/review_input.txt"
 ```
 
-`cd "C:/tmp-ai"` は日本語 CWD 文字化け回避。`< /dev/null` はハング防止（必須）。
+`cd "C:/tmp-ai"` は日本語 CWD 文字化け回避。stdin にファイル内容そのものを流し込むため `< /dev/null` は使わない（EOF まで届いたら自然終了しハングしない）。
 
 **使用量表示（必須・転記、DS と Qwen 両方）**:
 - DS スクリプトが stderr に `[DS Usage] 今回: ... / 累計: ...` を 2 行出力
@@ -1147,15 +1156,12 @@ cat > "C:/tmp-ai/lv7_codex_input.txt" <<'EOF'
 呼出経路ごとの副作用差異・catch ブロックでの throw 握り潰し等）を重点的に評価してください。
 日本語で回答。AGENTS.md / CLAUDE.md がある場合はそれに従う。
 
-[探索の上限 — 必須]
-**関連関数の抜粋は下に同梱済みです。** 追加で開いてよい実ファイルは **最大 5 個まで**。
-それを超えて必要になったら、読み進めずに「**情報不足: <欲しいファイル/関数>**」と書いて
-その指摘を終えてください（Claude 側が次のラウンドで抜粋を追加します）。
-
-理由（実測）: Codex の消費は `14,000 + 0.75×入力バイト + 約3,000×探索回数` で近似できます。
-入力 5.4KB のレビューで 29 回探索し 103,686 トークン使った実例があり、
-探索が全体の 8 割を占めていました。上限に達したら「足りない」と言う方が、
-黙って読み続けるより有用です。
+[探索不可 — 必須]
+**関連関数の抜粋は下に同梱済みです。** Codex は対象ファイルを直接開くことができません
+（Codex CLI v0.154.0 で exec_command が環境ポリシーにより全面拒否される。
+INC-20260911-123532bde1cc）。判断に必要な情報はすべてこの入力に含まれています。
+不足があれば読み進めずに「**情報不足: <欲しいファイル/関数>**」とだけ書いてその指摘を
+終えてください（Claude 側が次のラウンドで抜粋を追加します）。
 
 [対象ファイル絶対パス]
 <絶対パス>
@@ -1173,9 +1179,15 @@ EOF
 cat <diff-file> >> "C:/tmp-ai/lv7_codex_input.txt"
 ```
 
-> **変更点（2026-08-05）**: 以前は Codex にパスだけ渡して「自分で grep+Read してよい」と
-> 広く探索させていた。実測でこれが消費の主因（8 割）と判明したため、
-> **DS/Qwen 用に既に抽出している抜粋を Codex にも同梱し、追加探索に上限を設ける**方式に変えた。
+> **経緯**: 2026-08-05 時点では Codex にパスだけ渡して「自分で grep+Read してよい」と
+> 広く探索させていたが、実測でこれが消費の主因（8 割。Codex の消費は
+> `14,000 + 0.75×入力バイト + 約3,000×探索回数` で近似でき、入力 5.4KB のレビューで
+> 29 回探索し 103,686 トークン使った実例がある）と判明し、いったん「最大 5 ファイルまで」
+> に制限した。さらに 2026-09-11、Codex CLI v0.154.0 で exec_command 自体が
+> `blocked by policy` で全面拒否されるようになり、**探索は上限どころか原理的に不可能**
+> になった（INC-20260911-123532bde1cc）。DS/Qwen 用に抽出済みの関連関数抜粋を
+> Codex にも同梱する設計はそのまま活きるので、今回の変更はこの抜粋への依存度を
+> 高める形になる（抜粋漏れは「情報不足」で Claude に差し戻す運用でカバーする）。
 
 **DS / Qwen 用入力**（差分 + 関連関数抜粋・API なのでファイルアクセス不可）:
 
@@ -1262,12 +1274,14 @@ python "C:/ClaudeCode/.claude/hooks/cgd_wf_gate.py" disarm
 
 **この節は Workflow が使えない時の退避路。** 使う場合は各コマンド先頭に `CGD_WF_RUN=1` を付けてゲートを意図的に迂回し、**迂回した理由をユーザーに必ず伝えること**。既定は **1 メッセージで Bash 4 個**（Gemini併用時5個）。
 
+プロンプト引数は渡さず stdin 経由で `lv7_codex_input.txt` を丸ごと流し込む（「まず `<path>` を読み」方式は Codex CLI v0.154.0 で `blocked by policy` になり不可。INC-20260911-123532bde1cc）。
+
 ```bash
 # Bash #1（Codex medium — バランス重視）
-mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="medium" --sandbox read-only --skip-git-repo-check "まず C:/tmp-ai/lv7_codex_input.txt の全文を読み、記載の差分・対象・評価観点に従ってレビュー。必要なら対象実ファイルも読んでよい。日本語で回答。" < /dev/null
+mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="medium" --sandbox read-only --skip-git-repo-check - < "C:/tmp-ai/lv7_codex_input.txt"
 
 # Bash #2（Codex high — 深掘り）
-mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="high" --sandbox read-only --skip-git-repo-check "まず C:/tmp-ai/lv7_codex_input.txt の全文を読み、記載の差分・対象・評価観点に従ってレビュー。必要なら対象実ファイルも読んでよい。日本語で回答。" < /dev/null
+mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="high" --sandbox read-only --skip-git-repo-check - < "C:/tmp-ai/lv7_codex_input.txt"
 
 # Bash #3（DeepSeek reviewer — 補助・推論寄り）
 python "C:/ClaudeCode/.claude/tools/deepseek_coder.py" --role reviewer "C:/tmp-ai/lv7_aux_input.txt"
@@ -1364,7 +1378,7 @@ Gemini オプトイン時の観点は Claude が対象から判断して決め�
 
 ### Step 2-8C: 入力ファイル準備（先に1回だけ作る・技術・批評で共有）
 
-**Codex（オプトイン時は Gemini も）用入力**（ファイルパス渡し・自分で読みに行ける）:
+**Codex（オプトイン時は Gemini も）用入力**（stdin 経由で流し込む。Codex は対象ファイルを直接開けない — 後述の理由参照）:
 
 ```bash
 cat > "C:/tmp-ai/lv8_codex_input.txt" <<'EOF'
@@ -1374,15 +1388,12 @@ cat > "C:/tmp-ai/lv8_codex_input.txt" <<'EOF'
 呼出経路ごとの副作用差異・catch ブロックでの throw 握り潰し等）を重点的に評価してください。
 日本語で回答。AGENTS.md / CLAUDE.md がある場合はそれに従う。
 
-[探索の上限 — 必須]
-**関連関数の抜粋は下に同梱済みです。** 追加で開いてよい実ファイルは **最大 5 個まで**。
-それを超えて必要になったら、読み進めずに「**情報不足: <欲しいファイル/関数>**」と書いて
-その指摘を終えてください（Claude 側が次のラウンドで抜粋を追加します）。
-
-理由（実測）: Codex の消費は `14,000 + 0.75×入力バイト + 約3,000×探索回数` で近似できます。
-入力 5.4KB のレビューで 29 回探索し 103,686 トークン使った実例があり、
-探索が全体の 8 割を占めていました。上限に達したら「足りない」と言う方が、
-黙って読み続けるより有用です。
+[探索不可 — 必須]
+**関連関数の抜粋は下に同梱済みです。** Codex は対象ファイルを直接開くことができません
+（Codex CLI v0.154.0 で exec_command が環境ポリシーにより全面拒否される。
+INC-20260911-123532bde1cc）。判断に必要な情報はすべてこの入力に含まれています。
+不足があれば読み進めずに「**情報不足: <欲しいファイル/関数>**」とだけ書いてその指摘を
+終えてください（Claude 側が次のラウンドで抜粋を追加します）。
 
 [対象ファイル絶対パス]
 <絶対パス>
@@ -1575,12 +1586,14 @@ Preflight agent もそのひとつなので、**前回実行時の nonce** が�
 
 **この節は Workflow が使えない時の退避路。** 使う場合は各コマンド先頭に `CGD_WF_RUN=1` を付けてゲートを意図的に迂回し、**迂回した理由をユーザーに必ず伝えること**。既定は **1 メッセージで Bash 6 個**（Gemini併用時7個）。
 
+プロンプト引数は渡さず stdin 経由で `lv8_codex_input.txt` を丸ごと流し込む（「まず `<path>` を読み」方式は Codex CLI v0.154.0 で `blocked by policy` になり不可。INC-20260911-123532bde1cc）。批評パス（Bash #5）は指示文を printf、対象データを cat で連結してパイプする。
+
 ```bash
 # Bash #1（Codex medium — 技術・バランス重視）
-mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="medium" --sandbox read-only --skip-git-repo-check "まず C:/tmp-ai/lv8_codex_input.txt の全文を読み、記載の差分・対象・評価観点に従ってレビュー。必要なら対象実ファイルも読んでよい。日本語で回答。" < /dev/null
+mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="medium" --sandbox read-only --skip-git-repo-check - < "C:/tmp-ai/lv8_codex_input.txt"
 
 # Bash #2（Codex high — 技術・深掘り）
-mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="high" --sandbox read-only --skip-git-repo-check "まず C:/tmp-ai/lv8_codex_input.txt の全文を読み、記載の差分・対象・評価観点に従ってレビュー。必要なら対象実ファイルも読んでよい。日本語で回答。" < /dev/null
+mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="high" --sandbox read-only --skip-git-repo-check - < "C:/tmp-ai/lv8_codex_input.txt"
 
 # Bash #3（DeepSeek reviewer — 技術・補助・推論寄り）
 python "C:/ClaudeCode/.claude/tools/deepseek_coder.py" --role reviewer "C:/tmp-ai/lv8_aux_input.txt"
@@ -1589,7 +1602,7 @@ python "C:/ClaudeCode/.claude/tools/deepseek_coder.py" --role reviewer "C:/tmp-a
 python "C:/ClaudeCode/.claude/tools/qwen_advisor.py" --role reviewer "C:/tmp-ai/lv8_aux_input.txt"
 
 # Bash #5（Codex high — 批評。新規セッションで技術レビューとは独立に評価させる）
-mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="high" --sandbox read-only --skip-git-repo-check "まず C:/tmp-ai/lv8_codex_input.txt の全文を読んでください。あなたは辛口の評価者です。技術的な正しさ（バグの有無）ではなく『使う人が困らないか』『本来この仕様はどうあるべきか』の観点で、遠慮なく否定的に評価してください。次の2つの立場を併せ持ってください: (1) ITに疎い現場担当者 — 実際に使うときの使いにくさ・わかりにくさ・手数の多さ・エラー時の困りごとを利用者の生の言葉で指摘する。(2) 熟練ITアーキテクト — 『本来この仕様はどうあるべきか』を理想形から逆算し、現状の妥協・場当たり対応・本質を外した設計・優先度の誤りを批判する。出力は次の構造で: 1.現場の不満（各項目に困り度: 高/中/低を付ける） 2.あるべき論とのギャップ 3.そもそも論（この機能は本当に要るか） 4.辛口総評（1〜2行で断言）。擁護・肯定・『概ね良い』は禁止。技術的なバグ指摘には深入りしない。日本語で回答。" < /dev/null
+mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && set -o pipefail && { printf '%s\n\n' "あなたは辛口の評価者です。技術的な正しさ（バグの有無）ではなく『使う人が困らないか』『本来この仕様はどうあるべきか』の観点で、遠慮なく否定的に評価してください。次の2つの立場を併せ持ってください: (1) ITに疎い現場担当者 — 実際に使うときの使いにくさ・わかりにくさ・手数の多さ・エラー時の困りごとを利用者の生の言葉で指摘する。(2) 熟練ITアーキテクト — 『本来この仕様はどうあるべきか』を理想形から逆算し、現状の妥協・場当たり対応・本質を外した設計・優先度の誤りを批判する。出力は次の構造で: 1.現場の不満（各項目に困り度: 高/中/低を付ける） 2.あるべき論とのギャップ 3.そもそも論（この機能は本当に要るか） 4.辛口総評（1〜2行で断言）。擁護・肯定・『概ね良い』は禁止。技術的なバグ指摘には深入りしない。対象ファイルは開けないので、以下の内容だけで判断すること。日本語で回答。"; cat "C:/tmp-ai/lv8_codex_input.txt"; } | codex exec -c model_reasoning_effort="high" --sandbox read-only --skip-git-repo-check -
 
 # Bash #6（DeepSeek critic — 批評）
 python "C:/ClaudeCode/.claude/tools/deepseek_coder.py" --role critic "C:/tmp-ai/lv8_aux_input.txt"
@@ -1951,6 +1964,12 @@ Python 以外（JS / TS / シェル等）の場合は、その言語の実行可
 > 探索させない。プロンプトに「**実ファイルは読まないこと。差分と同梱情報だけで判断すること**」
 > を必ず入れる。実測で探索は 1 回約 3,000 トークン、初回レビューでは消費の 8 割を占めた。
 > 差分レビューでこれを払う価値はない。（Lv4-8 共通、差分のみ・Lv7/Lv8 も medium 単独で OK）
+>
+> **2026-09-11 追記**: Codex CLI v0.154.0 で exec_command が `blocked by policy` で
+> 全面拒否されるようになり、そもそも実ファイルを開くこと自体が不可能になった
+> (INC-20260911-123532bde1cc)。上記の「探索させない」方針とは無関係に、
+> プロンプトにファイルパスを渡して読ませる指示は成立しないため、
+> **差分本文は stdin 経由でそのまま流し込む**（`- < "<diffファイル>"`）。
 
 実装した差分を **Codex 単独**でレビューする。Gemini は呼ばない（トークン節約）。
 
@@ -1960,7 +1979,7 @@ Python 以外（JS / TS / シェル等）の場合は、その言語の実行可
 
 ```bash
 git diff > "C:/tmp-ai/impl_diff.patch"
-mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && codex exec -c model_reasoning_effort="medium" --sandbox read-only --skip-git-repo-check "<差分レビュープロンプト・絶対パスで diff 参照>" < /dev/null
+mkdir -p "C:/tmp-ai" && cd "C:/tmp-ai" && set -o pipefail && { printf '%s\n\n' "<差分レビュープロンプト。実ファイルは読まないこと。差分と同梱情報だけで判断すること。>"; cat "C:/tmp-ai/impl_diff.patch"; } | codex exec -c model_reasoning_effort="medium" --sandbox read-only --skip-git-repo-check -
 ```
 
 結果は **3 列レビュー表**（Lv1 と同じフォーマット）で出力:
@@ -2183,13 +2202,14 @@ Bash 並列起動の各段の `$?` を確認し、**1 つでも非 0 が出た�
 - **Lv6 で参加者（既定3者、Gemini併用時4者）のうち 1 者が認証エラー** → 即中断（Lv6 は参加者全員揃ってこそ意味があるので欠員のまま続行しない）。該当 API の復旧後に再実行
 - **Lv7 で参加者（既定4者、Gemini併用時5者）のうち Codex 片方 (med or high) が認証エラー** → 即中断（Lv7 の本質は Codex 多重なので片方では成立しない）。`codex login status` を確認し復旧後に再実行
 - **Lv7 で関連関数抜粋が大きすぎてタイムアウト** → 抜粋を「変更 hunk 直近 ± 30 行 + 直接の呼出元 1〜2 関数」に絞る。argv 制限 32KB 以下を目標
-- **Lv7 の Codex high が 10 分でタイムアウト** → 入力プロンプトを「対象ファイル絶対パス + 変更概要 + 差分」に圧縮（関数定義は Codex が sandbox で読みに行く想定なので Claude から渡さない）
+- **Lv7 の Codex high が 10 分でタイムアウト** → 入力プロンプトを「対象ファイル絶対パス + 変更概要 + 差分 + 関連関数抜粋」に圧縮する（2026-09-11 以降 Codex は sandbox 探索ができないため、関数定義は必ず Claude が事前抽出して同梱する。Step 2-7B 参照）
+- **Codex が `blocked by policy` でファイルを読めない / 何度も再試行してから諦める** → Codex CLI v0.154.0 の既知の挙動（`--sandbox read-only` でも `workspace-write` でも exec_command が全面拒否される。INC-20260911-123532bde1cc）。「まず `<path>` を読み」方式は成立しないので使わない。**必ず stdin 経由でプロンプト全文を流し込む**（`codex exec ... - < "<入力ファイル>"`、大きい指示文は `{ printf '%s\n\n' "指示文"; cat "<入力ファイル>"; } | codex exec ... -`）。cgd 内の呼び出しは全てこの方式に統一済み（2026-09-11）
 - **Codex `Not logged in`** → `codex login` の実行を依頼して停止
 - **Gemini `API key not valid` / `GEMINI_API_KEY が設定されていません`** → 環境変数 `GEMINI_API_KEY`（Google AI Studio で発行）を確認・再設定して停止
 - **Gemini `503 high demand`** → 一時的な高負荷。少し待って再試行、または `--model gemini-2.5-pro` 等に切替（既定 `gemini-2.5-flash`。`gemini-flash-latest` は 503 が出やすいので非推奨）
 - **Gemini 日本語が化ける / `surrogates not allowed`** → 日本語プロンプトを argv/stdin で渡すと CP932 で壊れる。**必ず utf-8 ファイルに書いてパス渡し**（`gemini_advisor.py "C:/tmp-ai/xxx.txt"`）
-- **`Argument list too long`（Codex 起動時）** → 大きい入力を `"$(cat 'file')"` で argv 展開して ARG_MAX 超過（62KB で実発生）。**Codex にはファイルパスを渡して自分で読ませる**短いプロンプト（`codex exec ... "まず C:/tmp-ai/review_input.txt を読み…"`）にする。Gemini/DS/Qwen はファイルパス引数なので影響なし
-- **無応答ハング** → `< /dev/null` 付け忘れ
+- **`Argument list too long`（Codex 起動時）** → 大きい入力を `"$(cat 'file')"` で argv 展開して ARG_MAX 超過（62KB で実発生）。**プロンプト引数を渡さず stdin 経由で流し込む**（`codex exec ... - < "C:/tmp-ai/review_input.txt"`）。stdin には引数長の上限が無いため同時に解消する（97KB 相当で実測確認済み）。旧対策の「ファイルパスを渡して Codex に読ませる」方式は v0.154.0 で `blocked by policy` になり使えない（上記エントリ参照）。Gemini/DS/Qwen はファイルパス引数なので元々影響なし
+- **無応答ハング** → stdin が空でも埋まってもいない状態（ターミナル接続のまま）で起動している。プロンプト全文を stdin から流し込む場合はファイルの EOF で自然終了するが、渡すデータが無い呼び出しでは `< /dev/null` を忘れていないか確認する
 - **日本語 CWD 文字化け** → `cd "C:/tmp-ai"` 忘れ
 - **`unexpected argument '--ephemeral'` 等** → CLI バージョン差異。該当フラグを外して再試行
 - **PowerShell でエラー** → 本スキルは Bash 必須。Git Bash で起動し直す
