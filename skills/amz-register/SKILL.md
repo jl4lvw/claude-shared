@@ -4,7 +4,7 @@ description: 022.Amazon在庫PWAで新規商品(親+バリエーション子)を
 trigger: 「Gxxxxを登録したい」「Amazonに新規出品したい」等、023マスタの商品番号(G####)をAmazonへ新規登録したいとき
 ---
 
-<!-- SKILL_VERSION: 2026-09-01_120000 -->
+<!-- SKILL_VERSION: 2026-09-11_140000 -->
 
 # amz-register — Amazon新規商品登録
 
@@ -93,6 +93,12 @@ arr = np.array(im)
 `whiten_bg.py`(商品検出→バウンディングボックス保護→四隅BFS純白化)を再利用または
 同じロジックで都度書く。修正後は必ず元画像と並べて目視比較し、商品側に変化がないか確認する。
 
+**メイン画像は必ずユーザー提供のファイル/URLを使う。候補グリッドから選ばせない**
+(2026-09-09確立)。Rakuten側の候補画像は純白に近くても厳密には255,255,255でないことが
+多く(実測 249〜254台がほとんど)、Amazon規約の純白要件を安全に満たせるのはユーザーが
+別途加工した専用画像だけ。ユーザーには「メイン画像(純白背景・2000×2000px)をダウンロード
+フォルダへ保存してください」と依頼し、保存されたファイルを四隅ピクセル値で確認してから使う。
+
 **メイン画像は商品をフレームいっぱいに大きく、余白は最小限にする**(2026-09-01追加)。
 `whiten_bg.py`で求めた商品バウンディングボックスを使い、アスペクト比を保ったまま
 ボックスぎりぎりまでクロップ→正方形キャンバスにリサイズする(`crop_tight.py`)。
@@ -115,13 +121,39 @@ VALIDATION_PREVIEW再実行やスキル更新まで自動で続けてしまい�
 - Eストア/ローカルの低解像度版(800px等)を**強制拡大**(画質補完なし、単純リサイズで
   1000px以上に引き伸ばすだけ)して使う — ユーザーが明示許可した場合のみ
 
-### Step 3: 候補一覧アーティファクト
+### Step 3: 候補一覧アーティファクト(必須・毎回・省略禁止)
 
-選定対象が複数枚ある場合、**全候補**(除外候補も含む)をアルファベット(A, B, C…)付きの
-サムネイルグリッドでアーティファクトにまとめ、ユーザーに選んでもらう。除外を勧めたい画像
-(レビュー画面等)にはキャプションで理由を添えるが、候補からは外さない。
+**商品登録のたびに、他画像(other_1〜6)の選定は必ずクリック選択式アーティファクトで行う。**
+チャットで「どれにしますか」とテキストで聞いたり、Claudeが勝手に選んだりしてはいけない
+(2026-09-11 ユーザーから明示指示: 「商品登録の時は、必ず他画像を選択するためのアーティファクトを
+表示してください」)。候補が2枚以下で実質選択の余地が無い場合も、確認の意味でアーティファクトは
+出す。候補が1枚しかない(または0枚)場合のみ、AskUserQuestionでその旨を確認すればよい。
 
-選定結果は「A, C, E, F, G, I」のような順序付きアルファベット列で受け取り、その順番を
+**必ず以下のテンプレート+ビルドスクリプトを使う。手書きHTML/JS・Pythonの文字列埋め込みは
+禁止**(付録「既知の落とし穴」参照 — ブレース二重化エスケープ事故が実際に起きた):
+
+```bash
+python C:/ClaudeCode/.claude/skills/amz-register/build_image_picker.py \
+  --candidates <G番号>_candidates.json \
+  --img-dir "C:/ProductMaster/images/<G番号 or G番号-parent>" \
+  --output <G番号>_image_picker.html \
+  --slug <g番号小文字> \
+  --title-tag "<G番号> 画像候補(クリック選択)" \
+  --eyebrow "Amazon出品 画像選定 · <G番号>" \
+  --h1 "<G番号> 他画像を選択" \
+  --max-select 6
+```
+
+候補JSON(`<G番号>_candidates.json`)は `{"name","label","url"}` の配列。`url` は
+Rakuten CDN元画像(`build_image_url()`参照)を入れると、アーティファクト側で長押しコピーが
+使える。**全候補**(除外候補も含む)を入れ、除外を勧めたい画像(レビュー画面・ランキング
+バナー等、商品写真ではないもの)にはlabelで理由が分かるようにするが、候補からは外さない。
+
+publish後は `grep -c '{{' out.html` が0であることを確認してから `Artifact` で公開する
+(`capabilities: {"db": {}}` 必須)。
+
+選定結果は `read_db`(`collection: <slug>`, `doc_id: "other_image_selection"`)で
+「A, C, E, F, G, I」のような順序付きアルファベット列として受け取り、その順番を
 `other_1`以降への割当順として扱う(=主観的にどの画像を目立たせたいかの意図を尊重)。
 
 ### Step 4: アップロード
@@ -341,6 +373,60 @@ FBA用に払い出されたFNSKUバーコードを、**自社発送(LCL)分の7S
 
 ## 付録: 既知の落とし穴
 
+- **クリック選択式アーティファクトはテンプレート(`template_image_picker.html`+
+  `build_image_picker.py`)以外の経路で作らない(2026-09-11実例)**。その場で
+  Python文字列(f-string/`.format()`)にHTML/CSS/JSを埋め込んで手書きした際、
+  `.format()`用に`{{`/`}}`と二重化したブレースが、実際には`.replace()`方式に
+  切り替えたため単体の`{`/`}`に戻し忘れて残った。結果、CSS宣言・JSの関数定義が
+  すべて壊れ、生成自体は成功(HTTP 200・画像も表示される)するのに**クリックしても
+  何も起きない**という、見た目だけでは気づきにくい壊れ方をした。ユーザー指摘で
+  発覚。教訓: **同じUIパーツを2回以上作るなら、必ず独立した`.html`テンプレート
+  ファイル+ビルドスクリプトに切り出す**(Pythonの三重引用符文字列に長いHTML/JS
+  を埋め込むと、この種のエスケープ事故が起きやすい)。生成後は
+  `grep -c '{{' out.html`が0であることを機械的に確認する
+- **同種商品の前回スクリプトを`sed`で一括複製しない(2026-09-09実例)**。前の商品の
+  build/page-simスクリプトを`sed 's/g2195/g2221/g'`のように小文字置換だけで複製すると、
+  `Path(r"C:/ProductMaster/images/G2195")`のような**大文字G番号を含む行が置換されず
+  残る**。この時はプレビュー用アーティファクトが前商品(G2195)の画像を表示してしまい、
+  ユーザーから「サブの画像が違う商品になっている」と指摘された(実際にAmazonへ送信した
+  画像URLは正しく新SKU名前空間だったため実害はなかったが、レビュー画面の信頼性を損ねた)。
+  対策: 新商品ごとに**都度Writeで新規に書く**か、置換後に必ず
+  `grep -n "旧G番号" <生成先.py>`で大文字小文字を問わず取りこぼしがないか確認する
+- **カラーコード(color属性のASCII表記)はその場で略語を推測しない(2026-09-11実例)**。
+  ネイビーを`NVY`、ブラックを`BLK`と、英単語から自己流で略語を作って2回連続で
+  ユーザーに訂正された(正しくは`NV`/`BK`)。022 `inventory_items`の実SKU162件を
+  調べたところ、この業務では`NV`/`GL`/`BK`/`WH`/`OD`(2文字)と`GLD`/`SLV`(3文字)、
+  低視認性(ロービジ)版は`LowNV`/`LowGL`/`LowOD`という実績のある略語体系が既にあり、
+  単語から桁数を推測すると高確率で外れる。対策: 色名からcolor属性コードを決める前に
+  必ず `python C:/ClaudeCode/.claude/skills/amz-register/lookup_color_code.py <色名>`
+  を実行する。`color_codes.json`に無い新色は、その場で作らずユーザーに確認して
+  `color_codes.json`へ追記してから使う(`--list`で登録済み一覧を確認できる)
+- **COLLECTIBLE_COINS(記念コイン)はSHIRTと属性体系が全く別**(2026-09-09追加)。
+  `item_diameter`/`material`/`mint_mark`/`denomination_unit`/`series_title`/
+  `model_year`/`graded_by`/`grade_rating`等が必要で、`target_gender`/`department`/
+  `age_range_description`/`care_instructions`/`fit_type`/`style`はSHIRT用の既定値が
+  batchスキーマに残ったまま送ると無関係な属性が混入するので、
+  `parent_target_gender`等を明示的に空文字で上書きする。既存の兄弟コインSKUがあれば
+  `GET /register/template/{sibling_sku}`で属性一式をテンプレートとして取得でき、
+  そのまま`child_template_attributes`に流用できる(価格・画像・item_name等の
+  インスタンス固有値だけ除いて使う)。**親レベルでも`recommended_browse_nodes`/
+  `supplier_declared_dg_hz_regulation`/`country_of_origin`が必須**(childだけに
+  入れると親でERROR 90220になった実例あり)なので`parent_template_attributes`にも
+  同じ値を重複して入れる。カラー(例: ゴールド/シルバー)はvariant_keyのASCII制約により
+  英語表記(GLD/SLV等)で登録されることになるため、レビューアーティファクトで
+  必ずその旨をユーザーに明記する
+- **FABRIC_APPLIQUE_PATCH(ワッペン)は`batteries_required`/`list_price`が親・子
+  両方で必須になることが多い**(2026-09-11実例、G2179で発覚)。`skip_offer`と共に
+  `parent_template_attributes`/`child_template_attributes`の両方へ最初から入れておくと
+  VALIDATION_PREVIEWの往復を1回減らせる。`list_price`(メーカー希望小売価格・税抜)は
+  明示指示が無ければ `round(税込価格 / 1.1)` を暫定値としてレビューアーティファクトに
+  明記し、ユーザー確認を仰ぐ
+- **`.claude/`配下の編集は`/g-ul`まで完了させないと、他セッションの`/g-dl`や
+  自動ミラー同期で静かに巻き戻る**(2026-09-11実例)。本SKILL.mdはこの事故で
+  2026-09-01版まで戻り、上記の複数の教訓が一度消えて再構築する羽目になった。
+  編集がある程度まとまったら都度`/g-ul`を実行し、claude-shared + originへ
+  実際に反映されたことを確認する(feedback_claude_dir_changes_must_be_gul_or_mirror_reverts
+  も参照)
 - **画像枠は7枚ではなく最大7枚(main1+other6)** — other_7は存在しない
 - **`merchant_suggested_asin` を兄弟テンプレから流用しない** — 新規SKUに他人の実ASINが
   紐付く事故になる(実際に危険な状態を作りかけた実例あり)。新規登録では空文字のまま
