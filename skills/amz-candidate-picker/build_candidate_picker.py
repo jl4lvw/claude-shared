@@ -65,7 +65,12 @@ def build(
 ) -> str:
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
     data_json = json.dumps(candidates, ensure_ascii=False)
-    db_doc = f"candidate_picker/{slug}/selection"
+    # NOTE: db.doc() の第一引数は「collection/doc/collection/doc/...」形式で、
+    # 全体のセグメント数が偶数でなければならない(奇数だとコレクション参照になり、
+    # doc()が指すドキュメントが存在しない扱いになる)。2026-09-11、3セグメント
+    # ("candidate_picker/<slug>/selection")で作った初版のタオルセレクターが
+    # 選択を一切保存できていなかった実障害が発生し、2セグメントに修正した。
+    db_doc = f"candidate_picker/{slug}"
 
     out = template
     out = out.replace("__DATA__", data_json)
@@ -106,7 +111,7 @@ def main() -> None:
         search_placeholder=args.search_placeholder,
     )
     args.output.write_text(html, encoding="utf-8", newline="")
-    print(f"written {args.output} ({len(html)} bytes, {len(candidates)} candidates, db_doc=candidate_picker/{args.slug}/selection)")
+    print(f"written {args.output} ({len(html)} bytes, {len(candidates)} candidates, db_doc=candidate_picker/{args.slug})")
 
 
 if __name__ == "__main__":

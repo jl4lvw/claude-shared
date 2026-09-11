@@ -1,4 +1,4 @@
-<!-- SKILL_VERSION: 2026-09-11_104500 -->
+<!-- SKILL_VERSION: 2026-09-11_120000 -->
 
 # amz-candidate-picker — 候補セレクター(検索+チェックボックス)アーティファクト
 
@@ -74,7 +74,7 @@ python C:/ClaudeCode/.claude/skills/amz-candidate-picker/build_candidate_picker.
 ```
 
 - `--slug` は他の候補セレクターと衝突しないユニークな値にする(DB保存先が
-  `candidate_picker/<slug>/selection` になるため、同じ slug を使い回すと前回の選択が
+  `candidate_picker/<slug>` になるため、同じ slug を使い回すと前回の選択が
   残ったまま出てくる。**カテゴリが変わったら slug も変える**)
 - `--title` / `--eyebrow` / `--subtitle` / `--footer` / `--search-placeholder` は
   毎回の対象に合わせて書き換える。**HTMLの構造・CSS・JSは一切変えない**(そこが
@@ -104,8 +104,8 @@ Artifact({
   action: "read_db",
   url: "<publishしたURL>",
   db_op: "get",
-  collection: "candidate_picker/<slug>",
-  doc_id: "selection"
+  collection: "candidate_picker",
+  doc_id: "<slug>"
 })
 ```
 
@@ -144,6 +144,23 @@ max-height: min(58vh, 520px); }`)。`thead th` の sticky はこの領域内の 
 オフセット合わせが不要になる。**このテンプレートを流用する限り再発しない。**
 もし将来この部分を書き換える場合は、ページ全体スクロールに対する複数要素の
 sticky offset 決め打ちを避けること。
+
+**DB保存先のパスは、コレクション/ドキュメントが交互に並ぶ形でセグメント数が偶数でなければ
+ドキュメントとして機能しない(奇数だとコレクション参照になり、そのドキュメントは
+実質的に存在しないのと同じになる)。**
+
+初版(2026-09-11)では `db_doc = f"candidate_picker/{slug}/selection"` という
+3セグメントのパスを使っていた。ワッペン候補セレクター(このスキール以前に手書きした版)は
+`"amz_wappen_picker/selection"` という2セグメントの決め打ちパスで問題なく動いていたため、
+一般化する際に「カテゴリごとに一意にする」ために `slug` を挟んで3セグメントにしてしまった。
+これで作った初回のタオル候補セレクターは、ユーザーが実際にチェックを入れて使った後、
+`read_db` で確認したところ**選択内容が一切保存されていなかった**(`collection:
+"candidate_picker"` に対する `list` が0件)。ユーザーには選び直しをお願いする事態になった。
+
+**対処**: `db_doc = f"candidate_picker/{slug}"` の2セグメントに修正(`slug` をそのまま
+ドキュメントIDにする)。読み戻しも `collection: "candidate_picker", doc_id: "<slug>"` に
+変更済み(Step 4 参照)。**このテンプレート/スクリプトを流用する限り再発しない。**
+もし将来 `db_doc` の組み方を変える場合は、必ずセグメント数が偶数になることを確認すること。
 
 ## 対象データの由来(参考: G番号突合の方法)
 
