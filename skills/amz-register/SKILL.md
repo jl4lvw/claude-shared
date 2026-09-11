@@ -4,7 +4,7 @@ description: 022.Amazon在庫PWAで新規商品(親+バリエーション子)を
 trigger: 「Gxxxxを登録したい」「Amazonに新規出品したい」等、023マスタの商品番号(G####)をAmazonへ新規登録したいとき
 ---
 
-<!-- SKILL_VERSION: 2026-09-11_140000 -->
+<!-- SKILL_VERSION: 2026-09-11_150000 -->
 
 # amz-register — Amazon新規商品登録
 
@@ -119,7 +119,15 @@ VALIDATION_PREVIEW再実行やスキル更新まで自動で続けてしまい�
 1000px以上のカットが足りない場合、**自動で決めず**以下をAskUserQuestionで確認する:
 - 高解像度版を別途提供してもらう(NAS共有パス等で受け取る。`\\192.168.1.50\...`形式)
 - Eストア/ローカルの低解像度版(800px等)を**強制拡大**(画質補完なし、単純リサイズで
-  1000px以上に引き伸ばすだけ)して使う — ユーザーが明示許可した場合のみ
+  1000px以上に引き伸ばすだけ)して使う — ユーザーが明示許可した場合のみ。
+  実行は`upscale_images.py`(LANCZOSリサンプリング、アスペクト比保持)を使う:
+  ```bash
+  python C:/ClaudeCode/.claude/skills/amz-register/upscale_images.py \
+    --img-dir "C:/ProductMaster/images/<G番号>" \
+    --output-dir <scratchpad>/<g番号>_upscaled --target 1200
+  ```
+  (2026-09-11 過去にG0942/G0943向けの使い捨てスクリプトはあったが汎用化されておらず
+  再発見できなかったため、このスキルの正式な付属スクリプトとして再作成した)
 
 ### Step 3: 候補一覧アーティファクト(必須・毎回・省略禁止)
 
