@@ -219,6 +219,9 @@ subprocess.Popen([r"C:\Program Files\Mozilla Thunderbird\thunderbird.exe", "-fil
 
 ## 関連ファイル
 
+- **出荷状態確認・出荷完了通知(登録後の工程)は[[shipping-notify]]に一本化した**
+  (産経・シフトプラス・ZenPlusの3チャネル横断。このスキルの「8. 出荷完了報告メール」は
+  産経の詳細として引き続き参照される)
 - 詳細な仕様・過去のインシデント記録: `052.卸売注文GoQ統合/README.md`
 - 正規化スキーマ・検証規則: `052.卸売注文GoQ統合/tools/order_model.py`
 - GoQ読み取り専用照会: `052.卸売注文GoQ統合/tools/goq_lookup.py`

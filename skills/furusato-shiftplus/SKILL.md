@@ -167,6 +167,9 @@ GoQの受注ステータスが「処理済」でも、送り状番号(伝票番�
 
 ## 関連ファイル
 
+- **出荷状態確認・出荷完了通知(登録後の工程)は[[shipping-notify]]に一本化した**
+  (産経・シフトプラス・ZenPlusの3チャネル横断。このスキルの「6. シフトプラスへ出荷完了を
+  通知する」は詳細として引き続き参照される)
 - パーサー: `parsers/furusato_shiftplus.py`(メール・まとめ登録)、
   `parsers/furusato_shiftplus_csv.py`(実住所CSV・個別送り状)
 - GoQ取込CSV生成: `tools/export_furusato_goq_csv.py`

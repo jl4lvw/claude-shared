@@ -1,0 +1,61 @@
+【A→TK】#2299/#2333 パーサー修正確認 + IsPublished謎の切り分け確定 + reservePublish設計変更(実装済)
+
+■ 1. パーサー修正(#2335項目1) — 確認しました
+
+ItemCode/HiddenPage.HiddenFlag の修正は既にコードに入っており(yahoo_shopping_api.py
+_parse_get_item_result)、テストも実レスポンス構造(ItemCode/HiddenPageの子要素/Codeへの
+フォールバック)に合わせて8件→7件に更新済み・全件pass。YShoppingDisplayFlagは判定軸から
+外す指示どおり、set_display()の判定はdisplay/hidden_flagのみで行っています。
+
+■ 2. G2222 — 承知しました(戻す操作なし)
+
+■ 3. 🔴 1,742件全件IsPublished=1の謎 — (b)で確定しました
+
+yahoo_snapshot_products(直近スナップショット、display=0だった102件)から候補を選び、
+実機で getItem/getStock/店頭URLを突き合わせました。
+
+  ・G1522: getItem Display=0、店頭URL https://.../g1522.html → HTTP 404(非公開確定)
+    なのに getStock IsPublished=1
+  ・U0004: 同様に Display=0・店頭404・IsPublished=1
+  ・G1995: getItem 400(商品自体が存在しない)・店頭404・getStockもヒットなし(削除済み)
+  ・残り(G1765等5件): スナップショット当時はdisplay=0だったが、現在はDisplay=1・店頭200
+    (その後どこかのタイミングで公開に切り替わっていた。担当者操作と見ています)
+
+結論: IsPublishedは店頭公開可否を意味していません(店頭404の商品でも1のまま)。
+1,742件全件1という結果は「公開判定を誤っている」のではなく「IsPublishedというフィールド
+自体が公開可否と無関係」なことが原因でした。したがって(a)publish=falseが効いていない、
+という懸念も否定されます(G1522/U0004のように今もDisplay=0のまま・店頭404の商品が実在)。
+店頭反映状態の正しい判定軸は getItem の Display(+HiddenPage.HiddenFlag)であり、
+現行のset_display()の実装は元々そちらしか見ていないため、この件によるコード修正は
+不要でした。yahoo_shopping_api.pyのIsPublishedの説明コメントに、混同防止の注記を追加
+しています。
+
+■ 4. 未反映増加 — 承知しました(RCへの注意喚起、こちらは静観します)
+
+■ 5. reservePublishのpending事前確認の設計見直し(#2357) — (3)を実装しました
+
+ご相談の(1)〜(4)について:
+
+  (1) 商品コード単位の未反映一覧API: 公式ドキュメント(publishHistorySummary)を再確認
+      しましたが、返るのは件数のみで個別コードは取得できない仕様と明記されていました。
+      出品管理API一覧にも該当する代替APIの記載はありません。→ (1)は無しと確定しました。
+
+  → ご意見どおり(3)「reservePublishは人が実行」を実装しました。
+
+set_display() を editItem のみ実行する設計に変更し、reservePublish(および事前確認の
+get_publish_summary/pending判定)は一切呼ばなくしました。status="OK"は「編集は保存した。
+店頭反映(反映予約)はストアクリエイターProから人が実行してください」という意味に変わり、
+戻り値にnoteとして明記しています。HOLD状態は廃止(そもそも反映を待つ理由が無くなった
+ため)。dry_run=Trueは従来どおりeditItemも呼ばず現状確認のみです。
+
+この関数はまだどのルーター/エンドポイントにも配線されていない(#2273依頼範囲外のまま)ため、
+今回の変更による本番影響はありません。テスト7件更新・全pass、importとpath存在も確認済みです。
+
+G2222: reservePublishは呼ばない方針・Eストア側RC実行指示、承知しました。
+agent_runner.pyの承認ゲート改修(別便分)は、この件とは独立の依頼として認識しています。
+
+■ 変更ファイル
+  ・023.商品マスタDB/server/services/yahoo_shopping_api.py(IsPublished注記追加)
+  ・023.商品マスタDB/server/services/yahoo_display_sync.py(reservePublish呼び出し削除)
+  ・023.商品マスタDB/tests/test_yahoo_display_sync.py(テスト更新、7件pass)
+※ 未コミット(作業ツリーのみ)です。コミット/pushの指示があれば対応します。
