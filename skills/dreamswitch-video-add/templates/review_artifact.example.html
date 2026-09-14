@@ -1,0 +1,268 @@
+<title>動画レビューリスト</title>
+<style>
+:root{
+  --bg:#f6f2ea;
+  --surface:#ffffff;
+  --surface-2:#faf7f1;
+  --text:#2c2836;
+  --muted:#726c86;
+  --border:#e6dfd0;
+  --accent:#54508f;
+  --accent-soft:#eae7f7;
+  --amber:#a9722f;
+  --amber-soft:#f5ecdd;
+  --rose:#a5486c;
+  --rose-soft:#f7e8ee;
+  --teal:#2f7d78;
+  --teal-soft:#e4f2f0;
+  --denim:#3f66a0;
+  --denim-soft:#e7edf7;
+  --shadow: 0 1px 2px rgba(44,40,54,0.06), 0 8px 24px -12px rgba(44,40,54,0.18);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#1b1824;
+    --surface:#242032;
+    --surface-2:#2a2638;
+    --text:#ece8f7;
+    --muted:#a79fc2;
+    --border:#3a3550;
+    --accent:#a6a0e8;
+    --accent-soft:#332f52;
+    --amber:#d9a866;
+    --amber-soft:#3a3324;
+    --rose:#e08fae;
+    --rose-soft:#3a2733;
+    --teal:#7fcac2;
+    --teal-soft:#1f3735;
+    --denim:#8fb0e6;
+    --denim-soft:#232f47;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px -12px rgba(0,0,0,0.5);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#1b1824;
+  --surface:#242032;
+  --surface-2:#2a2638;
+  --text:#ece8f7;
+  --muted:#a79fc2;
+  --border:#3a3550;
+  --accent:#a6a0e8;
+  --accent-soft:#332f52;
+  --amber:#d9a866;
+  --amber-soft:#3a3324;
+  --rose:#e08fae;
+  --rose-soft:#3a2733;
+  --teal:#7fcac2;
+  --teal-soft:#1f3735;
+  --denim:#8fb0e6;
+  --denim-soft:#232f47;
+  --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px -12px rgba(0,0,0,0.5);
+}
+
+*{box-sizing:border-box;}
+body{
+  background:var(--bg);
+  color:var(--text);
+  font-family:"Public Sans","Hiragino Sans","Yu Gothic",sans-serif;
+  padding-inline:20px;
+  padding-block:32px 64px;
+}
+.wrap{max-width:1040px;margin-inline:auto;}
+
+h1{
+  font-family:"Fraunces","Hiragino Mincho ProN",serif;
+  font-optical-sizing:auto;
+  font-weight:600;
+  font-size:clamp(1.6rem,4vw,2.2rem);
+  letter-spacing:-0.01em;
+  text-wrap:balance;
+  margin:0 0 6px;
+}
+.sub{color:var(--muted);font-size:0.95rem;margin:0 0 20px;}
+
+.stats{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  margin-bottom:20px;
+}
+.stat{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:10px 16px;
+  box-shadow:var(--shadow);
+  min-width:120px;
+}
+.stat .num{
+  font-family:"IBM Plex Mono",monospace;
+  font-variant-numeric:tabular-nums;
+  font-size:1.4rem;
+  font-weight:600;
+  color:var(--accent);
+  display:block;
+  line-height:1.1;
+}
+.stat .lbl{font-size:0.78rem;color:var(--muted);}
+
+.notice{
+  background:var(--accent-soft);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:14px 18px;
+  font-size:0.92rem;
+  line-height:1.6;
+  margin-bottom:28px;
+}
+.notice b{color:var(--accent);}
+
+.group{margin-bottom:28px;}
+.group-head{
+  display:flex;
+  align-items:baseline;
+  gap:10px;
+  margin-bottom:10px;
+  padding-bottom:6px;
+  border-bottom:2px solid var(--border);
+}
+.badge{
+  font-size:0.72rem;
+  font-weight:600;
+  padding:3px 9px;
+  border-radius:999px;
+  letter-spacing:0.02em;
+}
+.badge.picture-book{background:var(--amber-soft);color:var(--amber);}
+.badge.cinnamoroll-stopmotion{background:var(--rose-soft);color:var(--rose);}
+.badge.cinnamoroll-anim{background:var(--teal-soft);color:var(--teal);}
+.badge.thomas{background:var(--denim-soft);color:var(--denim);}
+
+.group-title{font-weight:600;font-size:1.02rem;}
+.group-meta{color:var(--muted);font-size:0.82rem;font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums;}
+
+.tablewrap{overflow-x:auto;border:1px solid var(--border);border-radius:12px;background:var(--surface);box-shadow:var(--shadow);}
+table{width:100%;border-collapse:collapse;font-size:0.88rem;}
+thead th{
+  text-align:left;
+  font-size:0.72rem;
+  text-transform:uppercase;
+  letter-spacing:0.04em;
+  color:var(--muted);
+  padding:9px 12px;
+  background:var(--surface-2);
+  border-bottom:1px solid var(--border);
+  position:sticky;top:0;
+}
+tbody td{
+  padding:9px 12px;
+  border-bottom:1px solid var(--border);
+  vertical-align:top;
+}
+tbody tr:last-child td{border-bottom:none;}
+td.n{color:var(--muted);font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums;width:2.4em;}
+td.dur{font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--muted);}
+td.id{font-family:"IBM Plex Mono",monospace;font-size:0.78rem;color:var(--muted);white-space:nowrap;}
+td.title a{color:var(--text);text-decoration:none;border-bottom:1px solid var(--border);}
+td.title a:hover{color:var(--accent);border-color:var(--accent);}
+td.name{font-family:"IBM Plex Mono",monospace;font-size:0.84rem;font-weight:500;color:var(--accent);white-space:nowrap;}
+td.cat{white-space:nowrap;}
+.catpill{font-family:"IBM Plex Mono",monospace;font-size:0.76rem;padding:2px 8px;border-radius:6px;background:var(--surface-2);border:1px solid var(--border);color:var(--muted);}
+
+footer{margin-top:28px;color:var(--muted);font-size:0.82rem;line-height:1.7;}
+footer code{background:var(--surface-2);border:1px solid var(--border);border-radius:5px;padding:1px 6px;font-family:"IBM Plex Mono",monospace;font-size:0.82em;}
+</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Public+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<div class="wrap">
+  <h1>ドリームスイッチ 動画レビューリスト</h1>
+  <p class="sub">069.ドリームスイッチ — 出力名・カテゴリの提案(確認用)。タイトルから機械的に付けた案なので、違和感があれば個別に指摘してください。</p>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="notice">
+    <b>カテゴリの根拠:</b> 既存 SYMV.LST を見ると <code>stories1</code> は英語絵本の読み聞かせ・一般的なおはなし(既存の WolfSevenGoats 等と同系統)、
+    <code>stories2</code> は Sanrio/シナモロール系のキャラクターストーリー(oha2_2_Cinnamon・oha2_7_KikiLala 等が既存)。
+    これに合わせて picture-book 系は stories1、Cinnamoroll/Thomas 系は stories2 として提案しています。
+    <b>Thomas & Friends(PercyMystery)</b>はシナモロール系ではないため stories2 でよいか要確認です。
+  </div>
+
+  <div id="groups"></div>
+
+  <footer>
+    出力名は英語タイトルから機械的に生成した CamelCase 案(重複なし確認済み)。<br>
+    実行コマンド例: <code>bash _build/add_youtube.sh &lt;URL&gt; &lt;出力名&gt; 92 &lt;カテゴリ&gt;</code>
+  </footer>
+</div>
+
+<script>
+const DATA = [{"id": "bOsjOWDDJ9o", "title": "【Read aloud】I'll always love you｜ ずーっとずっとだいすきだよ　英語朗読", "dur": 186, "durStr": "3:06", "src": "batch1", "group": "picture-book", "url": "https://youtu.be/bOsjOWDDJ9o", "proposedName": "IllAlwaysLoveYou", "proposedCat": "stories1"}, {"id": "5opZvKcAYAM", "title": "You are ready｜Eric Carle　エリックカール絵本【Story Time】英語絵本　読み聞かせ", "dur": 72, "durStr": "1:12", "src": "batch1", "group": "picture-book", "url": "https://youtu.be/5opZvKcAYAM", "proposedName": "YouAreReady", "proposedCat": "stories1"}, {"id": "vwZBYNLM1Vk", "title": "英語の絵本の読み聞かせ【The Goldfish Got Away by Gomi Taro || きんぎょがにげた 英語版】何歳でも楽しめる！English by Robert Campbell", "dur": 77, "durStr": "1:17", "src": "batch1", "group": "picture-book", "url": "https://youtu.be/vwZBYNLM1Vk", "proposedName": "GoldfishGotAway", "proposedCat": "stories1"}, {"id": "eIL7vToK9VM", "title": "英語の絵本の読み聞かせ【Swimmy by Leo Lionni || スイミー 英語版】", "dur": 177, "durStr": "2:57", "src": "batch1", "group": "picture-book", "url": "https://youtu.be/eIL7vToK9VM", "proposedName": "Swimmy", "proposedCat": "stories1"}, {"id": "1UjnZVs1KR0", "title": "英語の絵本の読み聞かせ【The Grouchy Ladybug by Eric Carle || ごきげんななめのてんとうむし 英語版】てんとう虫が丸くなる？！", "dur": 463, "durStr": "7:43", "src": "batch1", "group": "picture-book", "url": "https://youtu.be/1UjnZVs1KR0", "proposedName": "GrouchyLadybug", "proposedCat": "stories1"}, {"id": "j8ykZcUbUvE", "title": "英語の絵本の読み聞かせ【The Rainbow Fish by Marcus Pfister ll にじいろのさなや 英語版】", "dur": 366, "durStr": "6:06", "src": "batch1", "group": "picture-book", "url": "https://youtu.be/j8ykZcUbUvE", "proposedName": "RainbowFish", "proposedCat": "stories1"}, {"id": "DUWXxPWQqZo", "title": "英語の絵本の読み聞かせ【The Nonsense Show by Eric Carle || ありえない！英語版】", "dur": 242, "durStr": "4:02", "src": "batch1", "group": "picture-book", "url": "https://youtu.be/DUWXxPWQqZo", "proposedName": "NonsenseShow", "proposedCat": "stories1"}, {"id": "M3cISHBlxts", "title": "英語の絵本の読み聞かせ【Who's There? by Hiroshi Tada || だれかしら？ 英語版】寝かしつけ絵本", "dur": 122, "durStr": "2:02", "src": "batch1", "group": "picture-book", "url": "https://youtu.be/M3cISHBlxts", "proposedName": "WhosThere", "proposedCat": "stories1"}, {"id": "BjQSdSzEPWI", "title": "英語の絵本の読み聞かせ【Miffy by Dick Bruna || ちいさなうさこちゃん 英語版】", "dur": 186, "durStr": "3:06", "src": "batch1", "group": "picture-book", "url": "https://youtu.be/BjQSdSzEPWI", "proposedName": "Miffy", "proposedCat": "stories1"}, {"id": "ivI6_nGouCk", "title": "Milk Plans a Surprise | Cinnamoroll Stop Motion Animation", "dur": 250, "durStr": "4:10", "src": "batch1", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/ivI6_nGouCk", "proposedName": "MilkSurprise", "proposedCat": "stories2"}, {"id": "rTJPbrqmR8Y", "title": "A Memorable Summer Outing  | Cinnamoroll Stop Motion Animation", "dur": 261, "durStr": "4:21", "src": "batch1", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/rTJPbrqmR8Y", "proposedName": "SummerOuting", "proposedCat": "stories2"}, {"id": "Ps_IO7oAwg8", "title": "The Great Forest Car Race | Cinnamoroll Stop Motion Animation", "dur": 251, "durStr": "4:11", "src": "batch1", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/Ps_IO7oAwg8", "proposedName": "ForestCarRace", "proposedCat": "stories2"}, {"id": "k8vezIAT7EA", "title": "The Treasure in the Forest | Cinnamoroll Stop Motion Animation", "dur": 252, "durStr": "4:12", "src": "batch1", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/k8vezIAT7EA", "proposedName": "ForestTreasure", "proposedCat": "stories2"}, {"id": "rBCUtg7ypiI", "title": "The Giant Carrot  | Cinnamoroll Stop Motion Animation", "dur": 228, "durStr": "3:48", "src": "batch1", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/rBCUtg7ypiI", "proposedName": "GiantCarrot", "proposedCat": "stories2"}, {"id": "ge_Hq-ojuIw", "title": "Espresso's Blanket | Cinnamoroll Stop Motion Animation", "dur": 255, "durStr": "4:15", "src": "batch1", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/ge_Hq-ojuIw", "proposedName": "EspressoBlanket", "proposedCat": "stories2"}, {"id": "-7l7s2vA__E", "title": "The Mysterious Button | Cinnamoroll Stop Motion Animation", "dur": 247, "durStr": "4:07", "src": "batch1", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/-7l7s2vA__E", "proposedName": "MysteriousButton", "proposedCat": "stories2"}, {"id": "lrEKqQ9e8uM", "title": "Where is Cinnamoroll? | Cinnamoroll Stop Motion Animation", "dur": 232, "durStr": "3:52", "src": "batch1", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/lrEKqQ9e8uM", "proposedName": "WhereIsCinnamoroll", "proposedCat": "stories2"}, {"id": "7s_HFewXbHQ", "title": "The Sleepover Fashion Show | Cinnamoroll Stop Motion Animation", "dur": 215, "durStr": "3:35", "src": "batch1", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/7s_HFewXbHQ", "proposedName": "SleepoverFashion", "proposedCat": "stories2"}, {"id": "db8jmjKiA2w", "title": "A Visitor from the Planet Pappupiipo! | Cinnamoroll Stop Motion Animation", "dur": 217, "durStr": "3:37", "src": "batch1", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/db8jmjKiA2w", "proposedName": "VisitorPappupiipo", "proposedCat": "stories2"}, {"id": "IBT219KIT48", "title": "Deep Sea Adventure | Cinnamoroll Stop Motion Animation", "dur": 271, "durStr": "4:31", "src": "batch1", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/IBT219KIT48", "proposedName": "DeepSeaAdventure", "proposedCat": "stories2"}, {"id": "FfGtivDRzP4", "title": "The Rainbow Paints | Cinnamoroll Stop Motion Animation", "dur": 214, "durStr": "3:34", "src": "batch1", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/FfGtivDRzP4", "proposedName": "RainbowPaints", "proposedCat": "stories2"}, {"id": "gAYurgoCn_s", "title": "The Island of Sweets | Cinnamoroll Stop Motion Animation", "dur": 213, "durStr": "3:33", "src": "batch1", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/gAYurgoCn_s", "proposedName": "IslandOfSweets", "proposedCat": "stories2"}, {"id": "i6V6wQdyizY", "title": "The Mysterious Seed | Cinnamoroll Stop Motion Animation", "dur": 207, "durStr": "3:27", "src": "batch1", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/i6V6wQdyizY", "proposedName": "MysteriousSeed", "proposedCat": "stories2"}, {"id": "YqN0Fe7dZ1A", "title": "A Friend in the Winter | Cinnamoroll Stop Motion Animation", "dur": 203, "durStr": "3:23", "src": "batch1", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/YqN0Fe7dZ1A", "proposedName": "FriendInWinter", "proposedCat": "stories2"}, {"id": "xi9t3QHskBQ", "title": "A Secret Above the Clouds | Cinnamoroll Stop Motion Animation", "dur": 230, "durStr": "3:50", "src": "batch1", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/xi9t3QHskBQ", "proposedName": "SecretAboveClouds", "proposedCat": "stories2"}, {"id": "wszizCQNuQg", "title": "The Floating Skater | Cinnamoroll Stop Motion Animation", "dur": 199, "durStr": "3:19", "src": "batch1", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/wszizCQNuQg", "proposedName": "FloatingSkater", "proposedCat": "stories2"}, {"id": "zHvk6eEMAT8", "title": "The Invitation | Cinnamoroll Stop Motion Animation", "dur": 234, "durStr": "3:54", "src": "batch1", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/zHvk6eEMAT8", "proposedName": "TheInvitation", "proposedCat": "stories2"}, {"id": "CPlVVaFjQeI", "title": "Cinnamoroll, are you okay? | Cinnamoroll Stop Motion Animation", "dur": 216, "durStr": "3:36", "src": "batch1", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/CPlVVaFjQeI", "proposedName": "AreYouOkay", "proposedCat": "stories2"}, {"id": "ANOM8T601Wc", "title": "Camp Night | Cinnamoroll Stop Motion Animation", "dur": 213, "durStr": "3:33", "src": "batch1", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/ANOM8T601Wc", "proposedName": "CampNight", "proposedCat": "stories2"}, {"id": "W5mTT-G68iM", "title": "Detective Cinnamoroll | Cinnamoroll Stop Motion Animation", "dur": 219, "durStr": "3:39", "src": "batch1", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/W5mTT-G68iM", "proposedName": "DetectiveCinnamoroll", "proposedCat": "stories2"}, {"id": "x2Ky8mSVKo4", "title": "Percy's A-Maze-Ing Mystery | Thomas & Friends Sodor Mystery | Kids Cartoons", "dur": 364, "durStr": "6:04", "src": "batch1", "group": "thomas", "url": "https://youtu.be/x2Ky8mSVKo4", "proposedName": "PercyMystery", "proposedCat": "stories2"}, {"id": "ZqbFuiCA6Kc", "title": "Cinnamoroll and Milk | Cinnamoroll Stop Motion Animation", "dur": 214, "durStr": "3:34", "src": "batch2", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/ZqbFuiCA6Kc", "proposedName": "CinnamorollAndMilk", "proposedCat": "stories2"}, {"id": "z34tpQ5ZXrM", "title": "Cinnamoroll and The Wind | Cinnamoroll Stop Motion Animation", "dur": 220, "durStr": "3:40", "src": "batch2", "group": "cinnamoroll-stopmotion", "url": "https://youtu.be/z34tpQ5ZXrM", "proposedName": "CinnamorollAndWind", "proposedCat": "stories2"}, {"id": "Evnam6VZZtA", "title": "Our Special Recipe | Cinnamoroll Animation", "dur": 506, "durStr": "8:26", "src": "playlist", "group": "cinnamoroll-anim", "url": "https://youtu.be/Evnam6VZZtA", "proposedName": "SpecialRecipe", "proposedCat": "stories2"}, {"id": "Zr3JV8bgZPQ", "title": "Never Say Goodbye | Cinnamoroll Animation", "dur": 509, "durStr": "8:29", "src": "playlist", "group": "cinnamoroll-anim", "url": "https://youtu.be/Zr3JV8bgZPQ", "proposedName": "NeverSayGoodbye", "proposedCat": "stories2"}, {"id": "IwTLdQNZvcM", "title": "Melody from the Sky | Cinnamoroll Animation", "dur": 510, "durStr": "8:30", "src": "playlist", "group": "cinnamoroll-anim", "url": "https://youtu.be/IwTLdQNZvcM", "proposedName": "MelodyFromSky", "proposedCat": "stories2"}, {"id": "mRQtAdT9tjA", "title": "The Treasure We Found | Cinnamoroll Animation", "dur": 510, "durStr": "8:30", "src": "playlist", "group": "cinnamoroll-anim", "url": "https://youtu.be/mRQtAdT9tjA", "proposedName": "TreasureWeFound", "proposedCat": "stories2"}];
+
+const GROUP_LABEL = {
+  'picture-book': '英語絵本 読み聞かせ',
+  'cinnamoroll-stopmotion': 'Cinnamoroll Stop Motion Animation',
+  'cinnamoroll-anim': 'Cinnamoroll Animation(長尺)',
+  'thomas': 'Thomas & Friends',
+};
+const GROUP_ORDER = ['picture-book','cinnamoroll-stopmotion','cinnamoroll-anim','thomas'];
+
+function fmtMin(sec){
+  return (sec/60).toFixed(1);
+}
+
+function renderStats(){
+  const total = DATA.length;
+  const totalSec = DATA.reduce((a,r)=>a+r.dur,0);
+  const el = document.getElementById('stats');
+  el.innerHTML = `
+    <div class="stat"><span class="num">${total}</span><span class="lbl">候補本数</span></div>
+    <div class="stat"><span class="num">${fmtMin(totalSec)}</span><span class="lbl">合計 分(元動画)</span></div>
+    <div class="stat"><span class="num">${GROUP_ORDER.length}</span><span class="lbl">グループ数</span></div>
+  `;
+}
+
+function renderGroups(){
+  const byGroup = {};
+  for(const r of DATA){
+    (byGroup[r.group] ||= []).push(r);
+  }
+  const root = document.getElementById('groups');
+  for(const g of GROUP_ORDER){
+    const items = byGroup[g];
+    if(!items || !items.length) continue;
+    const sec = items.reduce((a,r)=>a+r.dur,0);
+    const sec_div = document.createElement('div');
+    sec_div.className = 'group';
+    const rows = items.map((r,i)=>`
+      <tr>
+        <td class="n">${i+1}</td>
+        <td class="title"><a href="${r.url}" target="_blank" rel="noopener">${escapeHtml(r.title)}</a></td>
+        <td class="dur">${r.durStr}</td>
+        <td class="name">${r.proposedName}</td>
+        <td class="cat"><span class="catpill">${r.proposedCat}</span></td>
+        <td class="id">${r.id}</td>
+      </tr>`).join('');
+    sec_div.innerHTML = `
+      <div class="group-head">
+        <span class="badge ${g}">${GROUP_LABEL[g]}</span>
+        <span class="group-title"></span>
+        <span class="group-meta">${items.length}本 ・ ${fmtMin(sec)}分</span>
+      </div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>#</th><th>タイトル</th><th>長さ</th><th>出力名(案)</th><th>カテゴリ(案)</th><th>video ID</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+    root.appendChild(sec_div);
+  }
+}
+
+function escapeHtml(s){
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+renderStats();
+renderGroups();
+</script>
