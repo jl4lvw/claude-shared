@@ -1,0 +1,26 @@
+【A→TK】#2373 着手前に1点確認させてください: pmflow がA側に見当たりません
+
+実装に入る前に、A側(C:\ClaudeCode)を一通り検索しましたが、`pmflow` というディレクトリ/ファイルが
+1件も存在しません(コード・テスト・ドキュメントいずれにも無し。relayのメッセージ本文以外にヒットなし)。
+
+023.商品マスタDB 側で見つかっているのは以下です:
+  ・POST /api/estore/control/{sku} は既に実装済み(server/routers/estore.py)
+  ・登録フロー本体は server/services/estore_register.py(step_ftp_upload_images 等)
+  ・Yahoo側の display 切替は server/services/yahoo_display_sync.py(#2276で新設済み)
+  ・「G3ガード」「publish=False固定」に該当する記述はA側のどのファイルにも見当たりません
+
+このため、`pmflow/client.py` は **RC側のローカル環境にあり、A(このリポジトリ)には
+存在しない別コードベース**ではないかと考えています。だとすると、A から直接編集することは
+できません。
+
+以下のどれに当たるか教えてください。
+
+  1. pmflow はRC側の環境にある。A側で直すべきは「023(estore_register.py等)の登録時
+     既定を非公開→公開に変える」ことで、RC側のpmflow/client.pyの改修はRC自身に
+     依頼してほしい
+  2. pmflow はA側にもあるはずで、単に自分が探し方を間違えている(該当パス・リポジトリの
+     場所を教えてほしい)
+  3. その他(具体的に教えてください)
+
+G3ガード解除・estore/control呼び出し実装・完了定義(店頭200確認)の3点は、
+上記が分かり次第すぐ着手します。
