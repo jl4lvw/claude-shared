@@ -4,7 +4,7 @@ description: 022.Amazon在庫PWAで新規商品(親+バリエーション子)を
 trigger: 「Gxxxxを登録したい」「Amazonに新規出品したい」等、023マスタの商品番号(G####)をAmazonへ新規登録したいとき
 ---
 
-<!-- SKILL_VERSION: 2026-09-11_160000 -->
+<!-- SKILL_VERSION: 2026-09-15_181500 -->
 
 # amz-register — Amazon新規商品登録
 
@@ -389,6 +389,28 @@ FBA用に払い出されたFNSKUバーコードを、**自社発送(LCL)分の7S
   TOWELでは実際にこの属性名のまま検証対象になる。実績兄弟SKU(`FJ-G2010-TW-SPTNYD-BL`
   等)の`recommended_browse_nodes`は3件(392384011/3467741051/268268011)で、
   ワッペン系(10432785051)とは別のノード
+- **`manufacturer`属性の欠落はVALIDATION_PREVIEW/PUTのissuesでは検出できない、
+  エラーとして表面化しないサイレント障害を起こす**(2026-09-15実例、G2206で発覚)。
+  PUTは`ACCEPTED`(issues=0)を返すのに、子SKUが**2時間29分**経ってもAmazonの
+  カタログに反映されず`getListingsItem`が`NOT_FOUND`を返し続けた。原因は
+  `manufacturer`属性の欠落(SKILL.mdの旧版がTOWELの必須属性一覧に含めていなかった)。
+  同種の「PUTはACCEPTEDでも実は不完全」パターンはSHIRTの`shirt_size` 'll'表記
+  でも過去に確認済み(`register.py`の`_SHIRT_SIZE_ENUM_MAP`コメント参照)—
+  **「issues=0だから安全」という前提そのものが誤り**なので、この種の欠落は個別に
+  暗記して防ぐのではなく、以下の構造的な仕組みに任せる:
+  - `_inject_batch_common_attrs`(register.py)が`brand`指定時に同値を
+    `manufacturer`へ自動注入するようになった(2026-09-15)。通常の
+    `parent_extra_attributes.brand`経由の登録なら、以後は意識せず埋まる
+  - `POST /register/batch/submit`は、送信直前に**同一product_typeの直近
+    finalized実績と属性キー集合を自動比較**し、欠落があれば`ack_missing_attrs:
+    true`を明示しない限り**409で送信そのものを拒否**する(DBへの書込み前に
+    ブロックするので安全)。`POST /register/batch/preview`のDRY_RUN/
+    VALIDATION_PREVIEW でも`items[].missing_sibling_attrs`に同じ差分が
+    非ブロッキングで表示される。新規product_type(比較対象の実績が無い)は
+    自動的にスキップされる
+  - このため、**今後 見慣れない409で「属性欠落」と言われたら、個別属性を暗記で
+    埋めようとする前に、まず同product_typeの直近成功SKUと`payload`のキー差分を
+    見る**(サーバーが自動でやってくれる比較と同じことを、原因調査でも繰り返す)
 - **クリック選択式アーティファクトはテンプレート(`template_image_picker.html`+
   `build_image_picker.py`)以外の経路で作らない(2026-09-11実例)**。その場で
   Python文字列(f-string/`.format()`)にHTML/CSS/JSを埋め込んで手書きした際、
