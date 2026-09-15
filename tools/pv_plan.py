@@ -1088,15 +1088,17 @@ def _build_cmd(task: dict) -> list[str]:
         #   tokens ≒ 14,000 + 0.75×入力バイト + 約3,000×探索回数
         # で、探索が消費の大半を占める。pv のテーマは文章であって
         # リポジトリではないので、依頼文だけで答えさせる。
+        #
+        # **codex 自身にファイルを開かせない。** Codex CLI v0.154.0 以降、
+        # exec 内での exec_command 経由のファイル読込は blocked by policy になる
+        # 既知事象（memory: reference_codex_cli_v0154_exec_blocked）。cgd と同じく
+        # `-` を渡して stdin から依頼文を受け取らせる（実際に流し込むのは
+        # cmd_exec() 側。prompt_path の内容をそのまま input= で渡す）。
         return [
             exe, "exec",
             "-c", f'model_reasoning_effort="{task.get("codex_reasoning", "medium")}"',
             "--sandbox", "read-only", "--skip-git-repo-check",
-            (
-                f"まず {task['prompt_path']} の全文を読み、記載の指示に従って回答してください。"
-                "**実ファイルの探索は不要です。** 依頼文に書かれている内容だけで答えてください。"
-                "日本語で回答。"
-            ),
+            "-",
         ]
     raise SystemExit(f"[pv] exec 未対応の engine です: {engine}")
 
@@ -1197,10 +1199,19 @@ def cmd_exec(args: argparse.Namespace) -> int:
     # pv が一律 300 秒だと、深い codex 呼出だけが理由なく timeout する。
     timeout = args.timeout if args.timeout is not None else ENGINE_TIMEOUTS.get(
         task["engine"], DEFAULT_TIMEOUT)
+    # codex には _build_cmd() が引数でなく "-" を渡している（codex 自身に
+    # ファイルを開かせない対策）。依頼文の実体はここで読み、stdin として流し込む。
+    stdin_text = None
+    if task["engine"] == "codex":
+        stdin_text = (
+            Path(task["prompt_path"]).read_text(encoding="utf-8")
+            + "\n\n**実ファイルの探索は不要です。** 依頼文に書かれている内容だけで答えてください。"
+              "日本語で回答。\n"
+        )
     started = datetime.now().strftime(_TS_FMT)
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, encoding="utf-8", errors="replace",
+            cmd, input=stdin_text, capture_output=True, encoding="utf-8", errors="replace",
             timeout=timeout,
             # 日本語 CWD だと外部 CLI が文字化けする既知の地雷を避ける（cgd と同じ理由）
             cwd=str(ROOT.parent) if ROOT.parent.is_dir() else None,
