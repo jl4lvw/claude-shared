@@ -61,10 +61,44 @@ WARN = "WARN"
 Result = tuple[str, str, str]
 
 
+# Git for Windows の既定インストールは **PATH に `Git\cmd`(git.exe だけ) しか通さない**。
+# bash.exe のある `Git\bin` は入らないので、shutil.which("bash") は「不在」を返す。
+# 2026-09-16 TH 端末で「Git Bash は入っているのに NG」と誤診し、原因特定に時間を使った。
+# 実体を探して「入れてください」ではなく「PATH に足してください」と言えるようにする。
+_WINDOWS_BASH_CANDIDATES = (
+    r"C:\Program Files\Git\bin\bash.exe",
+    r"C:\Program Files\Git\usr\bin\bash.exe",
+    r"C:\Program Files (x86)\Git\bin\bash.exe",
+    r"C:\Program Files (x86)\Git\usr\bin\bash.exe",
+)
+
+
+def _installed_bash_paths() -> list[Path]:
+    """PATH に無くても実在する bash.exe を探す(Windows のみ)。"""
+    if os.name != "nt":
+        return []
+    candidates = [Path(p) for p in _WINDOWS_BASH_CANDIDATES]
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        candidates.append(Path(local) / "Programs" / "Git" / "bin" / "bash.exe")
+    return [p for p in candidates if p.exists()]
+
+
 def check_shell() -> Result:
     bash = shutil.which("bash")
     if bash:
         return (OK, "shell", f"bash 利用可 ({bash})")
+    found = _installed_bash_paths()
+    if found:
+        # 常駐GUI(AIリレー コンソール)はユーザーPATHを引き継ぐため、ここを直さないと
+        # GUI 経由の cgd が Lv2 以上で落ちる
+        return (
+            NG,
+            "shell",
+            f"bash は実在しますが PATH にありません ({found[0]})。"
+            f" User PATH に {found[0].parent} を追加してください"
+            " (Git for Windows の既定は Git\\cmd しか通しません)",
+        )
     return (NG, "shell", "bash 不在（cgd は bash 必須・Git Bash or WSL を入れてください）")
 
 
