@@ -14,6 +14,45 @@ description: relay(Claude間連携API)の自分宛未読メッセージをチェ
 
 ## 手順
 
+### 0. 引き継ぎ(handoff)を優先して処理する(2026-09-16追加)
+
+`check`を実行すると、通常の受信箱の一覧より**前に**「あなたに引き継がれた会話がN件
+あります(未処理より先に扱ってください)」という専用ブロックが出ることがある。
+これは常駐GUIが判断に迷う等の理由で人手(あなた)へ一時的に手放した会話で、
+`.handoff\SESSION_*.md` にも引き継ぎ書が置かれる。通常の未読メッセージより
+**先に**扱う。
+
+手順:
+
+1. **着手**: `relay_client.py handoff takeover <no>` — 常駐GUIが持つ
+   lease(スレッド予約)を自分のセッションへ原子的に付け替える(release→再取得の
+   2段にしないのはGUIの巡回が隙間に割り込むのを防ぐため)。出力に
+   thread_id・相手の名義・holder(例: `cli:589eb157961c`)・GUI側の要約(冒頭のみ。
+   全文ではない)・続けるためのコマンド一式が含まれる。
+2. ★**最重要**: takeover直後に holder と thread_id を ctx台帳(STATE枠)へ記録する。
+   コンテキスト圧縮でこれを失うと延長も解放もできなくなる
+   (`handoff takeover` の出力自体がこの警告を表示する)。
+3. **経緯の全文取得(副作用なし)**: `relay_client.py check --peek --holder <holder>`
+   - `check`に`--thread`オプションは無い。**`--holder`のみ**受け付ける。
+4. 調査・回答を作成する(通常のスレッドと同じ「処理方針」に従う)。
+5. **返信**: `relay_client.py send "<本文>" --to <相手> --thread <thread_id> --holder <holder> --type result`
+6. **完了**: `relay_client.py handoff done <no>` — 常駐GUIが引き取れる状態に戻る。
+   自分では終えられない・引き取り違いだった等の場合は
+   `relay_client.py handoff return <no> --reason "<理由>"` で差し戻す。
+7. 完了(またはreturn)したら、ctx台帳のSTATEエントリをdropする。
+
+作業に時間がかかる場合は `relay_client.py wait --thread <thread_id> --holder <holder>`
+で待ち受けると予約(lease)のTTLが自動延長される(生存確認を兼ねる)。何も送らず
+長時間放置するとlease切れで常駐GUI側に巻き戻される。
+
+一覧だけ確認したい場合(着手はしない): `relay_client.py handoff list`
+
+参考(2026-09-15の実例で確認した運用メモ・数値は環境で変わりうるため
+`handoff list` やGUIの「引き継ぎロック時間」設定で必要に応じて再確認すること):
+
+- 未着手のまま一定時間が経つと運用者へ通知が飛ぶ
+- `done`を忘れると常駐GUIに戻らず、途絶扱いとして運用者への通知が繰り返される
+
 ### 1. 未読を取得
 
 ```bash
