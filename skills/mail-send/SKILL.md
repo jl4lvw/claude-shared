@@ -1,16 +1,15 @@
 ---
 name: mail-send
-description: 外部宛メール(新規スレッド・返信を問わず)を、アーティファクトで送信予定内容を表示→ユーザー承認→EML生成→Thunderbirdで下書き化→手動送信、の手順で安全に送る標準手順。添付ファイル(CSV等)にも対応。
-trigger: 外部(取引先・顧客)宛にメールを新規作成・送信したいとき。返信メール特有の引用形式の詳細は[[mail-reply]]を参照
+description: メールを送る・返信する・転送するときの標準手順。アーティファクトで送信予定内容を表示→ユーザー承認→EML生成→Thunderbirdで下書き化→手動送信。社内への問合せ転送・添付ファイル(CSV等)にも対応。
+trigger: 「メール送信」「メールを送って」「返信して」「転送」「転送して」「担当者へ回して」「いつもの3人に」等、メールを送る/返信する/転送する意図が出たとき。必ずこのスキルを呼んでから着手する
 ---
 
-<!-- SKILL_VERSION: 2026-09-18_initial -->
+<!-- SKILL_VERSION: 2026-09-18_forward -->
 
-# mail-send — 外部宛メールの作成・確認・送信(共通手順)
+# mail-send — メールの作成・確認・送信(共通手順)
 
-外部(取引先・顧客)宛のメールを、**いきなりThunderbirdの下書きを作らず**、必ず
-アーティファクトでの表示→承認を経てから送信するための標準手順。新規スレッド
-(社外への通知・報告等)・返信メールのどちらにも使う共通の土台。
+メールを、**いきなりThunderbirdの下書きを作らず**、必ずアーティファクトでの表示→承認を
+経てから送るための標準手順。**新規スレッド・返信・転送のすべてがこのスキルの対象**。
 
 **このスキルが対象とするのは「Claudeが下書きを作り、最終送信は人間がThunderbirdで
 手動で行う」経路のみ。**053.ai-agentメール等のAPI直接送信(`mailer.send_reply_mail`)は
@@ -18,25 +17,116 @@ trigger: 外部(取引先・顧客)宛にメールを新規作成・送信した
 
 ---
 
-## 🎯 手順概要
+## 🚫 絶対禁止（最初に読む）
+
+| やってはいけないこと | 正しいやり方 |
+|---|---|
+| **勝手にメールを送信する** | 送信は必ずユーザーが手動。Claudeは下書きを開くまで |
+| **アーティファクトを飛ばしてEMLを作る/Thunderbirdを開く** | 先にアーティファクト表示→明示承認を待つ |
+| `thunderbird -compose "to=...,body=..."` の直叩き | `mail_draft.py`（内部で `-file`）を使う |
+| `write_text()` でEMLを書く | `mail_draft.py`（内部で `write_bytes`）を使う |
+| 元メール本文を持たないまま転送文を作る | 先に `/mail-search` で一次資料を取る（後述 Step 0） |
+
+**「急いでいる」「内容は分かっている」は省略の理由にならない。**
+
+---
+
+## 📋 この手順の全体像（迷ったらこの順に実行）
 
 ```
-1. メール本文を作成(新規スレッド or 返信。返信は必ず引用形式、[[mail-reply]]参照)
-2. アーティファクト(HTML)で送信予定内容を表示(宛先・件名・本文・添付内容)
-3. ユーザーが内容を確認(修正があれば Edit で差し替え→アーティファクト再表示)
-4. ユーザーが明示的に承認するまで、EMLは絶対に作らない(「生成して」「OK」「送って」等)
-5. 承認後にEMLファイルを生成(添付ファイルがあれば同梱)
-6. Thunderbirdで開く(-file起動)
-7. ユーザーがCtrl+Eで下書きに変換 → 内容再確認 → 手動で送信ボタンを押す
-8. (該当する場合)066.業務秘書等の案件管理システムで「処理済み」マーク
+0️⃣  返信・転送なら、まず元メールの本文を /mail-search で取得する
+    そのうえで本文を組み立てる（転送の定型フォーマットは後述）
+1️⃣  アーティファクトで送信予定内容を表示          ← 省略禁止
+2️⃣  ユーザーの明示承認を待つ（「OK」「送って」等） ← 省略禁止
+3️⃣  本文を .txt に書き、mail_draft.py でEML生成＋Thunderbird起動
+    → ユーザーがCtrl+E→下書き化→手動送信。Claudeはここで止まる
+4️⃣  (該当する場合)066.業務秘書等で「処理済み」マーク
 ```
 
-**🔴 最重要(2026-09-16、実際にユーザーに指摘された事故)**: 産経デジタルへの新規
-報告メールで、アーティファクト表示を飛ばしていきなりEMLを作りThunderbirdを開いてしまい、
-「いきなりメールのThunderbirdの下書きを作ってはいけない。アーティファクトで送信予定の
-メールを表示してください」と指摘された。**新規スレッドのメールでも、返信メールと同じく
-必ずStep 2(アーティファクト表示)を経る。**「内容は事前に分かっている」「急いでいる」
-といった理由で省略しない。
+**🔴 2026-09-16の事故**: 産経デジタルへの報告メールで 1️⃣ を飛ばしていきなりEMLを作り
+Thunderbirdを開いてしまい、ユーザーに指摘された。
+**🔴 2026-09-18の事故**: 転送依頼で 0️⃣ を飛ばし、元メール本文を持たないまま
+プレースホルダー入りの転送文を作った。さらに `-compose` 直叩きで本文が空欄になり、
+3回やり直した。**0️⃣ と 1️⃣ は飛ばさない。**
+
+---
+
+## Step 0️⃣ 返信・転送は、先に元メールの本文を取る（省略禁止）
+
+**本文を持たないまま「[詳細は元メールを確認してください]」のようなプレースホルダーで
+転送文を作らない。** それは転送になっていない。
+
+```python
+import sys
+sys.path.insert(0, r"C:\ClaudeCode\900.ClaudeCode\mail-search\scripts")
+sys.stdout.reconfigure(encoding="utf-8")
+from search import SearchQuery, search, summarize_hit
+from mbox_reader import extract_text_body
+
+hits = search(SearchQuery(subject_contains="件名の一部", limit=5))
+for h in hits:
+    print(summarize_hit(h))
+    print(extract_text_body(h.message))
+```
+
+### 🔴 罠: `mc`(mailcheck.py)が表示する差出人は、実際のFromとは限らない
+
+ホームページの問い合わせフォーム経由のメールは、**実際のFromは
+`wordpress@seifukunofuji.com`**（宛先は `fw-shopmaster@`）で、お客様のアドレスは
+**本文の中に書かれている**。`mc` の一覧はそのお客様名を差出人として見せるため、
+お客様のアドレスで `from_contains` 検索すると **0件になる**。
+
+- 件名は `AskFromWebpage株式会社 制服のフジ "<お客様が入力した題名>"` の形
+- 探すときは **`subject_contains` にお客様が入力した題名の一部**を使う
+- 2026-09-18、`from_contains="sisaa"` で0件 → 見つからないと誤判断しかけた実例
+
+**0件は「無い」の証明にならない**（[[mail-search]]の警告）。条件を変えて複数回試す。
+
+---
+
+## 📮 社内の定型宛先
+
+| 呼び方 | 展開先 |
+|---|---|
+| **「いつもの3人」「担当者へ」「担当に回して」** | `fuji@seifukunofuji.com, kaneko@seifukunofuji.com, kentaro@seifukunofuji.com` |
+
+`mail_draft.py --to "いつもの3人"` と書けば自動で展開される（宛先を手打ちしない）。
+金子=kaneko、健太郎=kentaro、fuji=寺下本人の控え。
+
+---
+
+## 📨 転送（問合せメールを社内へ回す）の定型フォーマット
+
+ホームページの問い合わせフォームから届いた相談を社内に回すときは、**元メールを丸ごと
+引用せず、要点を整理したこの形**にする（実際に運用されている書式）。
+
+**件名**: `【転送：問合せメール】<相談内容>（<お客様名>様）`
+
+**本文**:
+```
+お疲れさまです。寺下です。
+
+ホームページのお問い合わせフォームより、<相談内容>について
+ご相談が届いています。ご対応をお願いします。
+
+■ お客様
+　<氏名> 様
+　<メールアドレス> ／ <電話番号>
+　<住所>
+　（<所属・組織があれば>）
+
+■ ご要望
+　<本文の要点を2〜4行で。お客様の言葉を活かす>
+
+■ 受信日
+　<YYYY年M月D日（曜）HH:MM>
+　※ <電話等の補足があれば>
+　※ ホームページのお問い合わせフォーム経由。まだ返信していません。
+```
+
+- 住所・電話・郵便番号は**元メールに書かれている分だけ**書く（推測して補わない）
+- 署名は入れない（Thunderbird側の既定署名と二重になる）
+- 受信日時は元メールの `Date` ヘッダ（JST換算）を使う
 
 ---
 
@@ -95,75 +185,43 @@ python C:/ClaudeCode/.claude/hooks/ctx_cli.py add <SID> OK "<宛先>へのメー
 
 ---
 
-## 3️⃣ EMLファイル生成(添付ファイル対応・Windows文字コード罠に注意)
+## 3️⃣ EML生成＋Thunderbird起動は `mail_draft.py` を呼ぶだけ
 
-**`EmailMessage(policy=SMTP)`を使い、`write_bytes()`でバイト列のまま書き出す。**
-`write_text()`は使わない(Windowsでは`\n`が`\r\n`に黙って変換され、`add_attachment`で
-組み立てたMIME構造を壊すおそれがある。[[reference_windows_shell_pitfalls_hub]]の
-newline罠と同じ系統の問題)。
+**EMLの組み立てコードを毎回書かない。** このスキルのフォルダに専用CLIがある。
+`EmailMessage(policy=SMTP)` / `write_bytes` / `-file` 起動 / 生成後の自己検証まで
+全部入っている。
 
-```python
-from email.message import EmailMessage
-from email.policy import SMTP
-from pathlib import Path
+### 手順（2ステップ）
 
-body = """宛先様
+**(a) 本文を UTF-8 テキストファイルに書く**（Writeツール。スクラッチパッドでよい）
 
-いつもお世話になっております。
-制服のフジ　寺下です。
+本文を引数で渡さないこと。日本語・改行をコマンドラインに載せると Windows で壊れる
+([[reference_windows_shell_pitfalls_hub]])。
 
-[本文]
+**(b) CLIを実行する**
 
-以上、よろしくお願いいたします。
-
-寺下貴之（てらした たかゆき）
-terashita@seifukunofuji.com
-〒737-0046 広島県呉市中通1丁目1番21号
-(株)制服のフジ
-TEL：0823-21-7731 / FAX：0823-25-0130 / Mob：080-1925-1031
-"""
-
-msg = EmailMessage(policy=SMTP)
-msg["From"] = "寺下貴之 <terashita@seifukunofuji.com>"
-msg["To"] = "to1@example.com, to2@example.com"
-msg["Subject"] = "件名"
-msg.set_content(body, charset="utf-8")
-
-# 添付ファイルがある場合のみ
-csv_bytes = Path(r"C:\path\to\report.csv").read_bytes()
-msg.add_attachment(csv_bytes, maintype="text", subtype="csv", filename="report.csv")
-
-eml_path = Path(r"C:\ClaudeCode\...\scratchpad_xxx.eml")
-eml_path.write_bytes(bytes(msg))   # write_text ではなく write_bytes
-print("written:", eml_path, eml_path.exists())
+```bash
+python "C:\ClaudeCode\.claude\skills\mail-send\mail_draft.py" --to "いつもの3人" --subject "【転送：問合せメール】…（…様）" --body-file "<本文.txtの絶対パス>"
 ```
 
-日本語パスを含むディレクトリへの直接編集はEditツールが失敗することがあるため
-([[CLAUDE]]「注意事項」)、上記のようなPythonスクリプトを`C:/ClaudeCode/`直下
-(または[[reference_windows_shell_pitfalls_hub]]の罠を避けるためスクラッチパッド)に
-書いて`python`で実行する方式を使う。
+主なオプション:
+
+| オプション | 用途 |
+|---|---|
+| `--to` | 宛先。`いつもの3人` と書くと社内3名に展開。カンマ区切りで直接指定も可 |
+| `--subject` | 件名 |
+| `--body-file` | 本文のUTF-8テキストファイル（必須） |
+| `--cc` | Cc |
+| `--attach a.csv b.pdf` | 添付ファイル（複数可） |
+| `--out` | EML出力先（既定: `C:\ClaudeCode\.mail_drafts\<本文ファイル名>.eml`） |
+| `--no-open` | Thunderbirdを起動せず生成だけ（動作確認用） |
+
+実行すると生成したEMLを**読み直して本文・添付を検証**し、`[OK] 検証通過` が出てから
+Thunderbirdが開く。`[NG]` が出たら本文の文字化け・添付欠落なので、送らずに原因を直す。
 
 **添付ファイルが本来ユーザーへ渡す成果物でもある場合**(例: 出荷報告CSV)、メール添付とは
 別に[[feedback_user_check_files_downloads_and_nas]]の二重コピー(Downloads + NAS
 999.一時ファイル)も忘れずに行う。
-
----
-
-## 4️⃣ Thunderbirdで開く(-file起動、手動送信のみ)
-
-```bash
-powershell -Command "Start-Process 'C:\Program Files\Mozilla Thunderbird\thunderbird.exe' -ArgumentList '-file', '\"<EMLの絶対パス>\"'"
-```
-
-Pythonから直接起動する場合(`subprocess.Popen`、リスト形式でシェルクォート問題を回避):
-
-```python
-import subprocess
-subprocess.Popen([r"C:\Program Files\Mozilla Thunderbird\thunderbird.exe", "-file", str(eml_path)])
-```
-
-`-compose "to='...',body='...'"`のような直叩きは**禁止**([[reference_thunderbird_compose_via_eml]]、
-本文のURLデコードが不安定・署名と二重表示になる実例が複数回発生・断念済み)。**必ずEML経由**。
 
 ### 送信後
 
@@ -174,7 +232,7 @@ subprocess.Popen([r"C:\Program Files\Mozilla Thunderbird\thunderbird.exe", "-fil
 
 ---
 
-## 5️⃣ ローカル記録の更新(該当する場合)
+## 4️⃣ ローカル記録の更新(該当する場合)
 
 添付CSVがローカルの「報告済み」フラグ管理と連動している場合(例: 052卸売の
 `make_sankei_report.py`が`reported_at`を自動付与)、**CSV生成の時点で既にフラグが
@@ -195,6 +253,10 @@ subprocess.Popen([r"C:\Program Files\Mozilla Thunderbird\thunderbird.exe", "-fil
 
 ## 🔗 関連
 
+- `mail_draft.py`（このフォルダ） — EML生成＋Thunderbird起動の共通CLI。**メール送信で
+  Pythonを書く必要があるのは本文ファイルの作成だけ**
+- [[mail-search]] — Step 0️⃣ で元メール本文・添付を取るのに使う
+- [[reference_thunderbird_compose_via_eml]] — `-compose`禁止・EML方式の根拠
 - [[mail-reply]] — 返信メール特有の引用形式・案件管理システム連携の詳細
 - [[feedback_email_reply_artifact_preview]] — このワークフローの根拠となったユーザー指摘
   (2026-09-16、052卸売の新規スレッドメールでアーティファクト表示を省略し指摘された実例)
@@ -209,3 +271,10 @@ subprocess.Popen([r"C:\Program Files\Mozilla Thunderbird\thunderbird.exe", "-fil
 **作成背景**: 052卸売の産経デジタル向け出荷報告メール(新規スレッド・CSV添付あり)を
 複数回作成する中で確立した手順をスキル化。[[mail-reply]](返信専用・引用形式が主眼)とは
 別に、新規スレッドメールも含む共通の土台として切り出した。
+
+**2026-09-18 更新（転送対応・再現性強化）**: 自衛隊からの盾デザイン相談を社内3名へ
+転送する作業で、(1)元メール本文を取らずにプレースホルダーで作る (2)`-compose`直叩きで
+本文が空欄になる (3)「いつもの3人」の宛先が分からず手が止まる、の3点で手戻りが発生。
+ユーザー指示により「メール送信」「転送」の文言でこのスキルを必ず呼び、**毎回同じ結果に
+なる**よう手順化した。EML組み立てを`mail_draft.py`に固定し、Step 0️⃣(一次資料の取得)・
+社内定型宛先・転送フォーマットを明記。
