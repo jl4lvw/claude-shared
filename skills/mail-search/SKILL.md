@@ -205,5 +205,8 @@ python scripts/fba_mcf_ship.py --order CONSUMER-... --goq 112-034 --csv  # CSV�
 - `scripts/attachments.py` — 添付ファイルのサニタイズ・保存
 - `scripts/search.py` — アカウント×フォルダ横断検索の本体
 - `scripts/fba_mcf_ship.py` — FBAマルチチャネル出荷通知→送り状番号→GoQ登録用CSV
+- `MAIL_SEND_WORKFLOW.md` — メール送信(Thunderbird・EML方式)の標準手順。検索は本スキルの
+  範囲だが、見つけたメールに**返信・新規メールを送る**場合はこちらを参照([[mail-send]]/
+  [[mail-reply]]スキルの内容をスキル呼び出しに依存せず読める形にしたもの)
 - 長期記憶: `reference_thunderbird_terashita_accounts.md`(4アカウント構成・大容量mboxの注意)
 - 委譲元(後方互換レイヤー): `062.委託販売精算/scripts/thunderbird_mail.py`

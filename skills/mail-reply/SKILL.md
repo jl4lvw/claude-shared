@@ -4,11 +4,15 @@ description: メール返信案をアーティファクトで表示して確認�
 trigger: 顧客対応メール・取引先との交渉メール等、返信メールを作成して送信したいとき
 ---
 
-<!-- SKILL_VERSION: 2026-09-15_initial -->
+<!-- SKILL_VERSION: 2026-09-18_000000 -->
 
 # mail-reply — メール返信案の作成・確認・送信
 
-メール返信を安全かつ確実に送信するための標準手順。
+メール返信を安全かつ確実に送信するための標準手順。**アーティファクト表示→承認→EML生成→
+Thunderbird送信の共通土台は[[mail-send]]に切り出した**(2026-09-18。新規スレッドメールにも
+同じ土台を使うため)。本スキルは**返信特有**の要件(引用形式・案件管理システム連携)に絞る。
+EML生成のコード例(`policy=SMTP`+`write_bytes`+添付対応)・Thunderbird起動コマンドは
+[[mail-send]]の該当節を参照(下記3️⃣4️⃣は要点のみ)。
 
 ## 🎯 手順概要
 
@@ -117,58 +121,13 @@ trigger: 顧客対応メール・取引先との交渉メール等、返信メ�
 
 ---
 
-## 3️⃣ EML ファイル生成
+## 3️⃣ EML ファイル生成・4️⃣ Thunderbird で送信
 
-### Python スクリプト例
+**[[mail-send]]の3️⃣4️⃣をそのまま使う**(`EmailMessage(policy=SMTP)` + `write_bytes()`。
+`write_text()`は使わない、Windowsの改行変換でMIME構造が壊れるおそれがあるため)。
+返信の場合、本文は上記1️⃣の「本文→区切り線→引用元」形式にする点だけが新規スレッドとの違い。
 
-```python
-import sys
-sys.path.insert(0, r"C:\ClaudeCode\900.ClaudeCode\mail-search\scripts")
-sys.stdout.reconfigure(encoding="utf-8")
-
-from email.message import EmailMessage
-from pathlib import Path
-
-body = """柴山様
-
-いつもお世話になっております。
-制服のフジ　寺下です。
-
-[本文]
-
-―――――――――――――――――――――――――――――――――
-
-> [引用元]
-"""
-
-msg = EmailMessage()
-msg['To'] = 'shibayama.toyomi@indigo.plala.or.jp'
-msg['Subject'] = 'Re: 【お問い合わせ】 G1956'
-msg['From'] = 'shopmaster@seifukunofuji.com'
-msg.set_content(body, charset='utf-8')
-
-eml_path = Path(r"C:\ClaudeCode\scratchpad_reply_shibayama.eml")
-eml_path.write_text(msg.as_string(unixfrom=False), encoding='utf-8')
-
-print(f"✓ EML作成完了: {eml_path}")
-```
-
----
-
-## 4️⃣ Thunderbird で送信
-
-### PowerShell コマンド
-
-```powershell
-Start-Process thunderbird -ArgumentList '-file "C:\ClaudeCode\scratchpad_reply_shibayama.eml"'
-```
-
-### 送信後の手順
-
-Thunderbird の作成ウインドウが開きます。
-1. メール内容を確認
-2. **送信ボタン（Ctrl+Enter）** をクリック
-3. 送信完了
+添付ファイルが無い返信メールでも書き方は同じ(`msg.add_attachment(...)`の行を省くだけ)。
 
 ---
 
@@ -219,8 +178,9 @@ Claude → Edit で該当部分を Edit ツールで修正 → アーティフ�
 
 ---
 
-## 🔗 関連メモリ
+## 🔗 関連
 
+- [[mail-send]] — アーティファクト表示・EML生成・Thunderbird起動の共通手順(返信・新規スレッド共通)
 - [[feedback_email_reply_must_quote_original]] — メール返信は引用形式必須
 - [[feedback_no_ai_disclaimer_in_emails]] — AI作成断り書き禁止
 - [[feedback_thunderbird_compose_via_eml]] — EML方式での Thunderbird起動
