@@ -30,6 +30,7 @@ HOOKS = TOOLS.parent / "hooks"
 sys.path.insert(0, str(HOOKS))
 
 import cgd_wf_gate as gate  # noqa: E402
+import cgd_session  # noqa: E402  (cgd_wf_gate が tools を sys.path に足している)
 
 GATE_PY = HOOKS / "cgd_wf_gate.py"
 
@@ -190,11 +191,23 @@ def test_hook_denies_wrong_nonce(armed_gate) -> None:
 # ------------------------------------------------------------ CLI の挙動
 
 
-def _cli(*args: str, gate_dir: str) -> subprocess.CompletedProcess[bytes]:
+def _cli(*args: str, gate_dir: str,
+         session: str | None = None) -> subprocess.CompletedProcess[bytes]:
+    """CLI を起動する。**セッションは実環境から継承しない。**
+
+    `--session` を省いた disarm は CLAUDE_SESSION_ID / CLAUDE_CODE_SESSION_ID から
+    自分を判定する (2026-08-28)。実環境の値を継承すると、Claude Code の中では
+    「実セッション ≠ ゲートの所有者」、素のシェルでは「所有者不明」になり、
+    結果が回したシェルで変わる。session を渡したときだけ、そのセッションの中から
+    叩いたことにする。
+    """
     import os
+    env = {k: v for k, v in os.environ.items() if k not in cgd_session.ENV_VARS}
+    env["CGD_WF_GATE_DIR"] = gate_dir
+    if session is not None:
+        env["CLAUDE_CODE_SESSION_ID"] = session
     return subprocess.run(
-        [sys.executable, str(GATE_PY), *args],
-        capture_output=True, env={**os.environ, "CGD_WF_GATE_DIR": gate_dir},
+        [sys.executable, str(GATE_PY), *args], capture_output=True, env=env,
     )
 
 
@@ -207,11 +220,32 @@ def test_status_without_session_sees_session_gates(armed_gate) -> None:
 
 
 def test_disarm_without_session_actually_disarms(armed_gate) -> None:
-    """1 件だけなら --session 無しでも解除できること（無言 no-op にしない）。"""
-    r = _cli("disarm", gate_dir=armed_gate["dir"])
-    assert r.returncode == 0
+    """自セッションのゲートは --session 無しでも解除できること（無言 no-op にしない）。
+
+    旧版は「残り 1 件なら所有者を見ずに消す」だったが、2026-08-27 に別セッションの
+    Lv8 ゲートを実際に壊したため 08-28 に廃止した。現在の「--session 無し」は
+    環境変数から自分を判定する。このテストは実環境のセッション変数を継承していたため、
+    Claude Code の中で回すと「他人のゲート」と判定されて落ち続けていた。
+    """
+    r = _cli("disarm", gate_dir=armed_gate["dir"], session=armed_gate["sid"])
+    assert r.returncode == 0, r.stdout.decode("utf-8", errors="replace")
     payload = json.loads(_cli("status", "--json", gate_dir=armed_gate["dir"]).stdout.decode("utf-8"))
     assert payload["armed"] is False
+
+
+@pytest.mark.parametrize("me", ["another-session", None])
+def test_disarm_without_session_keeps_other_sessions_gate(armed_gate, me) -> None:
+    """他セッション・所有者不明のどちらから叩いても、人のゲートは消さない。
+
+    1 件しか無くても消さない (2026-08-28 に廃止した救済が戻っていないこと)。
+    消さない代わりに exit 1 と、残っているゲートの案内を出す。
+    """
+    r = _cli("disarm", gate_dir=armed_gate["dir"], session=me)
+    assert r.returncode == 1
+    assert armed_gate["sid"] in r.stdout.decode("utf-8", errors="replace")
+    payload = json.loads(_cli("status", "--json", gate_dir=armed_gate["dir"]).stdout.decode("utf-8"))
+    assert payload["armed"] is True
+    assert [g["key"] for g in payload["gates"]] == [armed_gate["sid"]]
 
 
 def test_arm_rejects_non_positive_ttl(tmp_path) -> None:

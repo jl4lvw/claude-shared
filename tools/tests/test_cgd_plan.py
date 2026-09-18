@@ -14,6 +14,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +28,43 @@ sys.path.insert(0, str(TOOLS))
 import cgd_plan  # noqa: E402
 
 PLAN_PY = TOOLS / "cgd_plan.py"
+
+# build と collect を同じセッションで走らせる。実セッションの変数に頼ると、
+# 素のシェルでは collect が「所有者不明」で拒む (conftest.py 参照)
+pytestmark = pytest.mark.usefixtures("cgd_session_env")
+
+
+def _find_bash() -> str | None:
+    """wrap の実挙動テストに使う bash。
+
+    Git for Windows の既定インストールは PATH に `Git\\cmd` (git.exe) しか通さず、
+    bash.exe のある `Git\\bin` は入らない。そのため PowerShell から pytest を回すと
+    `subprocess.run(["bash", ...])` が FileNotFoundError になり、Git Bash から
+    回したときだけ通っていた (2026-09-18 切り分け。cgd_doctor の check_shell と同じ事情)。
+
+    `Git\\usr\\bin\\bash.exe` は選ばない。PATH を整えない素の bash なので、
+    PowerShell から起動すると mkdir 等が見つからない。
+    System32 の bash.exe は WSL の起動口で、Windows パスの .sh を実行できない。
+    """
+    found = shutil.which("bash")
+    if found and "system32" not in found.lower():
+        return found
+    candidates: list[Path] = []
+    git = shutil.which("git")
+    if git:
+        # ...\Git\cmd\git.exe → ...\Git\bin\bash.exe
+        candidates.append(Path(git).resolve().parents[1] / "bin" / "bash.exe")
+    for base in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")):
+        if base:
+            candidates.append(Path(base) / "Git" / "bin" / "bash.exe")
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        candidates.append(Path(local) / "Programs" / "Git" / "bin" / "bash.exe")
+    return next((str(p) for p in candidates if p.is_file()), None)
+
+
+BASH = _find_bash()
+needs_bash = pytest.mark.skipif(BASH is None, reason="bash が見つからない (Git for Windows 未導入)")
 
 OK_BODY = ("# レビュー結果\n\n- 指摘1\n- 指摘2\n- 指摘3\n" + "x" * 300).encode("utf-8")
 
@@ -232,6 +271,7 @@ def test_collect_reports_exit_code(sandbox) -> None:
     assert all(r["exit_code"] == 0 for r in payload["reviewers"])
 
 
+@needs_bash
 def test_wrap_writes_log_and_exit_via_shell(tmp_path) -> None:
     """ラッパが実際にシェルでログと終了コードを書くこと（机上で終わらせない）。
 
@@ -247,7 +287,7 @@ def test_wrap_writes_log_and_exit_via_shell(tmp_path) -> None:
         + cgd_reviewers.wrap("echo hello ; exit 7", raw) + nl,
         encoding="utf-8", newline="",
     )
-    subprocess.run(["bash", str(script)], capture_output=True)
+    subprocess.run([BASH, str(script)], capture_output=True, timeout=60)
     assert Path(raw).read_text(encoding="utf-8").strip() == "hello"
     assert Path(raw + ".exit").read_text(encoding="utf-8").strip() == "7"
 
@@ -294,6 +334,7 @@ def test_collect_declares_itself_authoritative(sandbox) -> None:
     ("no_such_cmd_zzz_2026", "127"),
     ("false | cat", "1"),          # pipefail が効いていること
 ])
+@needs_bash
 def test_wrap_records_exit_code(tmp_path, inner: str, want: str) -> None:
     """成否を **シェルが** 書くこと。agent の申告に依存しない。"""
     import cgd_reviewers  # noqa: PLC0415
@@ -302,10 +343,11 @@ def test_wrap_records_exit_code(tmp_path, inner: str, want: str) -> None:
     nl = chr(10)
     script.write_text("#!/usr/bin/env bash" + nl + cgd_reviewers.wrap(inner, raw) + nl,
                       encoding="utf-8", newline="")
-    subprocess.run(["bash", str(script)], capture_output=True)
+    subprocess.run([BASH, str(script)], capture_output=True, timeout=60)
     assert Path(raw + ".exit").read_text(encoding="utf-8").strip() == want
 
 
+@needs_bash
 def test_wrap_records_124_when_killed(tmp_path) -> None:
     """打ち切られたら trap が初期値 124 を残す。
 
@@ -319,10 +361,11 @@ def test_wrap_records_124_when_killed(tmp_path) -> None:
         "#!/usr/bin/env bash" + nl
         + cgd_reviewers.wrap("echo part ; kill -TERM $$", raw) + nl,
         encoding="utf-8", newline="")
-    subprocess.run(["bash", str(script)], capture_output=True)
+    subprocess.run([BASH, str(script)], capture_output=True, timeout=60)
     assert Path(raw + ".exit").read_text(encoding="utf-8").strip() == "124"
 
 
+@needs_bash
 def test_wrap_creates_parent_directory(tmp_path) -> None:
     """/c/tmp-ai 決め打ちをやめ、raw_path の親から作ること。"""
     import cgd_reviewers  # noqa: PLC0415
@@ -331,11 +374,12 @@ def test_wrap_creates_parent_directory(tmp_path) -> None:
     nl = chr(10)
     script.write_text("#!/usr/bin/env bash" + nl + cgd_reviewers.wrap("echo x", raw) + nl,
                       encoding="utf-8", newline="")
-    subprocess.run(["bash", str(script)], capture_output=True)
+    subprocess.run([BASH, str(script)], capture_output=True, timeout=60)
     assert Path(raw).read_text(encoding="utf-8").strip() == "x"
     assert Path(raw + ".exit").read_text(encoding="utf-8").strip() == "0"
 
 
+@needs_bash
 def test_wrap_quotes_path_against_injection(tmp_path) -> None:
     """パスに $( ) が混ざってもコマンドとして実行されないこと。"""
     import cgd_reviewers  # noqa: PLC0415
@@ -345,7 +389,7 @@ def test_wrap_quotes_path_against_injection(tmp_path) -> None:
     nl = chr(10)
     script.write_text("#!/usr/bin/env bash" + nl + cgd_reviewers.wrap("echo x", raw) + nl,
                       encoding="utf-8", newline="")
-    subprocess.run(["bash", str(script)], capture_output=True)
+    subprocess.run([BASH, str(script)], capture_output=True, timeout=60)
     assert not marker.exists(), "パスの $( ) が実行されている"
 
 
@@ -389,7 +433,12 @@ def test_cli_build_prints_workflow_args(sandbox) -> None:
     line = [l for l in r.stdout.splitlines() if l.startswith("WORKFLOW_ARGS ")]
     assert line, "WORKFLOW_ARGS が出力されていない"
     payload = json.loads(line[0][len("WORKFLOW_ARGS "):])
-    assert set(payload) == {"input_path", "aux_input_path", "label", "reviewers"}
+    assert set(payload) == {"claude_dir", "input_path", "aux_input_path", "label", "reviewers"}
+    # claude_dir は 2026-09-06 に追加。WF は __dirname を使えず、固定パス直書きが
+    # 移行後に Preflight を止めたため build が場所を渡す。**実行中の .claude を指すこと**
+    # (worktree から build したら worktree 側)。WF はシェルのメタ文字を含むと halt する。
+    assert payload["claude_dir"] == TOOLS.parent.as_posix()
+    assert not any(c in payload["claude_dir"] for c in "\"'`$;&|<>")
     # reviewers は Python 側を単一の出所にするために載せている（2026-08-12）。
     assert [r["name"] for r in payload["reviewers"]] == cgd_plan.REVIEWERS[8]
     assert all(isinstance(r["timeout"], int) and r["timeout"] > 0 for r in payload["reviewers"])
@@ -403,12 +452,18 @@ def test_cli_build_prints_workflow_args(sandbox) -> None:
 
 DUMP_MJS = TOOLS / "dump_wf_raw_paths.mjs"
 
+# WF 側の .claude の場所。本番の build と同じく args.claude_dir で渡す。
+# 渡さないと WF は旧固定パス C:/ClaudeCode/.claude に落ちる一方、cgd_reviewers は
+# 自分のファイル位置から組み立てるので、worktree など別の場所から回したときだけ
+# 「コマンドが食い違う」と落ちていた (定義の食い違いではなく置き場の食い違い)。
+WF_CLAUDE_DIR = TOOLS.parent.as_posix()
+
 
 def _wf_raw_paths(level: int, label: str, sha: str, include_gemini: bool = False) -> dict:
     # 内蔵定義を吸い出すのがこのヘルパの目的。2026-08-13 から reviewers 無しの起動は
     # 既定で halt するので、**明示的にオプトインする**必要がある。
     args = {"input_path": "C:/tmp-ai/a.txt", "label": label, "_sha256": sha,
-            "allow_builtin": True}
+            "allow_builtin": True, "claude_dir": WF_CLAUDE_DIR}
     if level in (7, 8):
         args["aux_input_path"] = "C:/tmp-ai/b.txt"
     if include_gemini:
@@ -449,7 +504,7 @@ def test_expected_paths_match_with_gemini(level: int) -> None:
 def _wf_cmds(level: int, include_gemini: bool = False) -> dict:
     # 同上: 内蔵定義の取り出しには allow_builtin が要る
     args = {"input_path": "C:/tmp-ai/a.txt", "label": "L", "wf_nonce": "NONCE",
-            "allow_builtin": True}
+            "allow_builtin": True, "claude_dir": WF_CLAUDE_DIR}
     if level in (7, 8):
         args["aux_input_path"] = "C:/tmp-ai/b.txt"
     if include_gemini:
@@ -465,7 +520,7 @@ def _wf_cmds(level: int, include_gemini: bool = False) -> dict:
 def _wf_timeouts(level: int, include_gemini: bool = False) -> dict:
     # 同上: 内蔵定義の取り出しには allow_builtin が要る
     args = {"input_path": "C:/tmp-ai/a.txt", "label": "L", "wf_nonce": "NONCE",
-            "allow_builtin": True}
+            "allow_builtin": True, "claude_dir": WF_CLAUDE_DIR}
     if level in (7, 8):
         args["aux_input_path"] = "C:/tmp-ai/b.txt"
     if include_gemini:

@@ -35,7 +35,11 @@ sys.path.insert(0, str(TOOLS))
 import cgd_plan  # noqa: E402
 import cgd_usage_log  # noqa: E402
 
-OK_BODY = "# レビュー結果\n\n- 指摘1\n- 指摘2\n- 指摘3\n" + "x" * 300
+# build と collect を同じセッションで走らせる。実セッションの変数に頼ると、
+# 素のシェルでは collect が「所有者不明」で拒む (conftest.py 参照)
+pytestmark = pytest.mark.usefixtures("cgd_session_env")
+
+OK_BODY ="# レビュー結果\n\n- 指摘1\n- 指摘2\n- 指摘3\n" + "x" * 300
 
 
 @pytest.fixture()
@@ -144,22 +148,25 @@ def test_collect_prefers_registered_path_over_builtin(sandbox) -> None:
 # ------------------------------------- record_usage: ゲート副作用のガード
 
 
+# スタブは **kw で受ける。2026-08-28 に `_arm_wf_gate` へ allow_global が増えたとき、
+# `lambda level, session=None` のままだった既定経路のテストが TypeError で落ち続けていた。
 def test_record_usage_does_not_arm_gate_when_disabled(tmp_path, monkeypatch) -> None:
     """arm_gate=False なら Lv7 でもゲートを張らない（テストからの誤爆防止）。"""
     called: list[int] = []
     monkeypatch.setattr(cgd_usage_log, "_arm_wf_gate",
-                        lambda level, session=None: called.append(level))
+                        lambda level, **kw: called.append(level))
     cgd_usage_log.record_usage(7, db_path=tmp_path / "u.sqlite3", arm_gate=False)
     assert called == []
 
 
 def test_record_usage_arms_gate_by_default(tmp_path, monkeypatch) -> None:
     """既定では張る（cgd 本体の強制が効かなくなっては困る）。"""
-    called: list[int] = []
+    called: list[tuple[int, dict]] = []
     monkeypatch.setattr(cgd_usage_log, "_arm_wf_gate",
-                        lambda level, session=None: called.append(level))
-    cgd_usage_log.record_usage(7, db_path=tmp_path / "u.sqlite3")
-    assert called == [7]
+                        lambda level, **kw: called.append((level, kw)))
+    assert cgd_usage_log.record_usage(7, db_path=tmp_path / "u.sqlite3") is True
+    # 全体ゲート (全セッションの codex を止める) は明示したときだけ
+    assert called == [(7, {"session": None, "allow_global": False})]
 
 
 @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on", " 1 "])
@@ -174,13 +181,18 @@ def test_env_kill_switch_accepts_common_truthy_values(monkeypatch, capsys, value
 
 @pytest.mark.parametrize("value", ["0", "false", "no", "", "off"])
 def test_env_kill_switch_ignores_falsy_values(monkeypatch, capsys, value) -> None:
-    """無効化していないつもりの値で勝手に切れては困る。"""
+    """無効化していないつもりの値で勝手に切れては困る。
+
+    セッションは cgd_session_env で固定してある。固定しないと、実セッションの
+    変数の有無で「どこまで進んだか」が変わり、判定がシェル依存になる。
+    """
     monkeypatch.setenv("CGD_NO_WF_GATE", value)
     monkeypatch.setattr(cgd_usage_log, "GATE_SCRIPT", Path("存在しないはずのパス"))
     cgd_usage_log._arm_wf_gate(7)
     err = capsys.readouterr().err
     assert "CGD_NO_WF_GATE" not in err
-    assert "セッション指定なし" in err   # 通常の経路まで進んでいる
+    # 無効化スイッチもセッション判定も越え、ゲートスクリプトを呼ぶ段まで進んでいる
+    assert "存在しないはずのパス" in err
 
 
 # ------------------------------------- 旧形式ログの stale 判定 / バイパスの記録
@@ -233,12 +245,47 @@ def test_record_usage_does_not_note_skip_for_non_wf_levels(tmp_path) -> None:
     assert note is None or "wf_gate_skipped" not in note
 
 
-def test_arm_wf_gate_warns_when_session_is_omitted(monkeypatch, capsys) -> None:
-    """セッション指定なしは全セッションを止めるので、黙って張らない。"""
+def test_arm_wf_gate_refuses_when_session_is_unknown(monkeypatch, capsys,
+                                                     no_session_env) -> None:
+    """セッションが分からないときは全体ゲートを張らず、例外で止める。
+
+    2026-08-28 までは警告だけ出して全体ゲートを張っていた (旧テスト名
+    `..._warns_when_session_is_omitted` はそれを固定していた)。手順書が
+    record の出力を読まなくてよいと書いていたため警告は誰にも読まれず、
+    別セッションの WF を止めた。現在は GateSetupError で止め、record_usage が
+    記録ごと取りやめる (Lv8 で 4 者一致)。
+    """
     monkeypatch.delenv("CGD_NO_WF_GATE", raising=False)
     monkeypatch.setattr(cgd_usage_log, "GATE_SCRIPT", Path("存在しないはずのパス"))
+    with pytest.raises(cgd_usage_log.GateSetupError):
+        cgd_usage_log._arm_wf_gate(7)
+    err = capsys.readouterr().err
+    assert "セッションを特定できない" in err
+    assert "存在しないはずのパス" not in err   # ゲートスクリプトの手前で止まっている
+
+
+def test_arm_wf_gate_uses_session_from_env(monkeypatch, capsys,
+                                           cgd_session_env) -> None:
+    """--session を省いても、環境変数からセッションを取って自セッション用に張る。
+
+    これが無いと手順どおりの `record --level 8` が fail closed で必ず落ちる。
+    ゲートスクリプトは呼ばずに、渡される引数だけを見る。
+    """
+    monkeypatch.delenv("CGD_NO_WF_GATE", raising=False)
+    seen: list[list[str]] = []
+
+    class _Proc:
+        returncode = 0
+        stdout = "wf_nonce = x"
+        stderr = ""
+
+    monkeypatch.setattr(cgd_usage_log.subprocess, "run",
+                        lambda cmd, **kw: seen.append(cmd) or _Proc())
+    monkeypatch.setattr(cgd_usage_log, "GATE_SCRIPT", Path(__file__))  # is_file() を通すだけ
     cgd_usage_log._arm_wf_gate(7)
-    assert "セッション指定なし" in capsys.readouterr().err
+    assert len(seen) == 1
+    assert seen[0][-2:] == ["--session", cgd_session_env]
+    assert "全セッション" not in capsys.readouterr().err
 
 
 def test_arm_wf_gate_is_silent_for_non_wf_levels(monkeypatch, capsys) -> None:

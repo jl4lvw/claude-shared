@@ -30,11 +30,15 @@ PLAN_PY = TOOLS / "cgd_plan.py"
 
 
 @pytest.fixture()
-def sandbox(tmp_path):
+def sandbox(tmp_path, cgd_session_env):
     """本番の run 置き場を触らせない。**環境変数名は実物と一致させる。**
 
     以前 pv のテストで存在しない変数名を書いて『隔離したつもり』になり、
     本番へ run を作った。ここでは実際に隔離できたことを毎回検査する。
+
+    セッションも固定する (cgd_session_env)。build と collect は別プロセスなので、
+    実セッションの変数が無いシェルでは collect が「所有者不明」で拒んでいた。
+    引数で受けているのは、下の env を組み立てる**前に**差し替えを済ませるため。
     """
     env = {**os.environ,
            "CGD_PLAN_DIR": str(tmp_path / "cgd"),
