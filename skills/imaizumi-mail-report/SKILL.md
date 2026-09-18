@@ -4,7 +4,7 @@ description: 今泉さん(imaizumi@seifukunofuji.com)がFrom/To/Ccに入って�
 trigger: 今泉さんの業務メール分析レポートを作る/更新するとき。毎日の定期実行から呼ばれる
 ---
 
-<!-- SKILL_VERSION: 2026-09-01_004500 -->
+<!-- SKILL_VERSION: 2026-09-18_000000 -->
 
 # imaizumi-mail-report — 今泉さん業務メール分析
 
@@ -47,12 +47,44 @@ C:\Users\user\AppData\Roaming\Thunderbird\Profiles\099w3lj0.default-release
 6. 公開    Artifactツールで artifact_report.html を公開/更新(任意・オンデマンド確認用)
 ```
 
-新着が0件(`extract_new.py` の出力が「新着 0 件」)の場合は、2〜4をスキップして
-「本日は新着なし」とだけ報告して終了してよい。
+新着が0件(`extract_new.py` の出力が「新着 0 件」)の場合、**そのまま鵜呑みにせず
+mboxファイルの最終更新日時を確認すること**(2026-09-18に判明。詳細は「既知の注意点」の
+「振り分けフィルタが止まることがある」参照)。対象mboxの`mtime`が数日以上前で
+止まっていたら、フィルタが機能していない可能性がある。その場合だけ0.5節の手順で
+生の受信箱を直接確認する。mtimeが数分〜数時間前など妥当な範囲なら、素直に
+「新着なし」で終了してよい(毎回生INBOXを全件スキャンする必要はない)。
 
 mbox以外(手渡し・ファイル共有等)で得た参考資料を追加したいだけの場合は、
 1〜3の代わりに `python add_manual_entry.py` を使う(3.6参照)。その場合も
 3.5(サマリー更新)以降は同じ。
+
+## 0.5 フィルタ停止が疑われる場合の代替抽出(2026-09-18追加)
+
+`今泉さん`フォルダへの自動振り分けはThunderbird側のメールフィルタに依存しており、
+**何らかの理由で無言のまま止まることがある**(原因未特定。アカウント自体は正常に
+IMAP同期していた=生のINBOXは最新だったのに、専用フォルダだけ9日間1通も
+増えていなかった実例が2026-09-18にあった)。
+
+疑わしいときの確認手順:
+```bash
+# 対象mboxのmtimeを確認(config.pyのMBOX_PATH)
+ls -la "<MBOX_PATH>"
+date   # 現在時刻と比較
+```
+数日以上前で止まっていたら、生のINBOX(同アカウントの`ImapMail\...\INBOX`、
+`INBOX.sbd`の親)を直接スキャンして、`mbox_reader.py`の`iter_raw_messages`/
+`parse_message`で対象期間・today泉さんアドレスにマッチする未取込メッセージを
+individually 抽出し、`data/pending_summaries.json`へ直接書き足してから
+通常フロー2以降(要約・案件分類)に合流させる。一時スクリプトはスクラッチ
+ディレクトリに書いてよい(プロジェクト直下に残さない)。
+
+生INBOXは数GB規模(2026-09-18時点でfw-terashita@は3.6GB・28,173通)になり得るため、
+全文検索ではなく`iter_messages`のストリーミング読み(mail-searchスキルの
+`mbox_reader.py`と同方式)を使うこと。`mailbox.mbox()`や`read_bytes()`で
+全文読み込みしない。
+
+根本原因(Thunderbirdフィルタがなぜ止まったか)は未調査。再発するようなら
+フィルタ設定そのものの点検をユーザーに提案すること。
 
 ## 1. 抽出(メカニカル・判断不要)
 
