@@ -396,6 +396,7 @@ Lv1-8 が「**レビュー強度**を上げる」のに対し、Lv0 は「**実�
 | 作業フォルダ | 変更予定ファイル | 想定行数 | 秘密情報らしいファイル | 巻き戻せない範囲 | 送信先 | 推論強度 |
 |---|---|---|---|---|---|---|
 
+- 「送信先」には Codex（OpenAI）に加え、**想定行数が 50 行以上なら Step 2-0D の DeepSeek（中国本土サーバ）も書く**。この承認が Step 2-0D の送信承認を兼ねる（CLAUDE.md の「外部 AI へ送る前の確認」を 1 回で済ませる。2026-09-19 の 072 で、承認表に DeepSeek が無く送信のたびに承認を取り直した）
 - 秘密情報らしいファイルがある場合は承認表で明示し、「そのまま進める / 作業フォルダを絞る / 中止」を選んでもらう（依頼文でも開かないよう指示しているが、仕組みでは止まらない）
 - 「巻き戻せない範囲」には `prepare` が出した 2MB 超・秘密情報・見ないフォルダを書く
 - 推論強度は Claude が自動選択（既定 `medium`、ロジックが込み入るなら `high`）
@@ -420,9 +421,10 @@ python "C:/ClaudeCode/.claude/tools/cgd_lv0_codex.py" run --workdir "<作業フ�
    python "C:/ClaudeCode/.claude/tools/cgd_lv0_codex.py" diff --workdir "<作業フォルダ>" --run <RUN>
    ```
    - 変更・削除されたファイルには、**実行前の中身で `<file>.bak_<RUN>` を作る**（AGENTS.md のバックアップ規約。写しが元）。`.bak` は差分の対象外なので、何度 diff しても新規扱いにならない
+   - 作業フォルダがそのまま配信される PWA 等では `.bak_<RUN>` が配信物・コミットに混ざる。作業フォルダの `.gitignore` に `*.bak_*` を入れ、デプロイでも除外する（同じ中身は `C:/tmp-ai/cgd_lv0_<RUN>/before/` にもある）
    - `C:/tmp-ai/cgd_lv0_<RUN>/changes.patch` を読んで品質チェック（Codex のコードを鵜呑みにしない）: 仕様との整合 / 規約（shebang・encoding・型ヒント）/ 幻覚 import・存在しない API / **仕様外のファイル変更** / 注意欄の改行コード変化 / `untracked_changed`（写し無しのファイルが変わった）
 3. **CLAUDE.md の必須検証を Claude が実行**: 実 import・パス存在・pytest（タイムアウト付き）・ruff・JS は `node --check`
-4. 検証 NG・仕様外の変更があれば、**Claude が直す**（1 周まで）か、ユーザーに確認して写しから戻す:
+4. 検証 NG・仕様外の変更があれば、**Claude が直す**（1 周まで）か、ユーザーに確認して写しから戻す。ユーザーが「Codex に出し直す」を選んだ場合は、下の「Codex への出し直し」に従う:
    ```bash
    python "C:/ClaudeCode/.claude/tools/cgd_lv0_codex.py" restore --workdir "<作業フォルダ>" --run <RUN>
    python "C:/ClaudeCode/.claude/tools/cgd_lv0_codex.py" restore --workdir "<作業フォルダ>" --run <RUN> --apply
@@ -442,7 +444,7 @@ python "C:/ClaudeCode/.claude/tools/cgd_lv0_codex.py" run --workdir "<作業フ�
 
 - **Codex にはレビューさせない**（書いた本人のレビューになり独立性が無い。別系統の DeepSeek を使う）
 - `DEEPSEEK_API_KEY` が無いときは Claude のレビューだけで進め、まとめに「DeepSeek レビュー不可」と書く
-- 秘匿チェック: `changes.patch` を DeepSeek（中国本土サーバ）へ送る前に、キー・個人情報が差分に入っていないか確認する（秘密情報らしいファイルの中身は diff が載せない）
+- 秘匿チェック: `changes.patch` を DeepSeek（中国本土サーバ）へ送る前に、キー・個人情報が差分に入っていないか確認する（秘密情報らしいファイルの中身は diff が載せない）。送信の承認は Step 2-0A の承認表で取得済みの扱い。承認表の送信先に DeepSeek が無かった場合、またはチェックで鍵・個人情報らしきものが見つかった場合は、送る前に AskUserQuestion で確認する
 
 ```bash
 set -o pipefail
@@ -451,7 +453,13 @@ python "C:/ClaudeCode/.claude/tools/deepseek_coder.py" --role reviewer "C:/tmp-a
 ```
 
 **🔴 検出時の自動修正**:
-- 主体は **Claude 本体が書き直す**（Lv5 の Step C2 と同仕様）。同じ依頼を Codex に投げ直すことは **しない**
+- 主体は既定で **Claude 本体が書き直す**（Lv5 の Step C2 と同仕様）。同じ RUN を Codex に投げ直すことは **しない**
+- 例外はユーザーが「Codex に出し直す」を選んだときだけ（下記）
+
+**Codex への出し直し（ユーザーが選んだ場合）**:
+- 検証で見つけた点・DeepSeek の妥当な指摘・ユーザーの手直し指示を **1 つの依頼文にまとめ**、**新しい RUN** として Step 2-0A の RUN 決定からやり直す（仕様書を更新するなら prepare の前に）
+- 2 回目も Step 2-0A の承認表・Step 2-0C の検証・Step 2-0D のレビューをすべて通す。DeepSeek の指摘は Claude が妥当性を判定し、採用分だけを依頼文に入れる
+- 実績: 2026-09-19 の 072（PWA）で 2 回目 315 秒・+301/-97 行・検証とテスト合格
 - 1 周のみ → 改善なし or 新規 🔴 で停止しユーザー判断
 - 連続して 🔴 が出る対象は Lv0 が向かない兆候 → Step 2-0E でユーザーに「Lv2 で再実行」を提案する
 
