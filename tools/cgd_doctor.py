@@ -11,6 +11,7 @@ Antigravity の doctor コマンドに相当する位置づけ（Zenn 記事か�
     - Bash 環境（Git Bash / WSL）
     - openai Python ライブラリ
     - codex CLI 存在 + login status
+    - Lv0 用 Codex CLI（サンドボックス補助 exe のパスが 260 文字未満か。cgd_lv0_codex.py で判定）
     - 環境変数 (GEMINI / DEEPSEEK / DASHSCOPE / QWEN_BASE_URL)
     - advisor スクリプト存在
     - C:/tmp-ai 書込権限
@@ -166,6 +167,29 @@ def check_codex_version() -> Result:
         return (WARN, "codex CLI 版", f"取得できず: {type(exc).__name__}: {exc}")
     out = (proc.stdout or proc.stderr or "").strip().splitlines()
     return (OK, "codex CLI 版", out[0] if out else "(版文字列が空)")
+
+
+def check_lv0_codex() -> Result:
+    """Lv0 は Codex がサンドボックス内で書き込む。
+
+    補助 exe のパスが 260 文字以上の CLI（winget 版 Node の下の npm 版）では、コマンドも
+    ファイル書込も全滅する（2026-09-18・INC-20260918-155756c98ac7）。Lv1-8 のレビューは
+    stdin 渡しなので影響しないため NG ではなく WARN にする。
+    """
+    try:
+        import cgd_lv0_codex as lv0
+    except ImportError as exc:
+        return (WARN, "Lv0 Codex CLI", f"cgd_lv0_codex.py を読めない: {exc}")
+    choice = lv0.choose_bin(lv0.candidate_bins())
+    if choice.exe is None:
+        reason = choice.rejected[-1] if choice.rejected else "候補なし"
+        return (
+            WARN,
+            "Lv0 Codex CLI",
+            f"使える CLI が無い（{reason}）。npm install -g @openai/codex --prefix C:\\tools\\codex-cli"
+            " で入れ直す。それまで Lv0 は DS/Qwen の代替手順のみ",
+        )
+    return (OK, "Lv0 Codex CLI", str(choice.source))
 
 
 def _codex_config() -> tuple[dict, str | None]:
@@ -428,12 +452,17 @@ def judge_level(results: list[Result]) -> str:
     ds_ok = by_label.get("DEEPSEEK_API_KEY") == OK
     qw_ok = by_label.get("DASHSCOPE_API_KEY") == OK
 
+    lv0_codex_ok = by_label.get("Lv0 Codex CLI") == OK
+
     levels: list[str] = []
-    # Lv0 = 委譲レーン。DS / Qwen のどちらか有れば実行可（Codex は Step 2-0D の任意レビューに使う）
-    if ds_ok and qw_ok:
+    # Lv0 = 委譲レーン。2026-09-18 から Codex が実装する（login 済み + 補助 exe を起動できる CLI）。
+    # +50 行以上の差分は DeepSeek がレビューするので DS も要る。DS / Qwen に書かせるのは代替手順
+    if codex_ok and lv0_codex_ok and ds_ok:
         levels.append("Lv0")
+    elif codex_ok and lv0_codex_ok:
+        levels.append("Lv0(DSレビュー不可)")
     elif ds_ok or qw_ok:
-        levels.append("Lv0(片側のみ)")
+        levels.append("Lv0(DS/Qwen代替のみ)")
     # Lv1-8 = レビューレーン。Codex 必須。
     # 2026-07: Gemini は API エラー多発のため既定オフのオプトイン参加に格下げ済み。
     # 判定条件から gem_ok を外した（Gemini 未設定でも Lv2-8 は実行可能）。
@@ -466,7 +495,7 @@ def main() -> None:
     parser.add_argument(
         "--probe-coder",
         action="store_true",
-        help="DS/Qwen を coder ロールでも疎通テスト (Lv0 経路の検証・実費発生)",
+        help="DS/Qwen を coder ロールでも疎通テスト (Lv0 代替手順の検証・実費発生)",
     )
     args = parser.parse_args()
 
@@ -483,12 +512,14 @@ def main() -> None:
     results.append(check_codex_cli())
     results.append(check_codex_login())
     results.append(check_codex_version())
+    results.append(check_lv0_codex())
     results.extend(check_codex_model())
     results.append(check_env_var("GEMINI_API_KEY", "Geminiオプトイン時のみ・既定では不要"))
-    results.append(check_env_var("DEEPSEEK_API_KEY", "Lv0/Lv2-7"))
-    results.append(check_env_var("DASHSCOPE_API_KEY", "Lv0/Lv4-7"))
+    results.append(check_env_var("DEEPSEEK_API_KEY", "Lv0レビュー/Lv2-7"))
+    results.append(check_env_var("DASHSCOPE_API_KEY", "Lv0代替/Lv4-7"))
     results.append(check_env_var("QWEN_BASE_URL", "DashScope リージョン"))
-    for name in ("gemini_advisor.py", "deepseek_coder.py", "qwen_advisor.py", "cgd_usage_log.py"):
+    for name in ("gemini_advisor.py", "deepseek_coder.py", "qwen_advisor.py", "cgd_usage_log.py",
+                 "cgd_lv0_codex.py"):
         results.append(check_script(name))
     results.append(check_tmp_writable())
     results.append(check_skill_version())
@@ -502,7 +533,7 @@ def main() -> None:
         print()
 
     if args.probe_coder:
-        print("--probe-coder 指定: coder ロールで疎通テスト中 (Lv0 経路・DS/Qwen のみ)...")
+        print("--probe-coder 指定: coder ロールで疎通テスト中 (Lv0 代替手順・DS/Qwen のみ)...")
         results.append(check_probe("deepseek_coder.py", "DEEPSEEK_API_KEY", "coder"))
         results.append(check_probe("qwen_advisor.py", "DASHSCOPE_API_KEY", "coder"))
         print()
