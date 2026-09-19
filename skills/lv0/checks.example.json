@@ -1,0 +1,17 @@
+{
+  "note": "072 ミュージアム納品カレンダー向けの例。作業フォルダの外に置き、{tmp} などで検査用の一時データを使う。",
+  "frozen": ["tests/**", "server/tests/**"],
+  "serve": {
+    "cmd": ["python", "server/main.py", "--port", "{port}", "--db", "{tmp}/e2e.db", "--static-dir", "."],
+    "ready_path": "/health",
+    "ready_timeout": 40
+  },
+  "checks": [
+    {"name": "js-syntax", "type": "js-syntax"},
+    {"name": "lf", "type": "lf"},
+    {"name": "ruff", "type": "ruff"},
+    {"name": "node-test", "type": "cmd", "cmd": ["node", "--test", "tests/*.test.mjs"], "timeout": 180},
+    {"name": "pytest", "type": "cmd", "cmd": ["python", "-m", "pytest", "server/tests", "tests/test_deploy.py", "-q", "-p", "no:cacheprovider"], "timeout": 300},
+    {"name": "e2e-mobile", "type": "e2e", "cmd": ["python", "tests/e2e/mobile_smoke.py"], "timeout": 180}
+  ]
+}

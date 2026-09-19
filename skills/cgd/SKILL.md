@@ -1,8 +1,8 @@
 ---
 name: cgd
-description: Codex+DeepSeek+Qwen の統合コードレビュー・設計相談・実装・委譲・検証スキル（**Gemini は2026-07にAPIエラー多発のため既定オフのオプトイン参加に格下げ済み**）。**9段階レベル（Lv0〜Lv8）**でトークン消費・所要時間・実装主体が決まる。**レベル・Codex reasoning(low/medium/high)・Gemini/critic観点はすべてClaudeが対象から自動選択して宣言する（ユーザーに選ばせない・明示指示が最優先）**。**Lv0=委譲レーン**（Codexに作業フォルダ内の実装を任せClaudeは仕様・差分・テストの検証に専念・scaffold/量産タスク/Claude枠の節約。DS/Qwenは明示時・Codex不可時の代替） / Lv1=Codex単独 / Lv2=Codex+DeepSeek並列（既定推奨。旧/codex等価のC+G構成は「Geminiも」等の明示指示で再現可） / Lv3=Codex+DeepSeekの技術×批評「2社×2視点」4レビュー（実装なし・review専用） / Lv4=Claude初期案→[DS+Qwen並列advisor]→Codex直列フル相談+再レビュー（Gemini併用時は先頭にGemini案出しが直列で入る） / Lv5=Lv4+🔴重大指摘の自動修正1周 / Lv6=Codex+DS+Qwen 3者並列レビュー（全員reviewer役、Gemini併用で4者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周（**Workflow実行必須**） / Lv7=Codex多重(medium+high)+補助(DS/Qwen)の4者並列「Codex集中」構成（Gemini併用で5者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周（最深掘り・**Workflow実行必須**） / Lv8=Lv7の技術構成そのまま+Codex(high)とDeepSeekにLv3同様の批評視点を追加した6者並列（Gemini併用で7者）+実装+検証+Codex再レビュー+🔴自動修正1周（技術の最深掘り+複眼批評、最重量級・**Workflow実行必須**）。Lv0=実装主体の切替（コストレーン）、Lv1-8=レビュー強度の選択（品質レーン）で直交。Lv4-5はDS/Qwenをadvisor役で別案出し、Lv6は横並びreviewer、Lv7は深いintegrationバグ検出を狙ってCodex多重化+DS/Qwenに関連関数抜粋を渡して補助役を強化。差分レビュー、設計判断、別案出し、実装、委譲、検証まで一気通貫。**旧 `/codex` `/gemini` 単体スキルは廃止され、本スキル（`/cgd` または `/codex` 起動）が必ずレベル自動決定から始まる**。全Lv共通の任意オプションで『critic観点』（辛口ユーザー視点＝ITに疎い現場担当者の使い勝手の不満 + あるべき論＝本来この仕様はどうあるべきかの批判を Claude本体+DS criticで評価）を追加でき、技術的正しさとは別軸で使い勝手・仕様の妥当性を否定的にチェックする。環境チェックは `python C:/ClaudeCode/.claude/tools/cgd_doctor.py` で一括。「委譲」「scaffold」「量産」「Codexに実装させる」「Codexで書かせる」「DSで書かせる」「Qwenで書かせる」「コスト節約」「3者に相談」「フルパイプ」「4者レビュー」「Codex多重」「Codex集中」「辛口レビュー」「ユーザー視点」「あるべき論」「critic」「cgd」「Codexにレビュー」「セカンドオピニオン」「C+G」「cg」「Geminiも」などのキーワードで起動。重要な設計判断・難しいバグ・大きめのリファクタの検討時には積極的に提案すること。既存 /generate-by-deepseek（DS単発コード生成→Claudeレビュー）は薄い構成で並立。
+description: Codex+DeepSeek+Qwen の統合コードレビュー・設計相談・実装・委譲・検証スキル（**Gemini は2026-07にAPIエラー多発のため既定オフのオプトイン参加に格下げ済み**）。**9段階レベル（Lv0〜Lv8）**でトークン消費・所要時間・実装主体が決まる。**レベル・Codex reasoning(low/medium/high)・Gemini/critic観点はすべてClaudeが対象から自動選択して宣言する（ユーザーに選ばせない・明示指示が最優先）**。**Lv0=委譲レーン**（Codexに作業フォルダ内の実装を任せる。**Lv0の手順は `/lv0` スキルを呼ぶ**（軽量・トークン節約）。DS/Qwenは明示時・Codex不可時の代替） / Lv1=Codex単独 / Lv2=Codex+DeepSeek並列（既定推奨。旧/codex等価のC+G構成は「Geminiも」等の明示指示で再現可） / Lv3=Codex+DeepSeekの技術×批評「2社×2視点」4レビュー（実装なし・review専用） / Lv4=Claude初期案→[DS+Qwen並列advisor]→Codex直列フル相談+再レビュー（Gemini併用時は先頭にGemini案出しが直列で入る） / Lv5=Lv4+🔴重大指摘の自動修正1周 / Lv6=Codex+DS+Qwen 3者並列レビュー（全員reviewer役、Gemini併用で4者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周（**Workflow実行必須**） / Lv7=Codex多重(medium+high)+補助(DS/Qwen)の4者並列「Codex集中」構成（Gemini併用で5者に拡張可）+実装+検証+Codex再レビュー+🔴自動修正1周（最深掘り・**Workflow実行必須**） / Lv8=Lv7の技術構成そのまま+Codex(high)とDeepSeekにLv3同様の批評視点を追加した6者並列（Gemini併用で7者）+実装+検証+Codex再レビュー+🔴自動修正1周（技術の最深掘り+複眼批評、最重量級・**Workflow実行必須**）。Lv0=実装主体の切替（コストレーン）、Lv1-8=レビュー強度の選択（品質レーン）で直交。Lv4-5はDS/Qwenをadvisor役で別案出し、Lv6は横並びreviewer、Lv7は深いintegrationバグ検出を狙ってCodex多重化+DS/Qwenに関連関数抜粋を渡して補助役を強化。差分レビュー、設計判断、別案出し、実装、委譲、検証まで一気通貫。**旧 `/codex` `/gemini` 単体スキルは廃止され、本スキル（`/cgd` または `/codex` 起動）が必ずレベル自動決定から始まる**。全Lv共通の任意オプションで『critic観点』（辛口ユーザー視点＝ITに疎い現場担当者の使い勝手の不満 + あるべき論＝本来この仕様はどうあるべきかの批判を Claude本体+DS criticで評価）を追加でき、技術的正しさとは別軸で使い勝手・仕様の妥当性を否定的にチェックする。環境チェックは `python C:/ClaudeCode/.claude/tools/cgd_doctor.py` で一括。「DSで書かせる」「Qwenで書かせる」「コスト節約」「3者に相談」「フルパイプ」「4者レビュー」「Codex多重」「Codex集中」「辛口レビュー」「ユーザー視点」「あるべき論」「critic」「cgd」「Codexにレビュー」「セカンドオピニオン」「C+G」「cg」「Geminiも」などのキーワードで起動。重要な設計判断・難しいバグ・大きめのリファクタの検討時には積極的に提案すること。既存 /generate-by-deepseek（DS単発コード生成→Claudeレビュー）は薄い構成で並立。
 ---
-<!-- SKILL_VERSION: 2026-09-18_163936 -->
+<!-- SKILL_VERSION: 2026-09-19_175206 -->
 
 # cgd — Codex + DeepSeek + Qwen 統合スキル（Lv0〜8、Gemini はオプトイン）
 
@@ -142,7 +142,7 @@ python C:/ClaudeCode/.claude/tools/cgd_doctor.py --probe    # 各 API に最小�
 >   使いすぎたクォータは戻らない
 
 **直前指示にレベル明示があればスキップ**:
-- 「Lv0」「委譲」「scaffold」「量産」「Codex に実装させる」「Codex で書かせる」「テスト量産」「docstring 一括」「コスト節約」 → **Lv0**（Codex が実装）
+- 「Lv0」「委譲」「scaffold」「量産」「Codex に実装させる」「Codex で書かせる」「テスト量産」「docstring 一括」「コスト節約」 → **Lv0**（Codex が実装）。**手順は `/lv0` スキル**（この節の続きではなく `/lv0` を呼ぶ）
 - 「DS で書かせる」「Qwen で書かせる」 → **Lv0 の代替手順**（`reference/lv0_ds_qwen_fallback.md`）
 - 「Lv1」「軽く」「Codex だけ」「クイック」 → Lv1
 - 「Lv2」「通常」「軽量」 → Lv2
@@ -337,163 +337,25 @@ python "C:/ClaudeCode/.claude/tools/cgd_usage_log.py" record --level <0-8> [--ge
 
 ---
 
-## Lv0: 委譲レーン（Codex に作業フォルダ内の実装を任せて Claude は仕様と検証に専念）
+## Lv0: 委譲レーン（Codex に実装を任せる）→ **手順は `/lv0` スキル**
 
-> **2026-09-18 変更**: 実装担当を DeepSeek／Qwen から **Codex（CLI・workspace-write サンドボックス）** に切り替えた。
-> 旧手順（DS／Qwen にコード文字列を生成させ Claude が書き込む）は **代替手順**として
-> [reference/lv0_ds_qwen_fallback.md](reference/lv0_ds_qwen_fallback.md) に残してある（使いどころは下記「代替手順」）。
+> **2026-09-19 分離**: Lv0 の手順は軽量スキル **`/lv0`**（`.claude/skills/lv0/SKILL.md`）に移した。
+> Claude の作業は「仕様を書く → 承認 → `cgd_lv0_auto.py run` を 1 回起動 → レポートを読む」だけで、
+> 準備・Codex 実行・機械検査（node / pytest / ruff / Playwright）・失敗時の Codex への自動出し直しはドライバが回す。
+> **Lv0 が選ばれたら、この節ではなく `/lv0` を呼ぶ**（cgd 全文は約 76K トークンあり、Lv0 では読み込む価値が無い）。
+> 旧手順（Claude が prepare / run / diff / 検証を 1 つずつ叩く）は [reference/lv0_manual_steps.md](reference/lv0_manual_steps.md)、
+> DeepSeek／Qwen に書かせる代替手順は [reference/lv0_ds_qwen_fallback.md](reference/lv0_ds_qwen_fallback.md)。
 
-> ⚠️ **番号の慣例とのギャップに注意**: 他の Lv は「番号大=重い」だが、Lv0 は「軽量」ではなく「**実装の主体を切り替える例外モード**」。小修正向きではない（Step 2-0A の小ライン警告で誘導）。一般的な開発作業の既定は依然として **Lv2**。
-
-Lv1-8 が「**レビュー強度**を上げる」のに対し、Lv0 は「**実装の主体**を Claude → Codex に切り替える」コストレーン。Claude は仕様を書き、差分とテストで検証するだけにして、Claude 本体のトークン・コンテキスト消費を抑える。
-
-**Codex にした理由（2026-09-18 実測）**:
-- Codex は作業フォルダ内のファイルを **自分で読んで直接編集する**。DS／Qwen は渡した抜粋しか知らず、生成したコード文字列を Claude が書き込む必要があった
-- 費用は ChatGPT サブスクの **Codex 利用枠**（CLI・デスクトップ共通）から引かれ、実費は 0。DS／Qwen は従量課金
-- Codex の中で使ったトークンは Claude 側に計上されない
+Lv1-8 が「**レビュー強度**を上げる」のに対し、Lv0 は「**実装の主体**を Claude → Codex に切り替える」コストレーン（品質レーンとは直交）。
+番号の慣例とは違い「軽量」ではなく例外モードで、**1 回の委譲が約 200 行未満なら Claude が直接直す方が安い**（2026-09-19 の実測。損益分岐は約 200 行）。
 
 **前提（満たさないと動かない）**:
-- **サンドボックス補助 exe のパスが 260 文字未満の Codex CLI** が要る。winget 版 Node の下に入れた npm 版は 273 文字で、サンドボックスが起動できずコマンドもファイル書込も全滅する（INC-20260918-155756c98ac7）。`C:\tools\codex-cli` に入れた版なら動く。どれを使うかは `cgd_lv0_codex.py resolve` が判定し、npm の shim（cmd.exe 経由）ではなく **本体の codex.exe を直接起動**する
-- サンドボックスの実行ユーザー（`CodexSandboxOffline`）は **ユーザープロファイル配下の Python / Node を起動できない**。だから **テストは Codex ではなく Claude が回す**（書いた本人と別の側が検証するので独立性も上がる）
-- サンドボックスは **作業フォルダと %TEMP% 以外には書けない・ネットワーク無し**（2026-09-18 実測）
-- +50 行以上の差分は **DeepSeek がレビューする**ので `DEEPSEEK_API_KEY` も要る（無ければ `cgd_doctor.py` が「Lv0(DSレビュー不可)」と出す。そのときは Claude のレビューだけで進め、まとめに明記する）
+- サンドボックス補助 exe のパスが 260 文字未満の Codex CLI が要る（`C:\tools\codex-cli`。`cgd_lv0_codex.py resolve` が判定。INC-20260918-155756c98ac7）
+- Codex のサンドボックスは **ユーザープロファイル配下の Python / Node を起動できない**ので、テストは Codex ではなく**機械（ドライバ）が回し**、失敗は Codex へ戻す
+- サンドボックスは作業フォルダと %TEMP% 以外に書けず、ネットワーク無し
+- 検査の Playwright / Chromium は導入済み（Python 版）。`--review deepseek` を使うときだけ `DEEPSEEK_API_KEY` も要る
 
-**写しと巻き戻しの範囲（誇張しない）**:
-- 写す（= 差分を出せる・巻き戻せる）のは **2MB 以下の通常ファイルだけ**
-- **秘密情報らしいファイル**（名前か中身で判定）と **2MB 超**は写さない。変化は検知するが **戻せない**。差分（DeepSeek に送る `changes.patch`）にも中身を載せない
-- **`.git`・`node_modules`・`.venv` 等の依存物・キャッシュのフォルダと `.bak` ファイルは見ない**（写しも差分も無い。依頼文で触らないよう指示する）
-- **Codex が新しく作ったファイルは restore でも消さない**（一覧を出す。消すかはユーザーが決める）
-
-**向く対象**:
-- 既存コードに沿った複数ファイルの実装（Codex が作業フォルダ内を読める）
-- 複数ファイルの scaffold（API / CLI / ETL の雛形）・似たパターンの繰り返し実装
-- pytest テストケースの量産・docstring / 型ヒントの一括追加・機械的リネーム
-- 単一ファイルでも **100 行以上** の量産的な実装
-
-**向かない対象 → Lv1-2 へ誘導**:
-- **想定総作業量 < 100 行 かつ 対象ファイル数 < 2**（小修正は依頼・検証の往復コストが勝つ）
-- 設計判断が重い変更（DB 設計・状態管理方式・セキュリティ）
-- **作業フォルダを 1 つに絞れない変更**（リポジトリ全体・複数サブプロジェクトに跨る）
-- 本番 DB・外部 API への書込を伴う作業（サンドボックスはネットワーク無し。そもそも委譲しない）
-- 秘密情報らしいファイルが作業フォルダに多く、除けない場合
-
-### Step 2-0A: 依頼計画（Claude 本体）
-
-1. **RUN を最初に決める**: `date +%Y%m%d_%H%M%S` を 1 回だけ実行し、**出た値（例 `20260918_171500`）を以後のすべてのコマンドとファイル名にそのまま書く**。以下の `<RUN>` はその値に置き換える（Bash の呼び出しをまたぐとシェル変数は消えるので `$RUN` は使わない）
-2. **作業フォルダを 1 つ決める**: git リポジトリの内側のサブフォルダ。リポジトリ最上位・プロジェクト最上位（`.claude` を含む）・リポジトリの外・リンク経由は `prepare` が拒否する
-3. **並行セッションの確認**: `.hq/board` を見て、同じフォルダを触っているセッションが無いか確かめる（有れば中断してユーザーに確認）。ロックではないので、`run` の直前にも写しと同じかを機械で確かめる（Step 2-0B）
-4. **小ライン警告**: 想定総作業量 < 100 行 **AND** 対象ファイル数 < 2 なら AskUserQuestion で「Lv0 はオーバースペック。Lv1-2 を推奨」と確認して中断 or 続行
-5. **仕様ファイルを書く**（`C:/tmp-ai/cgd_lv0_spec_<RUN>.txt`・UTF-8・Write ツールで）: 目的 / 変更してよいファイル / 変えてはいけないもの / 受け入れ条件 / 対象言語。共通の約束事（作業フォルダ外に書かない・テストを実行しない・秘密情報や依存物を触らない・shebang 禁止・encoding・改行コードを変えない・最終報告の形）は補助スクリプトが **固定文で先頭に付ける**ので書かなくてよい
-6. **使う CLI と利用枠の確認・実行前の写し・秘密情報の点検**:
-   ```bash
-   python "C:/ClaudeCode/.claude/tools/cgd_lv0_codex.py" resolve
-   python "C:/ClaudeCode/.claude/tools/cgd_lv0_codex.py" prepare --workdir "<作業フォルダ>" --run <RUN>
-   ```
-   - `resolve` が NG（exit 2）なら **Lv0 を中止**して代替手順か Lv2 へ。表示された **直近の利用枠** がいずれか 80% 以上でも代替手順へ
-   - `prepare` は写し（`C:/tmp-ai/cgd_lv0_<RUN>/before/`）を取り、**秘密情報らしいファイル**（`.env`・鍵・認証情報・DB の名前、または中身に鍵らしき文字列）を列挙する。中身は表示せず、写しにも複製しない。Codex は作業フォルダ内を自分で開けるので、ここに出たものは OpenAI へ送られうる
-7. 計画を表で提示し **AskUserQuestion で承認**（**外部送信前の秘匿チェック必須**・承認が実装許可を兼ねる・承認前に run しない）:
-
-| 作業フォルダ | 変更予定ファイル | 想定行数 | 秘密情報らしいファイル | 巻き戻せない範囲 | 送信先 | 推論強度 |
-|---|---|---|---|---|---|---|
-
-- 「送信先」には Codex（OpenAI）に加え、**想定行数が 50 行以上なら Step 2-0D の DeepSeek（中国本土サーバ）も書く**。この承認が Step 2-0D の送信承認を兼ねる（CLAUDE.md の「外部 AI へ送る前の確認」を 1 回で済ませる。2026-09-19 の 072 で、承認表に DeepSeek が無く送信のたびに承認を取り直した）
-- 秘密情報らしいファイルがある場合は承認表で明示し、「そのまま進める / 作業フォルダを絞る / 中止」を選んでもらう（依頼文でも開かないよう指示しているが、仕組みでは止まらない）
-- 「巻き戻せない範囲」には `prepare` が出した 2MB 超・秘密情報・見ないフォルダを書く
-- 推論強度は Claude が自動選択（既定 `medium`、ロジックが込み入るなら `high`）
-
-### Step 2-0B: 実行（バックグラウンド・待つだけ）
-
-```bash
-python "C:/ClaudeCode/.claude/tools/cgd_lv0_codex.py" run --workdir "<作業フォルダ>" --run <RUN> --spec "C:/tmp-ai/cgd_lv0_spec_<RUN>.txt" --effort medium
-```
-
-- **Bash の `run_in_background: true` で起動**し、終了通知を待つ。**途中で様子を見に行かない**（待っている間は Claude も Codex も枠を使わない。2026-09-18 に、デスクトップ版で 10 分ごとの定期確認が変化なしでも 1 回約 14 万トークン使っていたのを実測）
-- `run` は起動の前に **作業フォルダが prepare 時の写しと同じか**を確かめ、違えば止まる（他のセッションが触った可能性）。**同じ RUN での再実行も拒否**する。やり直すときは新しい RUN で prepare から
-- 既定の打ち切りは 3600 秒（`--timeout`）。打ち切ったら exit 30（後始末の結果は `run.json` の `kill`）
-- 記録は `C:/tmp-ai/cgd_lv0_<RUN>/` にまとまる: `last.txt`（Codex の最終報告）/ `run.json`（exit・秒・tokens・**利用枠**）/ `prompt.txt`（実際に送った依頼文）/ `stderr.txt`（全記録。**主 context に読み込まない**）
-- exit 1 = 前段で停止（上記）/ exit 2 = 使える CLI が無い / exit 3 = 起動失敗・Codex の失敗・サンドボックスのエラー（`sandbox_errors` > 0）→ Step 2-0C に進まず原因を報告
-
-### Step 2-0C: 受領と検証（Claude 本体）
-
-1. `last.txt` を読む（短い最終報告）。質問が書かれていたら **推測で埋めずにユーザーへ**
-2. 差分を取る（写しと比べる。`git diff` は他セッションの未コミット変更が混ざるので使わない）:
-   ```bash
-   python "C:/ClaudeCode/.claude/tools/cgd_lv0_codex.py" diff --workdir "<作業フォルダ>" --run <RUN>
-   ```
-   - 変更・削除されたファイルには、**実行前の中身で `<file>.bak_<RUN>` を作る**（AGENTS.md のバックアップ規約。写しが元）。`.bak` は差分の対象外なので、何度 diff しても新規扱いにならない
-   - 作業フォルダがそのまま配信される PWA 等では `.bak_<RUN>` が配信物・コミットに混ざる。作業フォルダの `.gitignore` に `*.bak_*` を入れ、デプロイでも除外する（同じ中身は `C:/tmp-ai/cgd_lv0_<RUN>/before/` にもある）
-   - `C:/tmp-ai/cgd_lv0_<RUN>/changes.patch` を読んで品質チェック（Codex のコードを鵜呑みにしない）: 仕様との整合 / 規約（shebang・encoding・型ヒント）/ 幻覚 import・存在しない API / **仕様外のファイル変更** / 注意欄の改行コード変化 / `untracked_changed`（写し無しのファイルが変わった）
-3. **CLAUDE.md の必須検証を Claude が実行**: 実 import・パス存在・pytest（タイムアウト付き）・ruff・JS は `node --check`
-4. 検証 NG・仕様外の変更があれば、**Claude が直す**（1 周まで）か、ユーザーに確認して写しから戻す。ユーザーが「Codex に出し直す」を選んだ場合は、下の「Codex への出し直し」に従う:
-   ```bash
-   python "C:/ClaudeCode/.claude/tools/cgd_lv0_codex.py" restore --workdir "<作業フォルダ>" --run <RUN>
-   python "C:/ClaudeCode/.claude/tools/cgd_lv0_codex.py" restore --workdir "<作業フォルダ>" --run <RUN> --apply
-   ```
-   1 行目は確認のみ、2 行目（`--apply`）は承認後。`restore` は **直近の diff 時と同じ中身のファイルだけ**を戻す（diff の後に誰かが変えたファイルは上書きせず「要判断」と出す）。**Codex が新しく作ったファイルは消さない**。写しの無いファイルは「戻せない」と出る
-5. **Claude が直した・戻した後は diff を取り直す**（`changes.patch` と `diff.json` を最終状態にしてから Step 2-0D へ）
-
-### Step 2-0D: 規模依存レビュー（自動判定・DeepSeek）
-
-判定は `diff` が出す **+追加行数**で行う:
-
-| +追加行数 | レビュー方針 |
-|---|---|
-| 100 行以上 | **DeepSeek reviewer 1 回**で差分レビュー・既定実行 |
-| 50〜99 行 | **Claude が判断して既定は実行する**（品質側に倒す・聞かない） |
-| 50 行未満 | **省略**（Claude の品質チェックのみ） |
-
-- **Codex にはレビューさせない**（書いた本人のレビューになり独立性が無い。別系統の DeepSeek を使う）
-- `DEEPSEEK_API_KEY` が無いときは Claude のレビューだけで進め、まとめに「DeepSeek レビュー不可」と書く
-- 秘匿チェック: `changes.patch` を DeepSeek（中国本土サーバ）へ送る前に、キー・個人情報が差分に入っていないか確認する（秘密情報らしいファイルの中身は diff が載せない）。送信の承認は Step 2-0A の承認表で取得済みの扱い。承認表の送信先に DeepSeek が無かった場合、またはチェックで鍵・個人情報らしきものが見つかった場合は、送る前に AskUserQuestion で確認する
-
-```bash
-set -o pipefail
-{ printf '%s\n\n' "Codex が生成したコードの差分レビュー。バグ・設計・規約逸脱を厳密評価。日本語回答。"; cat "C:/tmp-ai/cgd_lv0_<RUN>/changes.patch"; } > "C:/tmp-ai/cgd_lv0_<RUN>/review_input.txt"
-python "C:/ClaudeCode/.claude/tools/deepseek_coder.py" --role reviewer "C:/tmp-ai/cgd_lv0_<RUN>/review_input.txt"
-```
-
-**🔴 検出時の自動修正**:
-- 主体は既定で **Claude 本体が書き直す**（Lv5 の Step C2 と同仕様）。同じ RUN を Codex に投げ直すことは **しない**
-- 例外はユーザーが「Codex に出し直す」を選んだときだけ（下記）
-
-**Codex への出し直し（ユーザーが選んだ場合）**:
-- 検証で見つけた点・DeepSeek の妥当な指摘・ユーザーの手直し指示を **1 つの依頼文にまとめ**、**新しい RUN** として Step 2-0A の RUN 決定からやり直す（仕様書を更新するなら prepare の前に）
-- 2 回目も Step 2-0A の承認表・Step 2-0C の検証・Step 2-0D のレビューをすべて通す。DeepSeek の指摘は Claude が妥当性を判定し、採用分だけを依頼文に入れる
-- 実績: 2026-09-19 の 072（PWA）で 2 回目 315 秒・+301/-97 行・検証とテスト合格
-- 1 周のみ → 改善なし or 新規 🔴 で停止しユーザー判断
-- 連続して 🔴 が出る対象は Lv0 が向かない兆候 → Step 2-0E でユーザーに「Lv2 で再実行」を提案する
-
-### Step 2-0E: 最終まとめ（Step D 準拠 + 委譲情報）
-
-通常の Step D に **「委譲サマリ」セクション** を加える:
-
-- 作業フォルダ / 変更・新規・削除の件数と +/- 行数（`diff.json`）/ 写し無しで変わったもの（`untracked_changed`）
-- Codex: 秒・tokens・**利用枠**（`run.json`）・推論強度
-- Claude の検証結果（import / pytest / ruff）と DeepSeek レビューの結果
-- Claude が直した箇所・写しから戻した箇所（あれば）・Codex が作った新規ファイルの扱い
-
-```bash
-cp <最終報告.md> "C:/tmp-ai/cgd_lv0_$(date +%Y%m%d_%H%M%S).md"
-```
-
-### 代替手順: DeepSeek／Qwen に書かせる
-
-[reference/lv0_ds_qwen_fallback.md](reference/lv0_ds_qwen_fallback.md) の手順（2026-09-18 までの Lv0）で行う。使うのは次のときだけ:
-
-- ユーザーが「DS で書かせる」「Qwen で書かせる」と明示した
-- Codex の利用枠が残り少ない（`resolve` が出す直近の利用枠、または `run.json` の枠の **いずれかが 80% 以上**）
-- `cgd_lv0_codex.py resolve` が NG（使える Codex CLI が無い）
-
-### Lv0 のガードレール
-
-- **分岐点の上で委譲**: 想定総作業量 < 100 行 **AND** ファイル数 < 2 は Lv1-2 へ誘導（Step 2-0A で警告）
-- **作業フォルダは 1 つ・狭く**: サンドボックスの書込範囲がそのまま作業フォルダになる。リポジトリ最上位・プロジェクト最上位は `prepare` が拒否する
-- **承認前に run しない**: 依頼計画（Step 2-0A の表）の承認が実装許可を兼ねる
-- **待つだけ**: 起動後はバックグラウンドの終了通知を待つ。途中確認で枠を使わない
-- **差分は写しと比べる**: `git diff` を使わない（他セッションの変更が混ざる）。巻き戻せるのは写しを取ったファイルだけ
-- **受領物の検証は必須**: Codex のコードを鵜呑みにせず、Claude が読み、テストを回す
-- **設計判断は委譲しない**: DB 設計・状態管理方式・セキュリティ要件は Claude / Lv4 以上に任せる
-- **失敗時は中断 → Lv2 推奨**: 検証 NG / 🔴 自動修正 1 周しても解決しない場合、Lv0 を中断して「Lv2 で再実行」を提案する。Claude が裏で延々書き直すフォールバックは **取らない**（取ると Lv0 の意義が消えるため）
+**ドライバの入口**: `python .claude/tools/cgd_lv0_auto.py {plan,run,check}`（`--help` 参照）。エンジンは `cgd_lv0_codex.py`（prepare / run / diff / restore）。
 
 ---
 
