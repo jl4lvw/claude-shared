@@ -201,9 +201,11 @@ push しただけでは終わらない。**結果がそうなっているか**�
 python .claude/tools/verify_sync.py
 ```
 
-- `exit 0` → `.claude` == `claude-shared` == `origin` が揃っている。Step 4 へ
+- `exit 0` → `.claude` == `claude-shared` == `origin` が揃っており、同名スキルの重複
+  (ユーザー階層 `~/.claude/skills` が project 側を隠す事故)も無い。Step 4 へ
 - `exit 1` → **反映されていない**。報告に「push 済み」と書いてはいけない。
-  表示された差分を解消してから Step 2 をやり直す
+  表示された差分を解消してから Step 2 をやり直す。**スキルの重複**が原因のときは、表示された
+  `skill_scope.py retire <name>` で退避する(手で同期しない。同期は二重管理の延命になる)
 - `exit 2` → パス等の前提が崩れている
 
 > **なぜ必須か（2026-08-05 の実事故 2 件）**
@@ -223,6 +225,9 @@ python .claude/tools/verify_sync.py
 
 push の commit hash と short stat を 1〜2 行で報告。
 **Step 3 が exit 0 だったことも併せて書く**（検証していない報告は信用できない）。
+あわせて **`verify_sync` が出した「検証範囲 / 未検証範囲」の 2 行をそのまま添える**
+（「検証済み」とだけ書くと、未検証の範囲まで保証したように読める。2026-09-19 に handoff で、
+この書き方が「新しいセッションで動く」という誤解を招いた）。
 
 `hooks/` に差分が含まれていた場合は、報告に **「他 PC では `/g-dl` 後に `install_hooks.py` の実行が必要」** と 1 行添える（hook 本体はミラーされるが、登録先の `settings.local.json` は PC ごとのローカル設定のため共有されない）。
 

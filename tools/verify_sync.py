@@ -12,6 +12,10 @@
   [1] .claude/{targets} == claude-shared/{targets}  (ミラーが実際に効いたか)
   [2] claude-shared の作業ツリーがクリーン          (commit し忘れが無いか)
   [3] ローカル HEAD == origin/<branch>              (push が実際に届いたか)
+  [4] 同名のスキル/コマンドが「このPC全体用 (~/.claude)」と project の両方に無い (skill_scope.py)
+      2026-09-19: 上の 3 つが全部 OK でも、ユーザー階層の古い複製が優先されて project 側の
+      修正が新しいセッションに届かなかった。**検証の対象が「編集したコピー」で、
+      「実際に読まれるコピー」ではなかった**のが原因。
 
 1つでも崩れていれば **非0で終了** する。「push したが反映されていない」を
 黙って通さないことが唯一の目的。
@@ -30,6 +34,11 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+try:
+    import skill_scope  # 同じ tools/ にある。優先順位の実装はそこに 1 つだけ持つ
+except ImportError:  # pragma: no cover - tools/ は 1 セットでミラーされるので通常は起きない
+    skill_scope = None
 
 # 警告は stderr に出す。**stderr も UTF-8 にしないと CP932 コンソールで化けて読めず、
 # 「反映されていない」という肝心の指摘が伝わらない(実際に化けた)
@@ -210,6 +219,33 @@ def check_git(shared: Path) -> list[str]:
     return problems
 
 
+# 検証していない範囲。exit 0 を「どこでも動く保証」と読ませないため、OK のときも必ず出す。
+# (2026-09-19: 「検証済み」とだけ報告して、新しいセッションで動くことまで保証したように読ませた)
+COVERAGE_NOTE = (
+    "  検証範囲: .claude ↔ claude-shared ↔ origin の一致 + 同名スキル/コマンドの重複なし"
+    "(このPC全体用 ~/.claude と project)。\n"
+    "  未検証: 他PCのユーザー階層・worktree(コミット時点のコピーを読む)・plugin・enterprise・"
+    ".agents/skills。「新しいセッションで動く」ことまでは確かめていません。"
+)
+
+
+def check_scope_collisions(claude_dir: Path, home: Path | None = None) -> list[str]:
+    """[4] 同名スキル/コマンドが複数の場所に無いか (実際に読まれるコピーの検証)。"""
+    if skill_scope is None:
+        return [
+            "skill_scope.py を読み込めません。同名スキルの重複を検証できない"
+            "(=検証していないのと同じ)ため NG とします"
+        ]
+    problems: list[str] = []
+    for collision in skill_scope.find_collisions(claude_dir.parent, home):
+        lines = skill_scope.describe_collision(collision)
+        problems.append(
+            "スキル/コマンドの重複(実際に読まれるコピーが、編集した方と違う恐れ):\n"
+            + "\n".join(f"      {line}" for line in lines)
+        )
+    return problems
+
+
 def main() -> int:
     # 既定値はこのスクリプト自身の場所(.claude/tools/)から逆算する。
     # 過去にプロジェクトルートを絶対パスでハードコードしていたところ、
@@ -237,11 +273,14 @@ def main() -> int:
         print(f"ERROR: claude-shared が見つかりません: {shared}", file=sys.stderr)
         return EXIT_ENV
 
-    problems = check_mirror(claude_dir, shared) + check_git(shared)
+    problems = (
+        check_mirror(claude_dir, shared) + check_git(shared) + check_scope_collisions(claude_dir)
+    )
 
     if not problems:
         if not args.quiet:
             print(f"[verify_sync] OK: .claude == claude-shared == origin ({shared})")
+            print(COVERAGE_NOTE)
         return EXIT_OK
 
     print("[verify_sync] 反映されていません。以下を解消してください:", file=sys.stderr)
@@ -249,7 +288,8 @@ def main() -> int:
         print(f"  - {p}", file=sys.stderr)
     print(
         "\n  ミラー差分なら /g-ul をやり直す。commit 漏れなら commit してから push。\n"
-        "  未取込があるなら先に /g-dl で取り込むこと。",
+        "  未取込があるなら先に /g-dl で取り込むこと。\n"
+        "  スキルの重複なら、表示された retire コマンドで退避する(手で同期しない)。",
         file=sys.stderr,
     )
     return EXIT_DRIFT

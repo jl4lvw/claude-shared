@@ -19,10 +19,14 @@
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import sys
 from pathlib import Path
+
+try:
+    import skill_scope  # 優先順位の実装はここに 1 つだけ持つ
+except ImportError:  # pragma: no cover - tools/ は 1 セットでミラーされるので通常は起きない
+    skill_scope = None
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -32,36 +36,18 @@ except Exception:  # pragma: no cover
 _STAMP_RE = re.compile(r"<!--\s*SKILL_VERSION:\s*([0-9A-Za-z_\-.]+)\s*-->")
 
 
-def _search_roots() -> tuple[Path, ...]:
-    """探索ルート: CLAUDE_PROJECT_DIR > このファイルからの相対 > ユーザー階層。
-
-    PC ごとにプロジェクトパスが異なる（他 PC へ配布する）ため、パスは
-    決め打ちにせず環境変数と自身の設置位置から解決する。
-    """
-    roots: list[Path] = []
-    env = os.environ.get("CLAUDE_PROJECT_DIR", "").strip()
-    if env:
-        roots.append(Path(env) / ".claude" / "skills")
-    # 本ファイルは <project>/.claude/tools/ に置かれる想定
-    roots.append(Path(__file__).resolve().parent.parent / "skills")
-    roots.append(Path.home() / ".claude" / "skills")
-    # 重複除去（順序保持）
-    seen: set[str] = set()
-    uniq: list[Path] = []
-    for r in roots:
-        k = str(r).lower()
-        if k not in seen:
-            seen.add(k)
-            uniq.append(r)
-    return tuple(uniq)
-
-
 def find_skill(name: str) -> Path | None:
-    for root in _search_roots():
-        p = root / name / "SKILL.md"
-        if p.is_file():
-            return p
-    return None
+    """実際にローダーが読むコピー (このPC全体用 ~/.claude > project) を返す。
+
+    2026-09-19 まで探索順が [project → ユーザー階層] で、Claude Code の実際の優先順位と
+    **逆**だった。ユーザー階層に古い複製があると、実際に読まれる古い版ではなく project の
+    新しい版のスタンプを見て「OK」と誤判定した (handoff の事故)。
+    優先順位の実装は skill_scope.py に 1 つだけ持ち、ここでは再実装しない。
+    """
+    if skill_scope is None:
+        return None
+    entry = skill_scope.resolve(name)
+    return entry.path if entry else None
 
 
 def read_stamp(path: Path) -> str | None:
@@ -81,10 +67,20 @@ def main() -> int:
     ap.add_argument("--show", action="store_true", help="現物のスタンプを表示して終了")
     args = ap.parse_args()
 
+    if skill_scope is None:
+        print("[UNKNOWN] skill_scope.py を読み込めません (/g-dl でツールを揃えてください)")
+        return 4
+
     path = find_skill(args.skill)
     if path is None:
         print(f"[UNKNOWN] SKILL.md が見つかりません: {args.skill}")
         return 4
+
+    collision = skill_scope.find_collision(args.skill)
+    if collision is not None:
+        print(f"[WARN] 同名のコピーが複数あります。読まれるのは {collision.effective.path} です")
+        for line in skill_scope.describe_collision(collision)[1:]:
+            print(line)
 
     disk = read_stamp(path)
     if disk is None:

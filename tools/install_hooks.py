@@ -86,6 +86,14 @@ _HOOKS: tuple[tuple[str, str | None, str, int, str], ...] = (
         "cgd Lv6/Lv7/Lv8 で inline の codex exec を遮断し Workflow 実行を強制",
     ),
     (
+        "PreToolUse",
+        "Write|Edit|MultiEdit|NotebookEdit",
+        ".claude/hooks/skill_write_guard.py",
+        5,
+        "ユーザー階層(~/.claude/skills, ~/.claude/commands)への書込みを止める"
+        "(同名が優先されて project 側の修正が隠れる事故の防止)",
+    ),
+    (
         "PostToolUse",
         "Bash",
         ".claude/hooks/ai_telemetry.py",
