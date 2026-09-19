@@ -371,6 +371,34 @@ def test_execute_reports_no_change_on_the_first_round(tmp_path: Path, runs: Path
     assert out.status == "no_change" and auto.STATUS_EXIT[out.status] == auto.EXIT_CODEX_FAILED
 
 
+class SandboxNoiseCodex(FakeCodex):
+    """エンジンは 3（読んだ文面の鍵語の誤検出）を返すが、Codex 自身は exit 0 で正常終了した場合。"""
+
+    def run(self, run: str, workdir: Path, spec: Path, effort: str, timeout: int) -> tuple[int, str]:
+        _code, text = super().run(run, workdir, spec, effort, timeout)
+        path = self.rundir(run) / "run.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["sandbox_errors"] = 12
+        path.write_text(json.dumps(data), encoding="utf-8")
+        return engine.EXIT_CODEX_FAILED, text
+
+
+@pytestmark_git
+def test_execute_treats_marker_noise_as_success_when_codex_exited_zero(tmp_path: Path, runs: Path) -> None:
+    workdir = make_repo(tmp_path)
+    out = auto.execute(config(workdir, manifest_of(REQUIRE_FLAG)), SandboxNoiseCodex([(writer("flag.txt", "1"), 0)]))
+    assert out.status == "ok"
+    assert out.rounds[0].sandbox_warning.startswith("sandbox_errors=12")
+    assert "注意（Codex の実行）" in auto.render_report(out)
+
+
+@pytestmark_git
+def test_execute_still_fails_on_marker_noise_when_nothing_changed(tmp_path: Path, runs: Path) -> None:
+    workdir = make_repo(tmp_path)
+    out = auto.execute(config(workdir, manifest_of(REQUIRE_FLAG)), SandboxNoiseCodex([(lambda w: None, 0)]))
+    assert out.status == "codex_failed" and out.rounds[0].sandbox_warning == ""
+
+
 @pytestmark_git
 def test_execute_runs_checks_when_codex_fails_midway_but_does_not_loop(tmp_path: Path, runs: Path) -> None:
     workdir = make_repo(tmp_path)

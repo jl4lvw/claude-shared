@@ -562,6 +562,7 @@ class RoundInfo:
     codex_exit: int | None = None
     failed: list[str] = field(default_factory=list)
     frozen_restored: list[str] = field(default_factory=list)
+    sandbox_warning: str = ""
 
 
 @dataclass
@@ -647,7 +648,19 @@ def execute(cfg: Config, api: Engine) -> Outcome:
         if cfg.manifest.frozen:  # 周の開始時に存在したものが対象（初回も、もとからあるテストは守る）
             info.frozen_restored = enforce_frozen(cfg.workdir, api.rundir(run), diff, cfg.manifest.frozen)
         changed_now = bool(diff.get("modified") or diff.get("added") or diff.get("deleted"))
-        codex_ok = code == engine.EXIT_OK
+        # 鍵語（blocked by policy 等）は、Codex が読んだファイルの中身にも含まれて数えられ、エンジンが 3 を返すことがある
+        # （2026-09-19: 手順書を読んだだけで 12 件と数え、出し直しが回らなかった）。Codex 自身が正常終了し、
+        # 変更もあるなら成功として扱い、注意だけ残す。本物のサンドボックス障害なら変更が出ず、検査が落ちる
+        false_alarm = (
+            code == engine.EXIT_CODEX_FAILED
+            and run_json.get("exit") == 0
+            and not run_json.get("timed_out")
+            and not run_json.get("launch_error")
+            and changed_now
+        )
+        if false_alarm:
+            info.sandbox_warning = f"sandbox_errors={run_json.get('sandbox_errors')}（読んだ文面の誤検出の可能性。Codex は exit 0）"
+        codex_ok = code == engine.EXIT_OK or false_alarm
         if not codex_ok or not changed_now:
             out.questions = tail(last.read_text(encoding="utf-8", errors="replace"), 20, 2000) if last.exists() else ""
         if not codex_ok and not changed_now:
@@ -745,6 +758,9 @@ def render_report(out: Outcome) -> str:
                 lines.append(f"  注意({label}): {item}")
     restored = [f"{r.index}周目:{p}" for r in out.rounds for p in r.frozen_restored]
     lines += ["", "凍結ファイルの違反（写しから戻した）: " + (", ".join(restored) if restored else "なし")]
+    noisy = [f"{r.index}周目: {r.sandbox_warning}" for r in out.rounds if r.sandbox_warning]
+    if noisy:
+        lines.append("注意（Codex の実行）: " + " / ".join(noisy))
     if out.review:
         lines.append(f"DeepSeek レビュー: {out.review}")
     if out.shots:
