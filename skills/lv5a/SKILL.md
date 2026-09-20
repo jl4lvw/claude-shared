@@ -2,7 +2,7 @@
 name: lv5a
 description: cgd Lv5（設計相談→実装→検証→再レビュー→🔴自動修正1周）を Codex 側に任せて回す軽量スキル。「Lv5A」「レベル5A」「設計から実装まで Codex に任せて」で使う。Claude は依頼文を書く→承認→consult→質問の取り次ぎ→implement→🔴だけ突合→最終質問の取り次ぎ、だけ。cgd 全文（約 76K トークン）を読み込まない分離版
 ---
-<!-- SKILL_VERSION: 2026-09-20_111702 -->
+<!-- SKILL_VERSION: 2026-09-20_150111 -->
 
 # lv5a — 設計相談から実装・再レビューまで Codex に任せる Lv5（Claude のトークンを最小にする）
 
@@ -29,29 +29,30 @@ description: cgd Lv5（設計相談→実装→検証→再レビュー→🔴�
 
 ### 2. 承認（Claude → ユーザー）
 ```bash
-python "C:/ClaudeCode/.claude/tools/cgd_lv5a.py" plan --brief "<依頼文>" --workdir "<作業フォルダ>" --checks "<検査定義>" [--files "<参考ファイル…>"] [--no-ds] [--redact]
+python "C:/ClaudeCode/.claude/tools/cgd_lv5a.py" plan --brief "<依頼文>" --workdir "<作業フォルダ>" --checks "<検査定義>" [--files "<参考ファイル…>"] [--no-ds]
 ```
 出力（Lv0 の点検＝**秘密情報らしいファイル**・検査コマンド・凍結、Lv3A の点検＝送信先と週枠、流れ）を表にして **AskUserQuestion で承認**。**承認前に何も実行しない**。
-承認に含める: 送信先（Codex=OpenAI／DeepSeek=中国本土）・作業フォルダ・**巻き戻せる範囲**（Lv0 の写し=2MB 以下の通常ファイルだけ）・作業フォルダに設計ファイルが残ること。exit 1/2/11 なら中止。`--redact` は Lv3A が対応している版だけ。
+承認に含める: 送信先（Codex=OpenAI／DeepSeek=中国本土）・作業フォルダ・**巻き戻せる範囲**（Lv0 の写し=2MB 以下の通常ファイルだけ）・作業フォルダに設計ファイルが残ること。exit 1/2/11 なら中止。**`--redact` は使えない**（指定すると拒否される。設計段階の Codex に依頼文がそのまま渡り、伏字が効かないため）。plan が秘匿情報候補で止まったら、該当行を依頼文・参考ファイルから外してやり直す（伏字してレビューだけ受けたいなら `/lv3a`。実装はしない）。
 
 ### 3. consult（バックグラウンド・待つだけ）
 ```bash
-python "C:/ClaudeCode/.claude/tools/cgd_lv5a.py" consult --brief … --workdir … --checks … --label "<名前>" [--files …] [--effort medium|high] [--no-ds] [--redact]
+python "C:/ClaudeCode/.claude/tools/cgd_lv5a.py" consult --brief … --workdir … --checks … --label "<名前>" [--files …] [--effort medium|high] [--no-ds]
 ```
 `run_in_background: true` で起動し終了通知を待つ（実測 4 分）。途中で見に行かない。同じ label の設計ファイルが作業フォルダにあると止まる（label を変える）。**exit 20 = 正常**（回答待ち）。標準出力が `consult_report.md`（60 行以内）。
 
 ### 4. 質問の取り次ぎ（Claude → ユーザー）
 `consult_report.md` を読み、run ディレクトリ（`C:/tmp-ai/cgd_lv5a/<label>_<時刻>_<乱数>/`）の `questions.json` を **言い換えずに** AskUserQuestion にする（推奨に「(Recommended)」）。**G1 を必ず含める**。
 `reason_ok` が false の質問は推奨に「(根拠なし)」と添える。レポート全文は転記しない（総評・設計の要点・🔴 を 10〜20 行で伝え、パスを添える）。
+**レポートに「Lv3A は暫定成功（exit 20）: 欠落 …」があれば、欠けた担当（その視点が出ていない）を質問と一緒にユーザーへ必ず伝える**（consult は暫定でも exit 20 なので見落としやすい）。推奨が依頼文で決めた内容と食い違って見える質問は、依頼文のどの記述と食い違うかを添えて取り次ぐ。AskUserQuestion の header には質問の id（Q1 など）を使う（1 回 4 問まで）。
 
 ### 5. 回答ファイル（Claude・Write ツール）
-`<run>/answers.json`: `{"answers": {"G1": "<label>", "Q1": "<label>"}, "notes": "任意の補足"}`。**label は questions.json の文字列と完全一致**（言い換え禁止）。G1 が「この設計で実装する」以外なら implement は拒否される（設計を直す→依頼文を直して**新しい label** で consult）。
+`<run>/answers.json`: `{"answers": {"G1": "<label>", "Q1": "<label>"}, "notes": "任意の補足"}`。**label は questions.json の文字列と完全一致**（言い換え禁止。AskUserQuestion で付けた「(Recommended)」は表示用なので回答に含めない）。G1 が「この設計で実装する」以外なら implement は拒否される（設計を直す→依頼文を直して**新しい label** で consult）。
 
 ### 6. implement（バックグラウンド・待つだけ）
 ```bash
 python "C:/ClaudeCode/.claude/tools/cgd_lv5a.py" implement --run "<run ディレクトリ>" --answers "<answers.json>" [--effort medium|high] [--max-fix-rounds 2] [--no-ds]
 ```
-`run_in_background: true`（実測 7 分）。回答は設計より優先される（食い違う点は Codex が回答に合わせて実装し設計書も更新する）。**依頼文と矛盾する回答だと Codex が質問を返して停止する（exit 3・質問は stderr と `logs/`）**。exit 0 = 🔴 なし／**21 = 完了したが要ユーザー判断**（🔴 が残る・レビュー未実施・自動修正が止まった）。標準出力が `final_report.md`。
+`run_in_background: true`（実測 7 分）。回答は設計より優先される（食い違う点は Codex が回答に合わせて実装し設計書も更新する）。**依頼文と矛盾する回答だと Codex が質問を返して停止する（exit 3・質問は stderr と `logs/`）**。exit 0 = 🔴 なし／**21 = 完了したが要ユーザー判断**（🔴 が残る・レビュー未実施・自動修正が止まった）。標準出力が `final_report.md`。`--max-fix-rounds` は Lv0 の「検査に落ちたときの出し直し」の回数で、🔴 の自動修正（最大 1 周）とは別。final_report に「差分は自動レビューしていない」とあれば（実装差分に秘匿情報の候補があって Lv3A が止まった場合など）、差分は run ディレクトリの `impl_overall.patch`。内容を確認し、必要なら `/lv3a` で個別にレビューする（伏字が要るなら `--redact` 付き）。
 
 ### 7. 🔴 の突合と最終質問（Claude → ユーザー）
 - **🔴 の突き合わせ（ユーザー決定: Claude の関与は「🔴 だけ原文突合」）**: レポートに 🔴 があれば、レビューの run（`state.json` の `result.review2`/`review1` の `run_dir`）の `report.md`「🔴 の詳細」の各見出しを、生ログ（`codex_tech.md` 等）で grep し、題名・対応案と食い違わないかだけ確かめる。**全体の読み直しはしない**
@@ -77,7 +78,7 @@ python "C:/ClaudeCode/.claude/tools/cgd_lv5a.py" implement --run "<run ディレ
 
 ## ガードレール（機械が守る）
 - G1 が「この設計で実装する」でない・phase が `awaiting_direction` でない・検査定義/設計ファイルが consult 後に変わっている → implement は動かない（exit 1）
-- 自動修正は最大 1 周（構造的に 2 周目を呼べない）。実装差分の秘匿候補は**自動で伏字にしない**（レビュー未実施として記録し exit 21）
+- 自動修正は最大 1 周（構造的に 2 周目を呼べない）。実装差分の秘匿候補は**自動で伏字にしない**（レビュー未実施として記録し exit 21）。`--redact` は受け付けない（設計段階の Codex に効かないため）
 - 子プロセスには許可リストの環境変数だけ（鍵・トークン類は通さない。`DEEPSEEK_`/`CODEX_`/`CGD_` の接頭辞のみ許可）。サブプロセスは打ち切りで exit 30
 - 削除しない（run ディレクトリ・設計ファイル・patch は残る）。費用は失敗した試行も合算し、各工程の終了コードを `state.json` に記録
 - 統合結果は提案。**最終判断はユーザー（Claude ではない）**

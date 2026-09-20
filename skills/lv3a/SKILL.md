@@ -2,7 +2,7 @@
 name: lv3a
 description: cgd Lv3（Codex と DeepSeek の 2社×2視点レビュー・実装なし）を、統合まで Codex 側に任せて回す軽量スキル。「Lv3A」「レベル3A」「取りまとめをCodexに任せて」で使う。Claude は依頼文を書く→承認→1コマンド起動→短いレポートを読む→質問を取り次ぐ、だけ。cgd 全文（約 76K トークン）を読み込まない分離版
 ---
-<!-- SKILL_VERSION: 2026-09-20_102624 -->
+<!-- SKILL_VERSION: 2026-09-20_150111 -->
 
 # lv3a — レビューの取りまとめまで Codex に任せる Lv3（Claude のトークンを最小にする）
 
@@ -60,7 +60,7 @@ python "C:/ClaudeCode/.claude/tools/cgd_lv3a.py" plan --brief "<依頼文>" --fi
 ```bash
 python "C:/ClaudeCode/.claude/tools/cgd_lv3a.py" run --brief "<依頼文>" --files "<対象…>" --label "<名前>" [--effort medium|high] [--no-ds] [--no-partial] [--redact]
 ```
-Bash の **`run_in_background: true`** で起動し、終了通知を待つ。所要 5〜10 分。**途中で様子を見に行かない**。推論強度は Claude が自動選択（既定 `medium`）。
+Bash の **`run_in_background: true`** で起動し、終了通知を待つ。所要は約 2〜4 分（実測 187 秒。対象が大きいと 5〜10 分）。**途中で様子を見に行かない**。終了通知が指す出力ファイルを Read し、**末尾のレポート**を読む（手順 4）。推論強度は Claude が自動選択（既定 `medium`）。
 - `--no-partial`: 暫定版を受け付けない（4 者そろわなければ意味がないとき）。付けると 1 者の失敗でも従来どおり停止する（exit 10/12）。**既定は付けない**（暫定版を返す）
 - `--redact`: 手順 2 でユーザーの承認を取った場合**だけ**付ける
 
@@ -72,9 +72,12 @@ Bash の **`run_in_background: true`** で起動し、終了通知を待つ。�
 - **表の「採否案」は統合 AI の提案**であって決定ではない。ユーザーへ伝えるときも「採否案」と呼び、**最終判断はユーザー**（Claude が確定しない）
 - **見出しが「状態: 暫定（欠落: …）」で exit 20 のとき**: レポートの直下の「⚠ 暫定」の行（欠けた担当と、出ていない視点・ベンダー）を**必ずユーザーへ伝える**。「収束の判定が弱い」＝欠けた担当が反対/賛成していたかが分からない、という意味。欠けた理由（実行失敗の終了コード・タイムアウト・JSON 不正）は `run.json` の `partial.missing`。欠けた視点が結論を左右しそうなら、再実行するか降格（`/cgd` Lv3）を提案する。生ログは残っている
 - レポートに「伏字: N 件（詳細は redaction.json）」があれば、伏字にして送ったことを併せて伝える（場所は `redaction.json`）
+- **クラスタの重大度は member の最大値**。member の 1 つが 🟠 でもクラスタが 🔴 なら正常（食い違いではない）。生ログの JSON は 1 行なので、Grep は「長い行は省略」になる。JSON の重大度を見るときは Read する
+- 見出しの下に「指摘なし（JSON 0 件）: <名前>」があれば、その者は指摘を 1 件も出していない（有効な結果）。本文は生ログで確認できる
 
 ### 5. 質問の取り次ぎ（Claude → ユーザー）
 `questions.json` の質問を **言い換えずに** AskUserQuestion にする（推奨の label に「(Recommended)」）。回答は**そのまま**扱う。`reason_ok` が false の質問は、推奨に「(根拠なし)」と添える。言い換えると意味がずれ、節約にもならない。
+AskUserQuestion の **header には質問の id（Q1 など）を使う**（`questions.json` に header 欄は無い）。1 回に出せるのは 4 問まで。推奨の理由（`recommended_reason`）は、推奨の選択肢の description の末尾に「（根拠: …）」として足す。label は変えない。
 
 ### 6. 費用
 レポートの「費用」の数字をそのまま報告（Codex の呼出回数・tokens／DeepSeek の呼出回数・¥）。

@@ -37,6 +37,7 @@ JSON_INSTRUCTION = (
     '{"findings":[{"id":"<P>1","severity":"<S>",'
     '"headline":"指摘の見出し(40字以内)"}]} id は <P>1, <P>2, … の連番。'
     "severity は <SLIST> のいずれか。"
+    "指摘が 1 件も無いときは findings を空配列 [] にする（本文に、確認した観点と、指摘なしと判断した根拠を書くこと）。"
 )
 TECH_PROMPT = (
     "これは設計レビューです。バグ・設計上の懸念・セキュリティ・副作用・既存仕様との"
@@ -464,8 +465,10 @@ def parse_review(text: str, spec: ReviewerSpec) -> ParsedReview:
     except json.JSONDecodeError as exc:
         raise ValueError(f"JSON が不正: {exc.msg}") from exc
     findings = payload.get("findings") if isinstance(payload, dict) else None
-    if not isinstance(findings, list) or not findings:
-        raise ValueError("findings が空または配列ではありません")
+    # 指摘なし (空配列) は正当な結果。2026-09-20 の検証で、Codex が {"findings":[]} を返しただけで再実行も
+    # 不合格になり (Codex 約 6.8 万 tok の無駄)、使える者が足りず全体が止まった
+    if not isinstance(findings, list):
+        raise ValueError("findings が配列ではありません")
     seen: set[str] = set()
     normalized: list[dict[str, str]] = []
     for index, item in enumerate(findings, 1):
@@ -569,7 +572,8 @@ INTEGRATOR_RULES = """あなたは複数のレビューを統合する議長。R
 与えられた指摘 ID（R<n>#<k>）すべてを、ちょうど 1 つのクラスタに割り当てる。似た指摘は 1 クラスタにまとめる。technical と critic は同じクラスタに混ぜない。クラスタ数の上限は設けない。
 重大度と出所の数は書かない（機械が指摘 ID から算出する）。
 出力は JSON のみ: {"summary":"総評(1〜3文)","clusters":[{"id":"C1","kind":"technical","title":"40字以内","members":["R1#1","R2#3"],"proposal":"対応案(1文)","adopt":"採用|部分採用|見送り","adopt_reason":"1文"}],"questions_for_user":[{"id":"Q1","question":"...","options":[{"label":"...","description":"..."}],"recommended":"labelのどれか","recommended_reason":"根拠。依頼文の『確認済みの事実』の語句か、R<n>#<k> を引くこと"}],"next_actions":["..."]}
-questions_for_user はユーザーの方向性の判断が要るものだけ、最大 3 問、選択肢は 2〜4 個。依頼文に無い事実を推測で根拠にしない。"""
+questions_for_user はユーザーの方向性の判断が要るものだけ、最大 3 問、選択肢は 2〜4 個。依頼文に無い事実を推測で根拠にしない。
+依頼文の『確認済みの事実』や依頼の内容で既に決まっていることは質問にしない（推奨がそれと食い違う質問を作らない）。"""
 
 
 def integrator_input(sections: Sequence[dict[str, Any]]) -> str:
@@ -752,6 +756,7 @@ def build_report(
     *,
     partial_missing: Sequence[dict[str, str]] = (),
     redaction_count: int = 0,
+    no_finding_reviewers: Sequence[str] = (),
 ) -> str:
     ranks = {"🔴": 3, "🟠": 2, "🟡": 1, "高": 3, "中": 2, "低": 1}
     ordered = sorted(clusters, key=lambda item: (-ranks[item["severity"]], -len(item["vendors"])))
@@ -768,6 +773,8 @@ def build_report(
         header.append(partial_warning(partial_missing))
     if redaction_count:
         header.append(f"伏字: {redaction_count} 件（詳細は redaction.json）")
+    if no_finding_reviewers:
+        header.append(f"指摘なし（JSON 0 件）: {', '.join(no_finding_reviewers)}（本文は生ログで確認できる）")
     header.extend(("", PROPOSAL_NOTE, ""))
 
     def render(detail_limit: int | None = None, truncate_descriptions: bool = False) -> list[str]:
@@ -1068,18 +1075,21 @@ def command_run(
         attempts[spec.name].append(attempt_record(spec, retry, gate_error))
     usable_specs = [spec for spec in specs if spec.name in parsed]
     if args.no_partial or len(usable_specs) < MIN_USABLE_REVIEWERS:
-        # 暫定版にできない (--no-partial、または使える者が 2 者未満)。原因が実行失敗なら 10、JSON 不正なら 12
+        # 暫定版にできない (--no-partial、または使える者が 2 者未満)。原因が実行失敗なら 10、JSON 不正なら 12。
+        # 両方あるときは両方を出す (実行失敗だけを出すと JSON 不正という真因が隠れる。2026-09-20 の検証)
         if exec_missing:
             print(
                 "レビュアー実行失敗: " + ", ".join(f"{name}（{reason}）" for name, reason in exec_missing.items()),
                 file=sys.stderr,
             )
-            return finish_failure(
-                "reviewer_execution_failed", 10, gate1={"ok": False, "failed": list(exec_missing)}
-            )
+        for name, error in gate_errors.items():
+            print(f"{name}: {error}", file=sys.stderr)
+        if exec_missing:
+            failed_gate1: dict[str, Any] = {"ok": False, "failed": list(exec_missing)}
+            if gate_errors:
+                failed_gate1["errors"] = gate_errors
+            return finish_failure("reviewer_execution_failed", 10, gate1=failed_gate1)
         if gate_errors:
-            for name, error in gate_errors.items():
-                print(f"{name}: {error}", file=sys.stderr)
             return finish_failure("gate1_failed", 12, gate1={"ok": False, "errors": gate_errors})
     # 欠けた者 (実行失敗 / JSON 不正) と理由。使える者が 2 者以上ならここから暫定版になる
     missing_records = [
@@ -1094,6 +1104,7 @@ def command_run(
     if partial:
         print("暫定版: 欠けた者=" + ", ".join(f"{item['name']}（{item['reason']}）" for item in missing_records), file=sys.stderr)
     partial_extra: dict[str, Any] = {"partial": {"missing": missing_records}} if partial else {}
+    no_finding_names = [spec.name for spec in usable_specs if not parsed[spec.name].findings]  # 指摘なし (JSON 0 件) の者
     # 再実行があった者は、採用した (=見出しの出所の) 再実行のログを指す
     log_files = {
         spec.name: (f"{spec.name}.retry1" if len(attempts[spec.name]) > 1 else spec.name)
@@ -1159,6 +1170,7 @@ def command_run(
         "integration": asdict(integration),
         "gate1": {"ok": True},
         "gate2": {"ok": True},
+        "no_findings": no_finding_names,
         "clusters": clusters,
         "costs": costs,
         **partial_extra,
@@ -1167,7 +1179,7 @@ def command_run(
     write_json(run_dir / "run.json", state)
     report = build_report(
         run_dir.name, elapsed, clusters, metadata, payload, questions, costs, run_dir, args.no_ds,
-        partial_missing=missing_records, redaction_count=len(redactions),
+        partial_missing=missing_records, redaction_count=len(redactions), no_finding_reviewers=no_finding_names,
     )
     (run_dir / "report.md").write_text(report, encoding="utf-8", newline="")
     print(report, end="")
@@ -1205,7 +1217,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--work-root", default=str(DEFAULT_WORK_ROOT))
     run.add_argument("--codex-timeout", type=int, default=600)
-    run.add_argument("--ds-timeout", type=int, default=300)
+    run.add_argument("--ds-timeout", type=int, default=300, help="DeepSeek 1 回あたりの待ち時間（秒）")
     return parser
 
 

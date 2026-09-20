@@ -220,7 +220,7 @@ def consulted(sc: Scenario) -> Scenario:
 
 
 def test_plan_prints_both_and_returns_first_nonzero(sc: Scenario, capsys) -> None:
-    args = ["plan", "--brief", str(sc.brief), "--workdir", str(sc.workdir), "--checks", str(sc.checks), "--files", str(sc.ref), "--redact"]
+    args = ["plan", "--brief", str(sc.brief), "--workdir", str(sc.workdir), "--checks", str(sc.checks), "--files", str(sc.ref)]
     sc.lv0.plan_exit, sc.lv3a.plan_exit = 1, 11
     assert sc.main(args) == 1
     out = capsys.readouterr().out
@@ -228,7 +228,7 @@ def test_plan_prints_both_and_returns_first_nonzero(sc: Scenario, capsys) -> Non
     sc.lv0.plan_exit = 0
     assert sc.main(args) == 11
     assert sc.lv0.calls[-1] == ["plan", "--workdir", str(sc.workdir), "--checks", str(sc.checks), "--review", "deepseek"]
-    assert sc.lv3a.calls[-1] == ["plan", "--brief", str(sc.brief), "--files", str(sc.ref), "--redact"]
+    assert sc.lv3a.calls[-1] == ["plan", "--brief", str(sc.brief), "--files", str(sc.ref)]
     assert not sc.work_root.exists()  # 何も書かない
 
 
@@ -294,10 +294,10 @@ def test_consult_design_excerpt_skips_blank_lines(sc: Scenario) -> None:
 
 
 def test_consult_flags_are_passed_through(sc: Scenario) -> None:
-    assert sc.consult("--no-ds", "--redact", "--effort", "high") == 20
+    assert sc.consult("--no-ds", "--effort", "high") == 20
     review = sc.lv3a.runs("design")[0]
-    assert "--no-ds" in review and "--redact" in review and review[review.index("--effort") + 1] == "high"
-    assert "--redact" in sc.lv3a.calls[0] and "--review" not in sc.lv0.calls[0]
+    assert "--no-ds" in review and "--redact" not in review and review[review.index("--effort") + 1] == "high"
+    assert "--no-ds" in sc.lv3a.calls[0] and "--review" not in sc.lv0.calls[0]
     assert sc.lv0.argvs("design")[0][sc.lv0.argvs("design")[0].index("--effort") + 1] == "high"
 
 
@@ -672,6 +672,9 @@ def test_review_problem_keeps_implementation_result(consulted: Scenario, code: i
     assert word in st["result"]["review1"]["reason"]
     report = (sc.run_dir / "final_report.md").read_text(encoding="utf-8")
     assert word in report and "lf=ok" in report
+    assert "None" not in report  # Lv3A の run が無いとき「差分レビュー（Lv3A）: None」と出していた (2026-09-20 の検証)
+    if code == 1:
+        assert "自動レビューしていない" in report and "impl_overall.patch" in report and "/lv3a" in report
     assert not sc.lv0.argvs("fix")
 
 
@@ -734,11 +737,53 @@ def test_no_ds_from_consult_is_inherited(sc: Scenario) -> None:
     assert "--review" not in sc.lv0.argvs("impl")[0] and "--no-ds" in sc.lv3a.runs("impl")[0]
 
 
-def test_redact_is_not_applied_to_implementation_review(sc: Scenario) -> None:
-    assert sc.consult("--redact") == 20
-    assert "--redact" in sc.lv3a.runs("design")[0]
+def test_redact_is_refused_before_anything_runs(sc: Scenario, capsys) -> None:
+    """--redact は設計段階の Codex (Lv0) に効かない (依頼文がそのまま渡る。2026-09-20 の検証でダミー鍵が
+    Codex のセッションログに残った)。plan も consult も、何も呼ばず・何も書かずに拒否する。"""
+    plan_args = ["plan", "--brief", str(sc.brief), "--workdir", str(sc.workdir), "--checks", str(sc.checks), "--redact"]
+    assert sc.main(plan_args) == 1
+    assert sc.consult("--redact") == 1
+    err = capsys.readouterr().err
+    assert err.count("--redact を受け付けません") == 2 and "/lv3a" in err
+    assert sc.lv0.calls == [] and sc.lv3a.calls == []
+    assert not sc.work_root.exists() and not (sc.workdir / "docs").exists()
+
+
+def test_no_redact_flag_reaches_lv3a_in_any_stage(consulted: Scenario) -> None:
+    sc = consulted
     assert sc.implement() == 0
-    assert "--redact" not in sc.lv3a.runs("impl")[0]
+    assert sc.lv3a.calls and all("--redact" not in call for call in sc.lv3a.calls)
+    assert "redact" not in sc.state()["args"]
+
+
+def test_scrub_replaces_the_lv3a_redact_advice() -> None:
+    """Lv3A の「--redact を付けて続行」は Lv5A では従えない案内。Lv5A で通る案内へ差し替え、候補の行番号は残す。"""
+    hint = "伏字して続行するには --redact を付け、ユーザーの承認を取ってください（plan --redact で伏字プレビューを確認できます）"
+    text = "秘匿情報候補を検出しました（内容は非表示）:\nx.md: api-key / 行 3\n" + hint
+    out = lio.scrub_redact_hint(text)
+    assert "--redact" not in out and lio.REDACT_UNAVAILABLE in out
+    assert "x.md: api-key / 行 3" in out and out.count("\n") == text.count("\n")
+    assert lio.scrub_redact_hint("何も無い") == "何も無い"
+    assert "--redact" not in lio.scrub_redact_hint("停止: 行 7 " + hint)  # 空白を潰した 1 行の形でも効く
+
+
+def test_scrub_wrapper_cleans_stdout_and_stderr() -> None:
+    hint = "伏字して続行するには --redact を付け、ユーザーの承認を取ってください"
+    wrapped = lio.without_redact_hint(lambda args, timeout: CliResult(1, "out\n" + hint, "err\n" + hint, 1.5))
+    result = wrapped(["plan"], 10)
+    assert result.returncode == 1 and result.elapsed == 1.5
+    assert "--redact" not in result.stdout + result.stderr and result.stdout.startswith("out\n") and result.stderr.startswith("err\n")
+
+
+def test_default_lv3a_driver_scrubs_the_advice_from_the_real_plan(tmp_path: Path) -> None:
+    """実物の Lv3A plan が秘匿候補で止まったとき、Lv5A 経由の出力に「--redact を付けて」が出ない (中身も出ない)。"""
+    secret = 'api_key = "' + "sk-" + "DUMMY" * 4 + '0123"'
+    brief = write(tmp_path / "brief.md", f"# 依頼\n\n## 確認済みの事実\n- ダミーの依頼です\n\n{secret}\n")
+    result = lio.default_drivers().lv3a(["plan", "--brief", str(brief), "--no-ds"], 120)
+    output = result.stdout + result.stderr
+    assert result.returncode == 1 and "秘匿情報候補" in output
+    assert "--redact" not in output and lio.REDACT_UNAVAILABLE in output
+    assert "DUMMYDUMMY" not in output
 
 
 def test_same_workdir_and_checks_in_every_lv0_call(consulted: Scenario) -> None:

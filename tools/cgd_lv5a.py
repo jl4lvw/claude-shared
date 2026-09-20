@@ -29,7 +29,7 @@ from typing import Any, Mapping, Sequence
 
 from cgd_lv5a_io import (
     EXIT_AWAITING, EXIT_CODEX_FAILED, EXIT_GENERIC, EXIT_NEEDS_JUDGMENT, EXIT_OK, EXIT_REVIEW_FAILED, LV3A_OK,
-    CliResult, Drivers, Lv0Run, Lv3aRun, cost_line, default_drivers, lv0_cost, lv3a_cost, map_lv0_exit,
+    REDACT_UNSUPPORTED, CliResult, Drivers, Lv0Run, Lv3aRun, cost_line, default_drivers, lv0_cost, lv3a_cost, map_lv0_exit,
     map_lv3a_exit, parse_lv0, parse_lv3a, total_costs)
 from cgd_lv5a_text import (
     DESIGN_EXCERPT, FACTS_HEADING, G1_REDO, G1_YES, RED, add_facts, add_review_target, answer_lines, answers_fact, build_fix_spec,
@@ -167,13 +167,14 @@ def lv0_argv(state: Mapping[str, Any], spec: Path, effort: str, fix_rounds: int,
 # ---------------------------------------------------------------- plan / consult
 
 
-def flag_args(no_ds: bool, redact: bool) -> list[str]:
-    return (["--no-ds"] if no_ds else []) + (["--redact"] if redact else [])
+def flag_args(no_ds: bool) -> list[str]:
+    """Lv3A へ引き継ぐフラグ。--redact は引き継がない (Lv5A は受け付けない。REDACT_UNSUPPORTED)。"""
+    return ["--no-ds"] if no_ds else []
 
 
 def plan_calls(args: argparse.Namespace, drivers: Drivers) -> list[tuple[str, CliResult]]:
     lv0 = ["plan", "--workdir", args.workdir, "--checks", args.checks] + ([] if args.no_ds else ["--review", "deepseek"])
-    lv3a = ["plan", "--brief", args.brief, *(["--files", *args.files] if args.files else []), *flag_args(args.no_ds, args.redact)]
+    lv3a = ["plan", "--brief", args.brief, *(["--files", *args.files] if args.files else []), *flag_args(args.no_ds)]
     return [("1. 実装側の点検（cgd_lv0_auto.py plan）", drivers.lv0(lv0, PLAN_TIMEOUT)),
             ("2. 設計レビュー側の点検（cgd_lv3a.py plan）", drivers.lv3a(lv3a, PLAN_TIMEOUT))]
 
@@ -197,6 +198,8 @@ def command_plan(args: argparse.Namespace, drivers: Drivers) -> int:
 
 def check_common_inputs(args: argparse.Namespace) -> str:
     """費用をかける前に見られる不備を止める。依頼文の本文を返す。"""
+    if args.redact:  # 何も呼ばず・何も書かず止める (plan も consult も同じ)
+        raise DriverError(REDACT_UNSUPPORTED)
     try:
         text = Path(args.brief).read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
@@ -232,7 +235,7 @@ def command_consult(args: argparse.Namespace, drivers: Drivers) -> int:
              "design_rel": design_rel, "history": [], "stages": [],
              "args": {"brief": str(Path(args.brief).resolve()), "workdir": str(workdir), "checks": str(checks),
                       "checks_sha256": sha256_file(checks), "files": [str(Path(f).resolve()) for f in args.files],
-                      "effort": args.effort, "no_ds": args.no_ds, "redact": args.redact}}
+                      "effort": args.effort, "no_ds": args.no_ds}}
     sess = Session(run_dir, state, drivers)
     sess.phase(P_CONSULTING)
     try:
@@ -276,7 +279,7 @@ def consult_body(sess: Session, brief_text: str) -> int:
     root = run_dir / "review_design"
     rv = sess.lv3a("design_review", ["run", "--brief", str(brief_review), "--files", str(design_path), *a["files"],
                                      "--label", f"{st['label']}-design", "--work-root", str(root), "--effort", a["effort"],
-                                     *flag_args(a["no_ds"], a["redact"])], root)
+                                     *flag_args(a["no_ds"])], root)
     if rv.exit_code not in LV3A_OK:
         return sess.fail(P_CONSULT_FAILED, map_lv3a_exit(rv.exit_code),
                          f"設計レビュー（Lv3A）が失敗（exit {rv.exit_code}）: {clip(' '.join(rv.stderr.split()), 300)}")
@@ -369,7 +372,7 @@ class Review:
         return self.run.clusters if self.run else []
 
     def record(self) -> dict[str, Any]:
-        return {"performed": self.performed, "reason": self.reason, "run_dir": str(self.run.run_dir) if self.run else "",
+        return {"performed": self.performed, "reason": self.reason, "run_dir": str(self.run.run_dir) if self.run and self.run.run_dir else "",
                 "reds": [{"title": c.get("title"), "adopt": c.get("adopt"), "proposal": c.get("proposal")}
                          for c in technical(self.clusters, RED)],
                 "oranges": [str(c.get("title")) for c in technical(self.clusters, "🟠")],
@@ -390,7 +393,8 @@ def diff_review(sess: Session, suffix: str, brief: str, facts: Sequence[str], pa
         return Review(True, ("暫定: " + rv.partial_note) if rv.partial_note else "", rv)
     detail = clip(" ".join(rv.stderr.split()), 300) or "Lv3A の run ディレクトリを特定できない"
     if rv.exit_code == 1:
-        return Review(False, f"レビュー未実施（Lv3A が前段で停止: {detail}）", rv)
+        return Review(False, f"レビュー未実施（Lv3A が前段で停止: {detail}）。差分 {patches[0]} は自動レビューしていない。"
+                             "内容を確認し、必要なら /lv3a で個別にレビューする（伏字が要るなら --redact 付き）", rv)
     return Review(False, f"レビュー失敗（Lv3A exit {rv.exit_code}: {detail}）", rv)
 
 
@@ -518,7 +522,7 @@ def build_parser() -> argparse.ArgumentParser:
             sp.add_argument(flag, required=True)
         sp.add_argument("--files", nargs="*", default=[])
         sp.add_argument("--no-ds", action="store_true")
-        sp.add_argument("--redact", action="store_true")
+        sp.add_argument("--redact", action="store_true", help="使えない（指定すると拒否する。設計段階に伏字が効かないため）")
 
     inputs(sub.add_parser("plan", help="承認用の事前情報（何も書かない）"))
     consult = sub.add_parser("consult", help="設計案→Lv3A レビュー→質問（exit 20）")

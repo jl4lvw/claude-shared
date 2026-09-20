@@ -13,7 +13,7 @@ import re
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -27,6 +27,17 @@ EXIT_OK, EXIT_GENERIC, EXIT_CODEX_FAILED, EXIT_REVIEW_FAILED = 0, 1, 3, 12
 EXIT_AWAITING, EXIT_NEEDS_JUDGMENT, EXIT_TIMEOUT = 20, 21, 30
 LV0_PASS, LV3A_PASS = (0, 1, 2, 3, 10, 11, 30), (1, 2, 11, 30)
 LV3A_OK = (0, 20)  # 20 = 暫定成功 (警告つきで成功扱い)
+
+# Lv5A は --redact を受け付けない: 設計段階の Codex (Lv0) には依頼文がそのまま渡り、伏字が効かないため
+# (2026-09-20 の検証で、伏字したつもりの依頼文が Codex のセッションログに残っていた)。
+# Lv3A が出す「--redact を付けて続行」の案内は従うと拒否されるので、Lv5A で通る案内へ差し替える
+REDACT_UNSUPPORTED = (
+    "Lv5A は --redact を受け付けません（設計段階の Codex には依頼文がそのまま渡り、伏字が効かないため）。"
+    "秘匿情報の候補がある行を依頼文・参考ファイルから外し、--redact なしでやり直してください。"
+    "伏字してレビューだけ受けたいときは /lv3a を使う（実装はしない）"
+)
+REDACT_UNAVAILABLE = "（Lv5A では伏字して続行できません。秘匿情報の候補を取り除いてください）"
+REDACT_HINT_RE = re.compile(r"伏字して続行するには[^\r\n]*")
 
 # 子プロセスへ渡す環境変数の許可リスト (鍵・トークン類は通さない。接頭辞は下請けが必要とするものだけ)
 CHILD_ENV_ALLOWED = frozenset({
@@ -112,8 +123,21 @@ def run_cli(script: Path, args: Sequence[str], timeout: int) -> CliResult:
     return CliResult(EXIT_TIMEOUT if timed_out else proc.returncode, text_out, text_err, time.monotonic() - started)
 
 
+def scrub_redact_hint(text: str) -> str:
+    """Lv3A の「--redact を付けて続行」の案内を、Lv5A で通る案内へ差し替える (従うと拒否されるため)。"""
+    return REDACT_HINT_RE.sub(REDACT_UNAVAILABLE, text)
+
+
+def without_redact_hint(runner: Runner) -> Runner:
+    def run(args: Sequence[str], timeout: int) -> CliResult:
+        result = runner(args, timeout)
+        return replace(result, stdout=scrub_redact_hint(result.stdout), stderr=scrub_redact_hint(result.stderr))
+
+    return run
+
+
 def default_drivers() -> Drivers:
-    return Drivers(lambda a, t: run_cli(LV0_SCRIPT, a, t), lambda a, t: run_cli(LV3A_SCRIPT, a, t))
+    return Drivers(lambda a, t: run_cli(LV0_SCRIPT, a, t), without_redact_hint(lambda a, t: run_cli(LV3A_SCRIPT, a, t)))
 
 
 def map_lv0_exit(code: int) -> int:
