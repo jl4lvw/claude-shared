@@ -853,7 +853,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--checks", required=True, help="検査定義 JSON（作業フォルダの外に置く）")
         if name in ("plan", "run"):
             p.add_argument("--max-fix-rounds", type=int, default=2, choices=range(0, 4))
-            p.add_argument("--quota-stop", type=float, default=80.0, help="週の利用枠がこの % 以上なら止める")
+            p.add_argument("--quota-stop", type=float, default=80.0, help="週の利用枠がこの %% 以上なら止める")
         if name == "plan":
             p.add_argument("--review", choices=("none", "deepseek"), default="none")
         if name == "run":

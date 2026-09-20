@@ -11,15 +11,26 @@ import shutil
 import subprocess
 import sys
 import time
+from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, NamedTuple, Sequence
 
 TOOLS = Path(__file__).resolve().parent
 DEFAULT_WORK_ROOT = Path("C:/tmp-ai/cgd_lv3a")
 MAX_INPUT_BYTES = 200 * 1024
+FACTS_HEADING = "## 確認済みの事実"
+# 使えるレビュアー (実行成功かつ JSON ゲート合格) がこの数以上なら、欠けた者を残して暫定版で統合する
+MIN_USABLE_REVIEWERS = 2
+PARTIAL_EXIT = 20
+REDACT_HINT = "伏字して続行するには --redact を付け、ユーザーの承認を取ってください（plan --redact で伏字プレビューを確認できます）"
+REDACTION_NOTE = (
+    "※ 送信前に、秘匿情報の候補を [伏字:<種別>] へ置換しています（当たった位置から行末までを置換するため、"
+    "行が途中で切れて見えることがあります）。伏字そのものや、それによる欠けは指摘しないでください。"
+)
+PROPOSAL_NOTE = "※ 採否・対応案は統合 AI の提案です。最終判断はユーザーが行います。"
 JSON_INSTRUCTION = (
     "【回答形式・必須】回答本文の最後に、次の形式の JSON ブロックを 1 つだけ付けること"
     "（```json で囲む）。本文で述べた指摘を 1 件 1 要素で漏れなく列挙する。"
@@ -48,26 +59,42 @@ RETRY_NOTE = (
     "前回の回答は JSON ブロックが無い/不正だった。指示どおり、回答本文の末尾に JSON "
     "ブロックを付けて、回答全体を出し直せ"
 )
+PRIVATE_KEY = "private-key"
+# 秘密鍵ブロックの終端。BEGIN 側の正規表現は SECRET_PATTERNS の PRIVATE_KEY にある
+PEM_END = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----", re.IGNORECASE)
+
+
+class SecretPattern(NamedTuple):
+    name: str  # 伏字マーカー [伏字:<name>] と redaction.json に使う ASCII 名
+    label: str  # 検出メッセージ用の日本語ラベル
+    regex: re.Pattern[str]
+
+
 SECRET_PATTERNS = (
-    ("OpenAI API キー", re.compile(r"sk-[A-Za-z0-9]{10,}", re.IGNORECASE)),
-    ("AWS アクセスキー", re.compile(r"AKIA[0-9A-Z]{12,}", re.IGNORECASE)),
-    ("API キー", re.compile(r"api[_-]?key\s*[:=]", re.IGNORECASE)),
-    ("password", re.compile(r"password\s*[:=]", re.IGNORECASE)),
-    ("passwd", re.compile(r"passwd\s*[:=]", re.IGNORECASE)),
-    ("Bearer token", re.compile(r"bearer\s+[A-Za-z0-9._-]{10,}", re.IGNORECASE)),
-    (
+    SecretPattern("sk-key", "OpenAI API キー", re.compile(r"sk-[A-Za-z0-9]{10,}", re.IGNORECASE)),
+    SecretPattern("aws-access-key", "AWS アクセスキー", re.compile(r"AKIA[0-9A-Z]{12,}", re.IGNORECASE)),
+    SecretPattern("api-key", "API キー", re.compile(r"api[_-]?key\s*[:=]", re.IGNORECASE)),
+    SecretPattern("password", "password", re.compile(r"password\s*[:=]", re.IGNORECASE)),
+    SecretPattern("passwd", "passwd", re.compile(r"passwd\s*[:=]", re.IGNORECASE)),
+    SecretPattern("bearer", "Bearer token", re.compile(r"bearer\s+[A-Za-z0-9._-]{10,}", re.IGNORECASE)),
+    SecretPattern(
+        "email",
         "メールアドレス",
         re.compile(
             r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.(com|jp|net)", re.IGNORECASE
         ),
     ),
-    ("秘密鍵", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", re.IGNORECASE)),
-    ("JWT", re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}", re.IGNORECASE)),
-    ("資格情報付き接続文字列", re.compile(r"[a-z][a-z0-9+.-]*://[^\s:/@]+:[^\s@]+@", re.IGNORECASE)),
-    ("AWS secret access key", re.compile(r"aws_secret_access_key\s*[:=]", re.IGNORECASE)),
-    ("secret", re.compile(r"secret\s*[:=]\s*\S{8,}", re.IGNORECASE)),
-    ("token", re.compile(r"token\s*[:=]\s*\S{16,}", re.IGNORECASE)),
+    SecretPattern(PRIVATE_KEY, "秘密鍵", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", re.IGNORECASE)),
+    SecretPattern("jwt", "JWT", re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}", re.IGNORECASE)),
+    SecretPattern(
+        "conn-string", "資格情報付き接続文字列",
+        re.compile(r"[a-z][a-z0-9+.-]*://[^\s:/@]+:[^\s@]+@", re.IGNORECASE),
+    ),
+    SecretPattern("aws-secret", "AWS secret access key", re.compile(r"aws_secret_access_key\s*[:=]", re.IGNORECASE)),
+    SecretPattern("secret", "secret", re.compile(r"secret\s*[:=]\s*\S{8,}", re.IGNORECASE)),
+    SecretPattern("token", "token", re.compile(r"token\s*[:=]\s*\S{16,}", re.IGNORECASE)),
 )
+PRIVATE_KEY_PATTERN = next(item for item in SECRET_PATTERNS if item.name == PRIVATE_KEY)
 
 
 @dataclass(frozen=True)
@@ -92,6 +119,23 @@ class ReviewerSpec:
 class ParsedReview:
     body: str
     findings: list[dict[str, str]]
+
+
+@dataclass(frozen=True)
+class Redaction:
+    """伏字にした 1 か所。中身は持たない (redaction.json にそのまま書く)。"""
+
+    file: str
+    line: int
+    pattern: str
+
+
+@dataclass(frozen=True)
+class LoadedInputs:
+    brief: str
+    files: list[tuple[Path, str]]
+    total: int
+    redactions: list[Redaction]
 
 
 REVIEWERS = (
@@ -119,13 +163,96 @@ def read_utf8(path: Path) -> str:
 def secret_hits(label: str, text: str) -> list[str]:
     hits: list[str] = []
     for number, line in enumerate(text.splitlines(), 1):
-        for pattern_name, pattern in SECRET_PATTERNS:
-            if pattern.search(line):
-                hits.append(f"{label}: {pattern_name} / 行 {number}")
+        for pattern in SECRET_PATTERNS:
+            if pattern.regex.search(line):
+                hits.append(f"{label}: {pattern.label} / 行 {number}")
     return hits
 
 
-def validate_inputs(brief_path: Path, files: Sequence[Path]) -> tuple[str, list[tuple[Path, str]], int]:
+def redaction_marker(name: str) -> str:
+    return f"[伏字:{name}]"
+
+
+def _earliest_hit(line: str) -> tuple[re.Match[str], SecretPattern] | None:
+    """行内でいちばん左に当たったパターン。同じ位置なら SECRET_PATTERNS の並びが先のもの。"""
+    best: tuple[re.Match[str], SecretPattern] | None = None
+    for pattern in SECRET_PATTERNS:
+        match = pattern.regex.search(line)
+        if match and (best is None or match.start() < best[0].start()):
+            best = (match, pattern)
+    return best
+
+
+def redact_text(text: str) -> tuple[str, list[tuple[int, str]]]:
+    """秘匿候補を伏字にした文章と、[(行番号, パターン名)] を返す。当たった中身は返さない。
+
+    当たった位置から行末までを `[伏字:<パターン名>]` に置換する (1 行に複数当たれば、いちばん左の当たりから
+    行末までを 1 つにまとめる)。秘密鍵は BEGIN から END まで (END が無ければ文末まで) を 1 つに置換する。
+    行番号は secret_hits と同じ splitlines() の数え方 (元の文章の行)。
+    """
+    pending = deque(enumerate(text.splitlines(keepends=True), 1))
+    out: list[str] = []
+    found: list[tuple[int, str]] = []
+    while pending:
+        number, raw = pending.popleft()
+        body = raw.splitlines()[0]
+        eol = raw[len(body):]
+        hit = _earliest_hit(body)
+        if hit is None:
+            out.append(raw)
+            continue
+        match, pattern = hit
+        found.append((number, pattern.name))
+        out.append(body[: match.start()] + redaction_marker(pattern.name))
+        swallowed = body[match.start():]
+        # 行末までに秘密鍵の BEGIN が含まれるなら (別のパターンが先に当たった行でも)、END まで読み飛ばす。
+        # 鍵の本体行は何のパターンにも当たらないので、ここで落とさないと本体が残る
+        begin = PRIVATE_KEY_PATTERN.regex.search(swallowed)
+        if begin is None:
+            out.append(eol)
+            continue
+        if pattern.name != PRIVATE_KEY:
+            found.append((number, PRIVATE_KEY))
+        tail = swallowed[begin.end():] + eol
+        while True:
+            end = PEM_END.search(tail)
+            if end:
+                rest = tail[end.end():]
+                if rest:
+                    pending.appendleft((number, rest))  # END の後ろの続きも再走査する
+                break
+            if not pending:
+                break  # END が無い: 文末まで置換
+            number, tail = pending.popleft()
+    return "".join(out), found
+
+
+def scan_inputs(brief_path: Path, brief: str, loaded: Sequence[tuple[Path, str]]) -> list[str]:
+    hits = secret_hits(str(brief_path), brief)
+    for path, text in loaded:
+        hits.extend(secret_hits(str(path), text))
+    return hits
+
+
+def redact_inputs(
+    brief_path: Path, brief: str, loaded: Sequence[tuple[Path, str]]
+) -> tuple[str, list[tuple[Path, str]], list[Redaction]]:
+    redactions: list[Redaction] = []
+
+    def apply(label: str, text: str) -> str:
+        redacted, found = redact_text(text)
+        redactions.extend(Redaction(label, line, name) for line, name in found)
+        return redacted
+
+    new_brief = apply(str(brief_path), brief)
+    return new_brief, [(path, apply(str(path), text)) for path, text in loaded], redactions
+
+
+def load_inputs(brief_path: Path, files: Sequence[Path], *, redact: bool = False) -> LoadedInputs:
+    """依頼文と対象を読み、検査する。秘匿候補があれば、既定は停止 (fail-closed)。
+
+    redact=True のときだけ、当たった箇所を伏字にして続行する。伏字後にもう一度走査し、当たりが残れば停止する。
+    """
     paths = [brief_path, *files]
     sizes: list[int] = []
     for index, path in enumerate(paths):
@@ -141,18 +268,30 @@ def validate_inputs(brief_path: Path, files: Sequence[Path]) -> tuple[str, list[
     if total > MAX_INPUT_BYTES:
         raise FrontError(f"入力合計が 200KB を超えています: {total} bytes")
     brief = read_utf8(brief_path)
-    if "## 確認済みの事実" not in brief:
+    if FACTS_HEADING not in brief:
         raise FrontError("依頼文に『## 確認済みの事実』の欄が要る")
     loaded: list[tuple[Path, str]] = []
     for path in files:
         text = read_utf8(path)
         loaded.append((path, text))
-    hits = secret_hits(str(brief_path), brief)
-    for path, text in loaded:
-        hits.extend(secret_hits(str(path), text))
+    hits = scan_inputs(brief_path, brief, loaded)
+    redactions: list[Redaction] = []
     if hits:
-        raise FrontError("秘匿情報候補を検出しました（内容は非表示）:\n" + "\n".join(hits))
-    return brief, loaded, total
+        if not redact:
+            raise FrontError("秘匿情報候補を検出しました（内容は非表示）:\n" + "\n".join(hits) + "\n" + REDACT_HINT)
+        brief, loaded, redactions = redact_inputs(brief_path, brief, loaded)
+        remaining = scan_inputs(brief_path, brief, loaded)
+        if remaining:
+            raise FrontError("伏字後にも秘匿情報候補が残っています（伏字が不完全・内容は非表示）:\n" + "\n".join(remaining))
+        if FACTS_HEADING not in brief:
+            raise FrontError("伏字により依頼文の『## 確認済みの事実』の欄が消えました（秘密鍵の BEGIN 以降が文末まで置換された可能性）")
+    return LoadedInputs(brief, loaded, total, redactions)
+
+
+def validate_inputs(brief_path: Path, files: Sequence[Path]) -> tuple[str, list[tuple[Path, str]], int]:
+    """従来の入口 (伏字なし。秘匿候補があれば停止)。"""
+    inputs = load_inputs(brief_path, files)
+    return inputs.brief, inputs.files, inputs.total
 
 
 # cgd_lv0_codex の公開 API。名前を推測で呼ぶと、例外を握りつぶして PATH の npm shim
@@ -198,8 +337,10 @@ def language_for(path: Path) -> str:
     }.get(path.suffix.lower(), "text")
 
 
-def build_review_input(brief: str, loaded: Sequence[tuple[Path, str]]) -> str:
+def build_review_input(brief: str, loaded: Sequence[tuple[Path, str]], redaction_count: int = 0) -> str:
     parts = [brief.rstrip(), ""]
+    if redaction_count:
+        parts.extend((REDACTION_NOTE, ""))
     for path, text in loaded:
         parts.extend((f"### {path}", f"```{language_for(path)}", text.rstrip(), "```", ""))
     return "\n".join(parts)
@@ -363,6 +504,11 @@ def ds_yen(stderr: str) -> float:
     return float(match.group(1).replace(",", "")) if match else 0.0
 
 
+def failure_reason(result: ExecResult) -> str:
+    """実行失敗の理由。_subprocess はタイムアウトを終了コード 124 で返す。"""
+    return "タイムアウト" if result.returncode == 124 else f"実行失敗(終了コード{result.returncode})"
+
+
 def attempt_record(spec: ReviewerSpec, result: ExecResult, gate_error: str | None) -> dict[str, Any]:
     return {
         "returncode": result.returncode,
@@ -419,7 +565,7 @@ def anonymize(
     return sections, mapping, metadata
 
 
-INTEGRATOR_RULES = """あなたは複数のレビューを統合する議長。R1〜R4 の出所は伏せてある。どの AI かを推測して扱いを変えないこと。
+INTEGRATOR_RULES = """あなたは複数のレビューを統合する議長。R1〜R<K> の出所は伏せてある。どの AI かを推測して扱いを変えないこと。
 与えられた指摘 ID（R<n>#<k>）すべてを、ちょうど 1 つのクラスタに割り当てる。似た指摘は 1 クラスタにまとめる。technical と critic は同じクラスタに混ぜない。クラスタ数の上限は設けない。
 重大度と出所の数は書かない（機械が指摘 ID から算出する）。
 出力は JSON のみ: {"summary":"総評(1〜3文)","clusters":[{"id":"C1","kind":"technical","title":"40字以内","members":["R1#1","R2#3"],"proposal":"対応案(1文)","adopt":"採用|部分採用|見送り","adopt_reason":"1文"}],"questions_for_user":[{"id":"Q1","question":"...","options":[{"label":"...","description":"..."}],"recommended":"labelのどれか","recommended_reason":"根拠。依頼文の『確認済みの事実』の語句か、R<n>#<k> を引くこと"}],"next_actions":["..."]}
@@ -427,7 +573,8 @@ questions_for_user はユーザーの方向性の判断が要るものだけ、�
 
 
 def integrator_input(sections: Sequence[dict[str, Any]]) -> str:
-    parts = [INTEGRATOR_RULES, "", "レビュー入力:"]
+    # 暫定版では使える者だけが R1..Rk になる。k は実際の件数 (欠けた者が誰かは伏せる)
+    parts = [INTEGRATOR_RULES.replace("<K>", str(len(sections))), "", "レビュー入力:"]
     for section in sections:
         parts.extend((f"## {section['alias']} ({section['kind']})", section["body"], "指摘一覧:"))
         for item in section["findings"]:
@@ -573,6 +720,25 @@ def _safe_cell(value: Any) -> str:
     return str(value).replace("|", "｜").replace("\r", " ").replace("\n", " ")
 
 
+def _short_reason(reason: str) -> str:
+    """欠落理由を見出し用に短くする (「JSON不正: …」→「JSON不正」、「実行失敗(終了コード1)」→「実行失敗」)。"""
+    return re.split(r"[(:]", reason, maxsplit=1)[0].strip()
+
+
+def _missing_view(name: str) -> str:
+    """欠けた者の視点とベンダー (例: DeepSeek(技術))。"""
+    spec = next((item for item in REVIEWERS if item.name == name), None)
+    if spec is None:
+        return name
+    return f"{spec.vendor}({'技術' if spec.kind == 'technical' else '批評'})"
+
+
+def partial_warning(missing: Sequence[dict[str, str]]) -> str:
+    names = "、".join(item["name"] for item in missing)
+    views = "、".join(_missing_view(item["name"]) for item in missing)
+    return f"⚠ 暫定: {names} が欠けています。収束の判定が弱く、{views} の指摘が出ていません。"
+
+
 def build_report(
     run_name: str,
     elapsed: float,
@@ -583,24 +749,37 @@ def build_report(
     costs: dict[str, Any],
     run_dir: Path,
     no_ds: bool,
+    *,
+    partial_missing: Sequence[dict[str, str]] = (),
+    redaction_count: int = 0,
 ) -> str:
     ranks = {"🔴": 3, "🟠": 2, "🟡": 1, "高": 3, "中": 2, "低": 1}
     ordered = sorted(clusters, key=lambda item: (-ranks[item["severity"]], -len(item["vendors"])))
     technical = [item for item in ordered if item["kind"] == "technical"]
     critics = [item for item in ordered if item["kind"] == "critic"]
     shown_tech, shown_crit = list(technical), list(critics)
+    if partial_missing:
+        detail = ", ".join(f"{item['name']}={_short_reason(item['reason'])}" for item in partial_missing)
+        status = f"暫定（欠落: {detail}）"
+    else:
+        status = "成功"
+    header = [f"# {run_name}", "", f"所要: {elapsed:.1f} 秒 / 状態: {status}" + (" / DS なし" if no_ds else "")]
+    if partial_missing:
+        header.append(partial_warning(partial_missing))
+    if redaction_count:
+        header.append(f"伏字: {redaction_count} 件（詳細は redaction.json）")
+    header.extend(("", PROPOSAL_NOTE, ""))
 
     def render(detail_limit: int | None = None, truncate_descriptions: bool = False) -> list[str]:
-        lines = [f"# {run_name}", "", f"所要: {elapsed:.1f} 秒 / 状態: 成功" + (" / DS なし" if no_ds else ""), "",
-                 "※ 採否・対応案は統合 AI の提案です。最終判断はユーザーが行います。", ""]
-        lines.extend(("## 技術レビュー", "", "| 指摘 | 重大度 | Codex | DeepSeek | 採否 | 対応案 |", "|---|---|---|---|---|---|"))
+        lines = list(header)
+        lines.extend(("## 技術レビュー", "", "| 指摘 | 重大度 | Codex | DeepSeek | 採否案 | 対応案 |", "|---|---|---|---|---|---|"))
         for item in shown_tech:
             title = item["title"] + (" (単独)" if item["single_source"] else "")
             lines.append(f"| {_safe_cell(title)} | {item['severity']} | {'✅' if 'Codex' in item['vendors'] else ''} | {'✅' if 'DeepSeek' in item['vendors'] else ''} | {_safe_cell(item.get('adopt', ''))} | {_safe_cell(item.get('proposal', ''))} |")
         omitted = len(technical) - len(shown_tech)
         if omitted:
             lines.append(f"| {_omitted_label([i for i in technical if i not in shown_tech])} | | | | | |")
-        lines.extend(("", "## 批評レビュー", "", "| 観点 | 困り度 | Codex | DeepSeek | 採否 | 改善の方向 |", "|---|---|---|---|---|---|"))
+        lines.extend(("", "## 批評レビュー", "", "| 観点 | 困り度 | Codex | DeepSeek | 採否案 | 改善の方向 |", "|---|---|---|---|---|---|"))
         for item in shown_crit:
             title = item["title"] + (" (単独)" if item["single_source"] else "")
             lines.append(f"| {_safe_cell(title)} | {item['severity']} | {'✅' if 'Codex' in item['vendors'] else ''} | {'✅' if 'DeepSeek' in item['vendors'] else ''} | {_safe_cell(item.get('adopt', ''))} | {_safe_cell(item.get('proposal', ''))} |")
@@ -663,7 +842,7 @@ def build_report(
         truncate_descriptions = True
         lines = render(detail_limit, truncate_descriptions)
     if len(lines) > 90:
-        lines.insert(4, "⚠ 行数超過: 必須節と全 🔴 クラスタを保持するため 90 行を超えています。")
+        lines.insert(lines.index(PROPOSAL_NOTE), "⚠ 行数超過: 必須節と全 🔴 クラスタを保持するため 90 行を超えています。")
     return "\n".join(lines) + "\n"
 
 
@@ -687,12 +866,30 @@ def default_usage_logger() -> None:
     )
 
 
+def print_redaction_preview(brief_path: Path, redactions: Sequence[Redaction]) -> None:
+    """伏字プレビュー。件数・パターン別の件数・行番号だけを出す (伏字にした中身は出さない)。"""
+    if not redactions:
+        print("伏字: 0 件（秘匿情報候補なし）")
+        return
+    print(f"伏字プレビュー（内容は表示しません）: 伏字 {len(redactions)} 件")
+    counts = Counter(item.pattern for item in redactions)
+    print("パターン別: " + " / ".join(f"{name} {count} 件" for name, count in sorted(counts.items())))
+    lines_by_file: dict[str, list[int]] = {}
+    for item in redactions:
+        lines_by_file.setdefault(item.file, []).append(item.line)
+    for file, numbers in lines_by_file.items():
+        label = "依頼文" if file == str(brief_path) else file
+        print(f"- {label}: 行 " + ", ".join(str(number) for number in sorted(set(numbers))))
+    print("※ 伏字にして送るには、ユーザーの承認が必要です（承認後に run --redact を実行）")
+
+
 def command_plan(args: argparse.Namespace, resolver: Callable[[], str | None], weekly: Callable[[], float | None]) -> int:
     try:
-        brief, loaded, total = validate_inputs(Path(args.brief), [Path(item) for item in args.files])
+        inputs = load_inputs(Path(args.brief), [Path(item) for item in args.files], redact=args.redact)
     except FrontError as exc:
         print(str(exc), file=sys.stderr)
         return 1
+    brief, loaded, total = inputs.brief, inputs.files, inputs.total
     codex_path = resolver()
     if not codex_path:
         print("Codex 実行ファイルが見つかりません", file=sys.stderr)
@@ -707,6 +904,8 @@ def command_plan(args: argparse.Namespace, resolver: Callable[[], str | None], w
     for path, text in loaded:
         print(f"- {path}: {len(text.encode('utf-8'))} bytes")
     print(f"合計: {total} bytes")
+    if args.redact:
+        print_redaction_preview(Path(args.brief), inputs.redactions)
     print(f"Codex: {codex_path}")
     print("週枠: 不明（取得失敗）" if weekly_percent is None else f"週枠: {weekly_percent:.1f}%")
     targets = "Codex（OpenAI）" + ("" if args.no_ds else "、DeepSeek（中国本土サーバ）")
@@ -726,10 +925,11 @@ def command_run(
     weekly: Callable[[], float | None],
 ) -> int:
     try:
-        brief, loaded, _ = validate_inputs(Path(args.brief), [Path(item) for item in args.files])
+        inputs = load_inputs(Path(args.brief), [Path(item) for item in args.files], redact=args.redact)
     except FrontError as exc:
         print(str(exc), file=sys.stderr)
         return 1
+    brief, loaded, redactions = inputs.brief, inputs.files, inputs.redactions
     codex_path = resolver()
     if not codex_path:
         print("Codex 実行ファイルが見つかりません", file=sys.stderr)
@@ -753,8 +953,11 @@ def command_run(
     except OSError as exc:
         print(f"run ディレクトリを作成できません: {exc}", file=sys.stderr)
         return 1
-    packed = build_review_input(brief, loaded)
+    packed = build_review_input(brief, loaded, len(redactions))
     (run_dir / "review_input.txt").write_text(packed, encoding="utf-8", newline="")
+    if redactions:
+        # 伏字にした場所 (ファイル・行・パターン名) だけ。中身は入れない
+        write_json(run_dir / "redaction.json", [asdict(item) for item in redactions])
     specs = [item for item in REVIEWERS if not (args.no_ds and item.vendor == "DeepSeek")]
     prompts = {spec.name: reviewer_input(spec, packed) for spec in specs}
     results: dict[str, ExecResult] = {}
@@ -778,11 +981,16 @@ def command_run(
             result_history.append((spec, results[spec.name]))
             save_exec(run_dir, spec.name, results[spec.name])
             attempts[spec.name].append(attempt_record(spec, results[spec.name], None))
-    failed = [spec.name for spec in specs if results[spec.name].returncode != 0]
+    # 実行に失敗した者 (終了コード非 0・タイムアウト) と理由。JSON ゲートの不合格はこの後で別に扱う
+    exec_missing = {
+        spec.name: failure_reason(results[spec.name]) for spec in specs if results[spec.name].returncode != 0
+    }
     base_state: dict[str, Any] = {
         "run_name": run_dir.name,
         "weekly_percent": weekly_percent,
         "no_ds": args.no_ds,
+        "no_partial": args.no_partial,
+        "redactions": len(redactions),
     }
 
     def reviewer_state() -> dict[str, Any]:
@@ -806,20 +1014,25 @@ def command_run(
         return exit_code
 
     integration_results: list[ExecResult] = []
-    if failed:
-        print("レビュアー実行失敗: " + ", ".join(failed), file=sys.stderr)
+    if exec_missing and args.no_partial:
+        # 従来の厳格な挙動: 1 者でも実行に失敗したら、再実行もせず止める
+        print("レビュアー実行失敗: " + ", ".join(exec_missing), file=sys.stderr)
         return finish_failure(
-            "reviewer_execution_failed", 10, gate1={"ok": False, "failed": failed}
+            "reviewer_execution_failed", 10, gate1={"ok": False, "failed": list(exec_missing)}
         )
     parsed: dict[str, ParsedReview] = {}
     gate_errors: dict[str, str] = {}
     for spec in specs:
+        if spec.name in exec_missing:
+            continue
         try:
             parsed[spec.name] = parse_review(results[spec.name].stdout, spec)
         except ValueError as exc:
             gate_errors[spec.name] = str(exc)
             attempts[spec.name][0]["gate_error"] = str(exc)
     retry_specs = [spec for spec in specs if spec.name in gate_errors]
+    if not args.no_partial and len(parsed) + len(retry_specs) < MIN_USABLE_REVIEWERS:
+        retry_specs = []  # 救済できても暫定版に届かない。費用を使わず、従来どおりの失敗で止める
     retry_results: dict[str, ExecResult] = {}
     if retry_specs:
         with ThreadPoolExecutor(max_workers=len(retry_specs)) as executor:
@@ -836,7 +1049,6 @@ def command_run(
                     retry_results[spec.name] = future.result()
                 except Exception as exc:
                     retry_results[spec.name] = ExecResult(127, "", str(exc))
-    retry_failed: list[str] = []
     for spec in retry_specs:
         retry = retry_results[spec.name]
         results[spec.name] = retry
@@ -844,7 +1056,8 @@ def command_run(
         save_exec(run_dir, spec.name, retry, 1)
         gate_error: str | None = None
         if retry.returncode != 0:
-            retry_failed.append(spec.name)
+            exec_missing[spec.name] = failure_reason(retry)
+            gate_errors.pop(spec.name, None)
         else:
             try:
                 parsed[spec.name] = parse_review(retry.stdout, spec)
@@ -853,22 +1066,41 @@ def command_run(
                 gate_error = str(exc)
                 gate_errors[spec.name] = gate_error
         attempts[spec.name].append(attempt_record(spec, retry, gate_error))
-    if retry_failed:
-        print("レビュアー再実行失敗: " + ", ".join(retry_failed), file=sys.stderr)
-        return finish_failure(
-            "reviewer_execution_failed", 10,
-            gate1={"ok": False, "failed": retry_failed},
-        )
-    if gate_errors:
-        for name, error in gate_errors.items():
-            print(f"{name}: {error}", file=sys.stderr)
-        return finish_failure("gate1_failed", 12, gate1={"ok": False, "errors": gate_errors})
+    usable_specs = [spec for spec in specs if spec.name in parsed]
+    if args.no_partial or len(usable_specs) < MIN_USABLE_REVIEWERS:
+        # 暫定版にできない (--no-partial、または使える者が 2 者未満)。原因が実行失敗なら 10、JSON 不正なら 12
+        if exec_missing:
+            print(
+                "レビュアー実行失敗: " + ", ".join(f"{name}（{reason}）" for name, reason in exec_missing.items()),
+                file=sys.stderr,
+            )
+            return finish_failure(
+                "reviewer_execution_failed", 10, gate1={"ok": False, "failed": list(exec_missing)}
+            )
+        if gate_errors:
+            for name, error in gate_errors.items():
+                print(f"{name}: {error}", file=sys.stderr)
+            return finish_failure("gate1_failed", 12, gate1={"ok": False, "errors": gate_errors})
+    # 欠けた者 (実行失敗 / JSON 不正) と理由。使える者が 2 者以上ならここから暫定版になる
+    missing_records = [
+        {
+            "name": spec.name,
+            "reason": exec_missing[spec.name] if spec.name in exec_missing else f"JSON不正: {gate_errors[spec.name]}",
+        }
+        for spec in specs
+        if spec.name not in parsed
+    ]
+    partial = bool(missing_records)
+    if partial:
+        print("暫定版: 欠けた者=" + ", ".join(f"{item['name']}（{item['reason']}）" for item in missing_records), file=sys.stderr)
+    partial_extra: dict[str, Any] = {"partial": {"missing": missing_records}} if partial else {}
     # 再実行があった者は、採用した (=見出しの出所の) 再実行のログを指す
     log_files = {
         spec.name: (f"{spec.name}.retry1" if len(attempts[spec.name]) > 1 else spec.name)
         for spec in specs
     }
-    sections, mapping, metadata = anonymize(parsed, specs, run_dir.name, log_files)
+    # 統合・ゲート2・匿名化は使える者だけが対象 (R1..Rk)
+    sections, mapping, metadata = anonymize(parsed, usable_specs, run_dir.name, log_files)
     integration_prompt = integrator_input(sections)
     try:
         integration = integrator_runner(integration_prompt, run_dir, args.codex_timeout, codex_path)
@@ -910,15 +1142,17 @@ def command_run(
         return finish_failure(
             "gate2_failed", 13, mapping=mapping, integration=asdict(integration),
             gate1={"ok": True}, gate2={"ok": False, "error": integration_error},
+            **partial_extra,
         )
     clusters = enrich_clusters(payload, metadata)
     questions = prepare_questions(payload, brief, metadata)
     costs = calculate_costs(result_history, integration_results)
     elapsed = time.monotonic() - started
+    exit_code = PARTIAL_EXIT if partial else 0
     state = {
         **base_state,
-        "status": "success",
-        "exit_code": 0,
+        "status": "partial" if partial else "success",
+        "exit_code": exit_code,
         "elapsed_seconds": elapsed,
         "mapping": mapping,
         "reviewers": reviewer_state(),
@@ -927,17 +1161,21 @@ def command_run(
         "gate2": {"ok": True},
         "clusters": clusters,
         "costs": costs,
+        **partial_extra,
     }
     write_json(run_dir / "questions.json", questions)
     write_json(run_dir / "run.json", state)
-    report = build_report(run_dir.name, elapsed, clusters, metadata, payload, questions, costs, run_dir, args.no_ds)
+    report = build_report(
+        run_dir.name, elapsed, clusters, metadata, payload, questions, costs, run_dir, args.no_ds,
+        partial_missing=missing_records, redaction_count=len(redactions),
+    )
     (run_dir / "report.md").write_text(report, encoding="utf-8", newline="")
     print(report, end="")
     try:
         usage_logger()
     except Exception:
         pass
-    return 0
+    return exit_code
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -947,12 +1185,24 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--brief", required=True)
     plan.add_argument("--files", nargs="*", default=[])
     plan.add_argument("--no-ds", action="store_true")
+    plan.add_argument(
+        "--redact", action="store_true",
+        help="秘匿候補を伏字にした場合のプレビューを出す (要ユーザー承認。中身は表示しない)",
+    )
     run = subparsers.add_parser("run", help="レビューと統合を実行")
     run.add_argument("--brief", required=True)
     run.add_argument("--files", nargs="*", default=[])
     run.add_argument("--label", default="lv3a")
     run.add_argument("--effort", choices=("medium", "high"), default="medium")
     run.add_argument("--no-ds", action="store_true")
+    run.add_argument(
+        "--no-partial", action="store_true",
+        help="一部のレビュアーが失敗したとき暫定版にせず、従来どおり停止する (exit 10/12)",
+    )
+    run.add_argument(
+        "--redact", action="store_true",
+        help="秘匿候補を伏字にして続行する (ユーザーの承認後にだけ付ける)",
+    )
     run.add_argument("--work-root", default=str(DEFAULT_WORK_ROOT))
     run.add_argument("--codex-timeout", type=int, default=600)
     run.add_argument("--ds-timeout", type=int, default=300)
@@ -968,9 +1218,12 @@ def main(
     resolver: Callable[[], str | None] = resolve_codex,
     weekly: Callable[[], float | None] = get_weekly_percent,
 ) -> int:
-    reconfigure = getattr(sys.stdout, "reconfigure", None)
-    if callable(reconfigure):
-        reconfigure(encoding="utf-8")
+    # stdout だけでなく stderr も UTF-8 にする。停止理由 (秘匿候補の行番号・--redact の案内など) は
+    # stderr に出るので、コンソールのコードページ (cp932) のままだと Claude が文字化けして読めない
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8")
     parser = build_parser()
     try:
         args = parser.parse_args(argv)

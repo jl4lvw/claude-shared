@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import pytest
 
@@ -87,18 +87,27 @@ class FakeIntegrator:
     def __init__(self, invalid_count: int = 0) -> None:
         self.invalid_count = invalid_count
         self.calls = 0
+        self.prompts: list[str] = []
 
     def __call__(self, prompt: str, cwd: Path, timeout: int, codex_path: str) -> target.ExecResult:
         del cwd, timeout, codex_path
         self.calls += 1
+        self.prompts.append(prompt)
         return target.ExecResult(0, integration_output(prompt, omit_last=self.calls <= self.invalid_count), "")
 
 
-def run_args(brief: Path, work_root: Path, *, no_ds: bool = False) -> list[str]:
+def run_args(brief: Path, work_root: Path, *, no_ds: bool = False, extra: Sequence[str] = ()) -> list[str]:
     args = ["run", "--brief", str(brief), "--work-root", str(work_root), "--label", "test"]
     if no_ds:
         args.append("--no-ds")
+    args.extend(extra)
     return args
+
+
+def load_run(work_root: Path) -> tuple[Path, dict[str, Any]]:
+    """work_root の唯一の run ディレクトリと、その run.json。"""
+    run_dir = next(work_root.iterdir())
+    return run_dir, json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
 
 
 def invoke(
@@ -261,8 +270,10 @@ def test_report_has_tables_red_details_limit_and_missing_reason(tmp_path: Path) 
         "run", 1.0, target.enrich_clusters(payload, metadata), metadata, payload, questions,
         {"codex_calls": 3, "codex_tokens": 100, "ds_calls": 2, "ds_yen": 1.5}, tmp_path, False,
     )
-    assert "| 指摘 | 重大度 | Codex | DeepSeek | 採否 | 対応案 |" in report
-    assert "| 観点 | 困り度 | Codex | DeepSeek | 採否 | 改善の方向 |" in report
+    # 採否は AI の提案で、最終判断は利用者。列見出しも「採否案」にする (JSON の項目名 adopt は据え置き)
+    assert "| 指摘 | 重大度 | Codex | DeepSeek | 採否案 | 対応案 |" in report
+    assert "| 観点 | 困り度 | Codex | DeepSeek | 採否案 | 改善の方向 |" in report
+    assert "| 採否 |" not in report
     assert "R2#1 (DeepSeek): B" in report
     assert "(根拠なし)" in report
     assert len(report.splitlines()) <= 90
@@ -289,15 +300,17 @@ def test_reviewer_invalid_json_retries_once_then_succeeds(tmp_path: Path) -> Non
 
 
 def test_reviewer_invalid_twice_returns_12(tmp_path: Path) -> None:
+    """使える者が 2 者未満 (3 者が再実行後も JSON 不正) なら、従来どおり exit 12。"""
     brief = write(tmp_path / "brief.md", brief_text())
-    runner = FakeReviewRunner({"codex_tech": 2})
+    runner = FakeReviewRunner({"codex_tech": 2, "codex_crit": 2, "ds_tech": 2})
     assert invoke(run_args(brief, tmp_path / "runs"), runner) == 12
     assert runner.calls["codex_tech"] == 2
 
 
 def test_reviewer_nonzero_returns_10_without_retry(tmp_path: Path) -> None:
+    """使える者が 2 者未満 (3 者が実行失敗) なら、従来どおり exit 10 で再実行しない。"""
     brief = write(tmp_path / "brief.md", brief_text())
-    runner = FakeReviewRunner(exit_codes={"ds_crit": 124})
+    runner = FakeReviewRunner(exit_codes={"ds_crit": 124, "ds_tech": 1, "codex_crit": 1})
     assert invoke(run_args(brief, tmp_path / "runs"), runner) == 10
     assert runner.calls["ds_crit"] == 1
 

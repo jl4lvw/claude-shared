@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import sys
 import threading
@@ -171,11 +172,14 @@ def test_integration_retry_preserves_first_log(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("expected", "runner", "integrator"),
+    ("expected", "runner", "integrator", "extra"),
     [
-        (10, RecordingRunner(exit_codes={"ds_crit": 124}), FakeIntegrator()),
-        (12, RecordingRunner(set(item.name for item in target.REVIEWERS), always_invalid=True), FakeIntegrator()),
-        (13, RecordingRunner(), FakeIntegrator(2)),
+        # 使える者が 2 者未満 (3 者が実行失敗) なら従来どおり 10
+        (10, RecordingRunner(exit_codes={"ds_crit": 124, "ds_tech": 1, "codex_crit": 1}), FakeIntegrator(), ()),
+        # --no-partial なら 1 者の実行失敗でも従来どおり 10
+        (10, RecordingRunner(exit_codes={"ds_crit": 124}), FakeIntegrator(), ("--no-partial",)),
+        (12, RecordingRunner(set(item.name for item in target.REVIEWERS), always_invalid=True), FakeIntegrator(), ()),
+        (13, RecordingRunner(), FakeIntegrator(2), ()),
     ],
 )
 def test_failures_include_all_attempt_costs(
@@ -183,10 +187,11 @@ def test_failures_include_all_attempt_costs(
     expected: int,
     runner: RecordingRunner,
     integrator: FakeIntegrator,
+    extra: tuple[str, ...],
 ) -> None:
     brief = write(tmp_path / "brief.md", brief_text())
     work = tmp_path / "runs"
-    assert invoke(run_args(brief, work), reviewer=runner, integrator=integrator) == expected
+    assert invoke(run_args(brief, work, extra=extra), reviewer=runner, integrator=integrator) == expected
     _, state = load_state(work)
     assert "costs" in state
     assert state["costs"]["codex_calls"] >= 2
@@ -446,3 +451,11 @@ def test_retries_are_parallel_and_effort_is_argument(tmp_path: Path) -> None:
     assert time.monotonic() - started < 1
     assert runner.efforts and set(runner.efforts) == {"medium"}
     assert not hasattr(target.default_reviewer_runner, "effort")
+
+
+def test_stderr_is_utf8_even_when_the_console_code_page_is_not(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """回帰 (実走): stdout だけ UTF-8 にしていたため、停止理由 (stderr) が cp932 のままで文字化けした。"""
+    raw = io.BytesIO()
+    monkeypatch.setattr(sys, "stderr", io.TextIOWrapper(raw, encoding="cp932", write_through=True))
+    assert target.main(["plan", "--brief", str(tmp_path / "none.md")]) == 1
+    assert "依頼文が存在しません" in raw.getvalue().decode("utf-8")
