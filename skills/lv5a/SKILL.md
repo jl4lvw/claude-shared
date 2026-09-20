@@ -1,8 +1,8 @@
 ---
 name: lv5a
-description: cgd Lv5（設計相談→実装→検証→再レビュー→🔴自動修正1周）を Codex 側に任せて回す軽量スキル。「Lv5A」「レベル5A」「設計から実装まで Codex に任せて」で使う。Claude は依頼文を書く→承認→consult→質問の取り次ぎ→implement→🔴だけ突合→最終質問の取り次ぎ、だけ。cgd 全文（約 76K トークン）を読み込まない分離版
+description: cgd Lv5（設計相談→実装→検証→再レビュー→🔴自動修正1周）を Codex 側に任せて回す軽量スキル。`--roster lv7|lv8` でレビュアーの組を重く（Codex 多重+DeepSeek+Qwen。レベル 7A/8A）できる。「Lv5A」「レベル5A」「レベル7A」「設計から実装まで Codex に任せて」で使う。Claude は依頼文を書く→承認→consult→質問の取り次ぎ→implement→🔴だけ突合→最終質問の取り次ぎ、だけ。cgd 全文（約 76K トークン）を読み込まない分離版
 ---
-<!-- SKILL_VERSION: 2026-09-20_150111 -->
+<!-- SKILL_VERSION: 2026-09-20_195751 -->
 
 # lv5a — 設計相談から実装・再レビューまで Codex に任せる Lv5（Claude のトークンを最小にする）
 
@@ -21,6 +21,14 @@ description: cgd Lv5（設計相談→実装→検証→再レビュー→🔴�
 | 新規モジュール・複数ファイルの実装で、設計の確認→実装→レビューまで Claude を経由させたくない | 変更が約 200 行未満（Claude が直接直す）・設計判断が重い（DB 設計・セキュリティ）→ 通常の `/cgd` |
 | 作業フォルダを 1 つに絞れる。Codex の週枠に余裕（80% 未満） | 本番 DB・外部 API への書込（サンドボックスはネット無し） |
 
+## レビュアーの組（`--roster`）— レベル 7A / 8A
+`plan` / `consult` に `--roster lv3|lv7|lv8`（既定 lv3）。**設計レビューと差分レビュー**の Lv3A にだけ透過する。`state.json` に `roster` を記録し、`implement` は consult の値を使う（`implement` に `--roster` は無い）。
+- **lv7**（＝レベル 7A。`/lv5a --roster lv7`。レビューだけなら `/lv3a --roster lv7`）: Codex medium+high・DeepSeek・Qwen の技術 4 者。論点が関数間の整合性・状態管理・呼出経路ごとの副作用・例外の握り潰しのとき。**lv8**: lv7 + 批評 2 者（Codex high・DeepSeek）= 6 者
+- `--effort` は Lv0 の実装だけに効く。lv7/lv8 では Lv3A へ渡さない（Codex の強度は組が固定で、Lv3A が併用を拒否する）。lv3 は従来どおり
+- **🔴 の自動修正のあとの再レビューは軽い構成のまま**（lv3・DeepSeek なし。目的は「🔴 が解消したか」の確認だけで、cgd の Lv7 でも再レビューは Codex 単独。組まで重くすると 1 周の費用が数倍になる）
+- Qwen の鍵が無い・使わないときは `--no-qwen`（`--no-ds` と同じく透過。plan の Lv3A の点検が鍵の未設定を警告する）。承認に **Qwen（Alibaba DashScope・リージョンは `QWEN_BASE_URL`）への送信**を含める
+- 費用の目安（玩具・実測）: consult(lv7) = 約 3.7 分・Codex 4 回 約 3.3 万 tok（Lv0 の設計 1 回を含む）・DS ¥1.0・Qwen ¥1.4（再実行を含む 2 回）。降格先は従来の `/cgd` Lv7/Lv8（Workflow 版）。生ログは残る
+
 ## 手順
 ### 1. 準備（Claude・Write ツール）
 - **作業フォルダ**: git リポジトリの内側のサブフォルダ（最上位は不可）。`.hq/board` で同じフォルダを触る他セッションが無いか確認
@@ -29,14 +37,14 @@ description: cgd Lv5（設計相談→実装→検証→再レビュー→🔴�
 
 ### 2. 承認（Claude → ユーザー）
 ```bash
-python "C:/ClaudeCode/.claude/tools/cgd_lv5a.py" plan --brief "<依頼文>" --workdir "<作業フォルダ>" --checks "<検査定義>" [--files "<参考ファイル…>"] [--no-ds]
+python "C:/ClaudeCode/.claude/tools/cgd_lv5a.py" plan --brief "<依頼文>" --workdir "<作業フォルダ>" --checks "<検査定義>" [--files "<参考ファイル…>"] [--roster lv3|lv7|lv8] [--no-ds] [--no-qwen]
 ```
 出力（Lv0 の点検＝**秘密情報らしいファイル**・検査コマンド・凍結、Lv3A の点検＝送信先と週枠、流れ）を表にして **AskUserQuestion で承認**。**承認前に何も実行しない**。
 承認に含める: 送信先（Codex=OpenAI／DeepSeek=中国本土）・作業フォルダ・**巻き戻せる範囲**（Lv0 の写し=2MB 以下の通常ファイルだけ）・作業フォルダに設計ファイルが残ること。exit 1/2/11 なら中止。**`--redact` は使えない**（指定すると拒否される。設計段階の Codex に依頼文がそのまま渡り、伏字が効かないため）。plan が秘匿情報候補で止まったら、該当行を依頼文・参考ファイルから外してやり直す（伏字してレビューだけ受けたいなら `/lv3a`。実装はしない）。
 
 ### 3. consult（バックグラウンド・待つだけ）
 ```bash
-python "C:/ClaudeCode/.claude/tools/cgd_lv5a.py" consult --brief … --workdir … --checks … --label "<名前>" [--files …] [--effort medium|high] [--no-ds]
+python "C:/ClaudeCode/.claude/tools/cgd_lv5a.py" consult --brief … --workdir … --checks … --label "<名前>" [--files …] [--roster lv3|lv7|lv8] [--effort medium|high] [--no-ds] [--no-qwen]
 ```
 `run_in_background: true` で起動し終了通知を待つ（実測 4 分）。途中で見に行かない。同じ label の設計ファイルが作業フォルダにあると止まる（label を変える）。**exit 20 = 正常**（回答待ち）。標準出力が `consult_report.md`（60 行以内）。
 
@@ -50,14 +58,14 @@ python "C:/ClaudeCode/.claude/tools/cgd_lv5a.py" consult --brief … --workdir �
 
 ### 6. implement（バックグラウンド・待つだけ）
 ```bash
-python "C:/ClaudeCode/.claude/tools/cgd_lv5a.py" implement --run "<run ディレクトリ>" --answers "<answers.json>" [--effort medium|high] [--max-fix-rounds 2] [--no-ds]
+python "C:/ClaudeCode/.claude/tools/cgd_lv5a.py" implement --run "<run ディレクトリ>" --answers "<answers.json>" [--effort medium|high] [--max-fix-rounds 2] [--no-ds] [--no-qwen]
 ```
 `run_in_background: true`（実測 7 分）。回答は設計より優先される（食い違う点は Codex が回答に合わせて実装し設計書も更新する）。**依頼文と矛盾する回答だと Codex が質問を返して停止する（exit 3・質問は stderr と `logs/`）**。exit 0 = 🔴 なし／**21 = 完了したが要ユーザー判断**（🔴 が残る・レビュー未実施・自動修正が止まった）。標準出力が `final_report.md`。`--max-fix-rounds` は Lv0 の「検査に落ちたときの出し直し」の回数で、🔴 の自動修正（最大 1 周）とは別。final_report に「差分は自動レビューしていない」とあれば（実装差分に秘匿情報の候補があって Lv3A が止まった場合など）、差分は run ディレクトリの `impl_overall.patch`。内容を確認し、必要なら `/lv3a` で個別にレビューする（伏字が要るなら `--redact` 付き）。
 
 ### 7. 🔴 の突合と最終質問（Claude → ユーザー）
 - **🔴 の突き合わせ（ユーザー決定: Claude の関与は「🔴 だけ原文突合」）**: レポートに 🔴 があれば、レビューの run（`state.json` の `result.review2`/`review1` の `run_dir`）の `report.md`「🔴 の詳細」の各見出しを、生ログ（`codex_tech.md` 等）で grep し、題名・対応案と食い違わないかだけ確かめる。**全体の読み直しはしない**
 - `questions_final.json`（G2）を **言い換えずに** AskUserQuestion にする。回答は「受け入れる（反映は別手順）」なら反映（コミット等）は別手順、「破棄して元に戻す」なら Lv0 の写しから `cgd_lv0_codex.py restore`（確認のみが既定）
-- 費用（Codex 呼出回数・tokens／DeepSeek ¥）はレポートの数字をそのまま報告
+- 費用（Codex 呼出回数・tokens／DeepSeek ¥／Qwen ¥）はレポートの数字をそのまま報告
 
 ## 終了コード
 | exit | 意味 | やること |
@@ -79,7 +87,7 @@ python "C:/ClaudeCode/.claude/tools/cgd_lv5a.py" implement --run "<run ディレ
 ## ガードレール（機械が守る）
 - G1 が「この設計で実装する」でない・phase が `awaiting_direction` でない・検査定義/設計ファイルが consult 後に変わっている → implement は動かない（exit 1）
 - 自動修正は最大 1 周（構造的に 2 周目を呼べない）。実装差分の秘匿候補は**自動で伏字にしない**（レビュー未実施として記録し exit 21）。`--redact` は受け付けない（設計段階の Codex に効かないため）
-- 子プロセスには許可リストの環境変数だけ（鍵・トークン類は通さない。`DEEPSEEK_`/`CODEX_`/`CGD_` の接頭辞のみ許可）。サブプロセスは打ち切りで exit 30
+- 子プロセスには許可リストの環境変数だけ（鍵・トークン類は通さない。`DEEPSEEK_`/`CODEX_`/`CGD_` の接頭辞のみ許可。Qwen の `DASHSCOPE_`/`QWEN_` は Lv3A にだけ通し、Lv0 には渡さない）。サブプロセスは打ち切りで exit 30
 - 削除しない（run ディレクトリ・設計ファイル・patch は残る）。費用は失敗した試行も合算し、各工程の終了コードを `state.json` に記録
 - 統合結果は提案。**最終判断はユーザー（Claude ではない）**
 

@@ -15,8 +15,10 @@ from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from functools import partial
 from pathlib import Path
-from typing import Any, Callable, NamedTuple, Sequence
+from typing import Any, Callable, Mapping, NamedTuple, Sequence
+from urllib.parse import urlparse
 
 TOOLS = Path(__file__).resolve().parent
 DEFAULT_WORK_ROOT = Path("C:/tmp-ai/cgd_lv3a")
@@ -43,6 +45,15 @@ TECH_PROMPT = (
     "これは設計レビューです。バグ・設計上の懸念・セキュリティ・副作用・既存仕様との"
     "整合性を厳密にレビューしてください。対象ファイルは開けないので、以下の内容だけで"
     "判断すること。断言できない点は根拠がないと明記すること。日本語で回答。"
+)
+# lv7 / lv8 の技術レビュアーだけに、レビュー入力の先頭側へ足す重点観点 (cgd の Lv7 の SKILL と同じ狙い)。
+# lv3 の入力にはこのブロックを入れない (1 バイトも変えない)
+INTEGRATION_FOCUS = (
+    "【重点観点】通常のバグ・設計上の懸念に加えて、特に次の integration バグを重点的に評価すること。\n"
+    "- 関数間の暗黙の前提違反（呼ぶ側と呼ばれる側で、引数・戻り値・状態の前提が食い違っていないか）\n"
+    "- スコープを跨いだ状態管理の破綻（モジュール・クロージャ・キャッシュ等の更新漏れや取り違え）\n"
+    "- 呼出経路ごとの副作用の差異（同じ処理でも入口によって書込・通知・記録が変わらないか）\n"
+    "- catch / except での例外の握り潰し（throw・raise が黙って失われ、別経路へ落ちていないか）"
 )
 CRIT_PROMPT = (
     "あなたは辛口の評価者です。技術的な正しさ（バグの有無）ではなく『使う人が困らないか』"
@@ -114,6 +125,8 @@ class ReviewerSpec:
     prefix: str
     severities: tuple[str, ...]
     role: str
+    # Codex の推論強度をレビュアーごとに上書きする (None なら --effort)。Codex 以外では使わない
+    effort: str | None = None
 
 
 @dataclass(frozen=True)
@@ -146,12 +159,59 @@ REVIEWERS = (
     ReviewerSpec("ds_crit", "DeepSeek", "critic", "DC", ("高", "中", "低"), "critic"),
 )
 
+# 組 (roster) = レビュアーの構成。lv3 は上の REVIEWERS そのまま。prefix は指摘 ID (<prefix><連番>) の頭になるので、
+# 組の中で重複させない (check_roster が守る)。ID の検査は spec.prefix から導出しており、prefix を決め打ちした箇所は無い
+DEFAULT_EFFORT = "medium"
+TECH_SEVERITIES = ("🔴", "🟠", "🟡")
+CRIT_SEVERITIES = ("高", "中", "低")
+ROSTER_LV7 = (
+    ReviewerSpec("codex_tech", "Codex", "technical", "CT", TECH_SEVERITIES, "reviewer", "medium"),
+    ReviewerSpec("codex_tech_high", "Codex", "technical", "CH", TECH_SEVERITIES, "reviewer", "high"),
+    ReviewerSpec("ds_tech", "DeepSeek", "technical", "DT", TECH_SEVERITIES, "reviewer"),
+    ReviewerSpec("qwen_tech", "Qwen", "technical", "QT", TECH_SEVERITIES, "reviewer"),
+)
+ROSTER_LV8 = (
+    *ROSTER_LV7,
+    ReviewerSpec("codex_crit", "Codex", "critic", "CC", CRIT_SEVERITIES, "critic", "high"),
+    ReviewerSpec("ds_crit", "DeepSeek", "critic", "DC", CRIT_SEVERITIES, "critic"),
+)
+DEFAULT_ROSTER = "lv3"
+ROSTERS: dict[str, tuple[ReviewerSpec, ...]] = {DEFAULT_ROSTER: REVIEWERS, "lv7": ROSTER_LV7, "lv8": ROSTER_LV8}
+# lv7 / lv8 は Codex の強度を組で固定する (--effort と併用不可)。技術レビュアーには重点観点ブロックを足す
+FIXED_EFFORT_ROSTERS = ("lv7", "lv8")
+FOCUS_ROSTERS = ("lv7", "lv8")
+
 ReviewerRunner = Callable[[ReviewerSpec, str, Path, int, str, Path, str], ExecResult]
 IntegratorRunner = Callable[[str, Path, int, str], ExecResult]
 
 
 class FrontError(ValueError):
     pass
+
+
+def check_roster(specs: Sequence[ReviewerSpec]) -> list[str]:
+    """組の不備 (name / prefix の重複) の一覧。prefix が重なると指摘 ID が衝突し、統合が誤る。"""
+    errors: list[str] = []
+    for label, values in (("name", [item.name for item in specs]), ("prefix", [item.prefix for item in specs])):
+        duplicated = sorted({value for value in values if values.count(value) > 1})
+        if duplicated:
+            errors.append(f"{label} が重複: {', '.join(duplicated)}")
+    return errors
+
+
+def roster_specs(name: str) -> tuple[ReviewerSpec, ...]:
+    """組の名前からレビュアーの並びを返す。未知の名前・不備のある組は止める (黙って別の組にしない)。"""
+    if name not in ROSTERS:
+        raise FrontError(f"未知の組: {name}（使えるのは {' / '.join(ROSTERS)}）")
+    errors = check_roster(ROSTERS[name])
+    if errors:
+        raise FrontError(f"組 {name} が不正: " + "; ".join(errors))
+    return ROSTERS[name]
+
+
+def roster_vendors(specs: Sequence[ReviewerSpec]) -> list[str]:
+    """組にいるベンダー (最初に現れた順・重複なし)。レポートの表の列・費用の行になる。"""
+    return list(dict.fromkeys(item.vendor for item in specs))
 
 
 def read_utf8(path: Path) -> str:
@@ -352,12 +412,38 @@ def json_instruction(spec: ReviewerSpec) -> str:
     return JSON_INSTRUCTION.replace("<P>", spec.prefix).replace("<SLIST>", severities)
 
 
-def reviewer_input(spec: ReviewerSpec, packed: str) -> str:
-    suffix = json_instruction(spec)
-    if spec.vendor == "DeepSeek":
-        return f"{packed}\n\n{suffix}\n"
+# Qwen は JSON の最上位を、指摘だけの配列 [ ... ] にして返しがちだった (2026-09-20 の Lv5A consult の実走: 再実行でも
+# 2 回続けて「findings が配列ではありません」で不合格になり、使える者から外れて暫定版になった)。ゲート 1 は変えず、
+# 形の注意を Qwen にだけ 1 文足す (lv3 に Qwen はいないので、lv3 の入力は変わらない)
+QWEN_FORMAT_NOTE = (
+    '【形式の注意】JSON の最上位は必ず { } のオブジェクトにし、指摘は "findings" キーの配列に入れる'
+    '（例: {"findings":[{"id":"<P>1","severity":"<S1>","headline":"…"}]}）。'
+    "最上位を [ ] の配列だけにすると不合格になり、再実行になる。"
+)
+
+
+def qwen_format_note(spec: ReviewerSpec) -> str:
+    return QWEN_FORMAT_NOTE.replace("<P>", spec.prefix).replace("<S1>", spec.severities[0])
+
+
+def reviewer_input(spec: ReviewerSpec, packed: str, *, focus: bool = False) -> str:
+    """レビュアーへ渡す入力。focus=True (lv7/lv8 の技術レビュアー) のときだけ、重点観点ブロックを対象の前に足す。
+
+    DeepSeek / Qwen は呼び出し側 (deepseek_coder.py / qwen_advisor.py) が役割の system prompt を持つので、
+    ここでは役割の文を足さない。Codex は役割の文の直後に重点観点を置く。
+    """
+    suffix = json_instruction(spec) + (f"\n{qwen_format_note(spec)}" if spec.vendor == "Qwen" else "")
+    lead = f"{INTEGRATION_FOCUS}\n\n" if focus and spec.kind == "technical" else ""
+    if spec.vendor in ("DeepSeek", "Qwen"):
+        return f"{lead}{packed}\n\n{suffix}\n"
     role_prompt = TECH_PROMPT if spec.kind == "technical" else CRIT_PROMPT
-    return f"{role_prompt}\n\n{packed}\n\n{suffix}\n"
+    return f"{role_prompt}\n\n{lead}{packed}\n\n{suffix}\n"
+
+
+def retry_input(spec: ReviewerSpec, prompt: str, gate_error: str) -> str:
+    """JSON ゲートに落ちた者への再実行の入力。Qwen にだけ、不合格の理由も渡す (他のベンダーは従来のまま = lv3 は変わらない)。"""
+    text = prompt + "\n" + RETRY_NOTE + "\n"
+    return text + (f"前回の不合格の理由: {gate_error}\n" if spec.vendor == "Qwen" else "")
 
 
 def _subprocess(command: list[str], *, stdin: str | None, cwd: Path, timeout: int, env: dict[str, str]) -> ExecResult:
@@ -385,7 +471,7 @@ def _subprocess(command: list[str], *, stdin: str | None, cwd: Path, timeout: in
 
 
 # 子プロセスへ渡す環境変数の許可リスト (最小権限)。鍵・トークン類は、呼び出し先に必要な接頭辞の
-# ものだけを通す (DeepSeek=DEEPSEEK_ / Codex=CODEX_)。Codex は認証を USERPROFILE 配下の
+# ものだけを通す (DeepSeek=DEEPSEEK_ / Codex=CODEX_ / Qwen=DASHSCOPE_ と QWEN_)。Codex は認証を USERPROFILE 配下の
 # ファイルで行うので OPENAI_API_KEY は不要 (渡さない)。
 CHILD_ENV_ALLOWED = frozenset({
     "PATH", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "USERPROFILE", "HOME",
@@ -397,12 +483,20 @@ CHILD_ENV_ALLOWED = frozenset({
 })
 
 
-def child_env(secret_prefix: str) -> dict[str, str]:
-    """許可リストの変数と、指定した接頭辞の変数だけを子プロセスへ渡す (大文字小文字は無視)。"""
+QWEN_ENV_PREFIXES = ("DASHSCOPE_", "QWEN_")
+
+
+def child_env(secret_prefix: str | Sequence[str]) -> dict[str, str]:
+    """許可リストの変数と、指定した接頭辞 (1 個の文字列、または複数) の変数だけを子プロセスへ渡す (大文字小文字は無視)。
+
+    空の接頭辞は無視する (空を通すと全変数が通り、鍵まで渡ってしまうため)。
+    """
+    raw = (secret_prefix,) if isinstance(secret_prefix, str) else tuple(secret_prefix)
+    prefixes = tuple(item.upper() for item in raw if item)
     return {
         key: value
         for key, value in os.environ.items()
-        if key.upper().startswith(secret_prefix) or key.upper() in CHILD_ENV_ALLOWED
+        if key.upper().startswith(prefixes) or key.upper() in CHILD_ENV_ALLOWED
     }
 
 
@@ -421,18 +515,22 @@ def default_reviewer_runner(
             codex_path,
             "exec",
             "-c",
-            f'model_reasoning_effort="{effort}"',
+            f'model_reasoning_effort="{spec.effort or effort}"',  # 組が固定した強度 (lv7/lv8) を優先
             "--sandbox",
             "read-only",
             "--skip-git-repo-check",
             "-",
         ]
         return _subprocess(command, stdin=prompt, cwd=cwd.parent, timeout=timeout, env=env)
+    # DeepSeek と Qwen は同じ作り: 入力をファイルに書き、そのパスを渡す (どちらも API なのでファイルは読ませられない)
+    scripts = {"DeepSeek": ("deepseek_coder.py", ("DEEPSEEK_",)), "Qwen": ("qwen_advisor.py", QWEN_ENV_PREFIXES)}
+    if spec.vendor not in scripts:  # 未知のベンダーを黙って別のツールで代用しない
+        return ExecResult(127, "", f"未対応のベンダー: {spec.vendor}")
+    script, prefixes = scripts[spec.vendor]
     input_path = cwd / f"{spec.name}_input.txt"
     input_path.write_text(prompt, encoding="utf-8", newline="")
-    command = [sys.executable, str(tools / "deepseek_coder.py"), "--role", spec.role, str(input_path)]
-    env = child_env("DEEPSEEK_")
-    return _subprocess(command, stdin=None, cwd=cwd.parent, timeout=timeout, env=env)
+    command = [sys.executable, str(tools / script), "--role", spec.role, str(input_path)]
+    return _subprocess(command, stdin=None, cwd=cwd.parent, timeout=timeout, env=child_env(prefixes))
 
 
 def default_integrator_runner(prompt: str, cwd: Path, timeout: int, codex_path: str) -> ExecResult:
@@ -507,25 +605,52 @@ def ds_yen(stderr: str) -> float:
     return float(match.group(1).replace(",", "")) if match else 0.0
 
 
+# qwen_advisor.py の stderr の書式 (実物: `[Qwen Usage] 今回: 入力 N (miss) + M (hit) / 出力 K tok (¥Y / $Z) [model=...]`)。
+# ¥ は小数 2 桁で出る。書式が変わって取れなくなったら None (= 費用不明) にし、0 円とは扱わない (契約テストが書式を守る)
+QWEN_USAGE_RE = re.compile(
+    r"\[Qwen Usage\]\s*今回:\s*入力\s*([0-9,]+)\s*\(miss\)\s*\+\s*([0-9,]+)\s*\(hit\)\s*/\s*出力\s*([0-9,]+)\s*tok"
+    r"\s*\(¥\s*([0-9,]+(?:\.[0-9]+)?)"
+)
+
+
+def qwen_usage(stderr: str) -> tuple[int, float] | None:
+    """Qwen 1 回分の (tokens = 入力 miss + hit + 出力, 円)。usage の行が取れなければ None。"""
+    match = QWEN_USAGE_RE.search(stderr)
+    if not match:
+        return None
+    miss, hit, out = (int(match.group(index).replace(",", "")) for index in (1, 2, 3))
+    return miss + hit + out, float(match.group(4).replace(",", ""))
+
+
 def failure_reason(result: ExecResult) -> str:
     """実行失敗の理由。_subprocess はタイムアウトを終了コード 124 で返す。"""
     return "タイムアウト" if result.returncode == 124 else f"実行失敗(終了コード{result.returncode})"
 
 
 def attempt_record(spec: ReviewerSpec, result: ExecResult, gate_error: str | None) -> dict[str, Any]:
-    return {
+    record: dict[str, Any] = {
         "returncode": result.returncode,
         "gate_error": gate_error,
         "tokens": codex_tokens(result.stderr) if spec.vendor == "Codex" else 0,
         "yen": ds_yen(result.stderr) if spec.vendor == "DeepSeek" else 0.0,
     }
+    if spec.vendor == "Qwen":
+        usage = qwen_usage(result.stderr)
+        record.update(tokens=usage[0] if usage else 0, yen=usage[1] if usage else 0.0, cost_known=usage is not None)
+    return record
 
 
 def calculate_costs(
     history: Sequence[tuple[ReviewerSpec, ExecResult]],
     integrations: Sequence[ExecResult],
+    *,
+    with_qwen: bool = False,
 ) -> dict[str, Any]:
-    return {
+    """費用の集計。Qwen の項目は、組に Qwen がいるとき (with_qwen) だけ足す (lv3 の run.json を変えないため)。
+
+    Qwen の usage の行が取れない呼出は 0 として数え、qwen_cost_known を false にして「不明」を明示する。
+    """
+    costs: dict[str, Any] = {
         "codex_calls": sum(spec.vendor == "Codex" for spec, _ in history) + len(integrations),
         "codex_tokens": sum(
             codex_tokens(result.stderr) for spec, result in history if spec.vendor == "Codex"
@@ -533,6 +658,15 @@ def calculate_costs(
         "ds_calls": sum(spec.vendor == "DeepSeek" for spec, _ in history),
         "ds_yen": sum(ds_yen(result.stderr) for spec, result in history if spec.vendor == "DeepSeek"),
     }
+    if with_qwen:
+        usages = [qwen_usage(result.stderr) for spec, result in history if spec.vendor == "Qwen"]
+        costs.update(
+            qwen_calls=len(usages),
+            qwen_tokens=sum(item[0] for item in usages if item),
+            qwen_yen=float(sum(item[1] for item in usages if item)),
+            qwen_cost_known=all(item is not None for item in usages),
+        )
+    return costs
 
 
 def anonymize(
@@ -712,6 +846,19 @@ def prepare_questions(payload: dict[str, Any], brief: str, metadata: dict[str, d
     return questions
 
 
+def cost_summary(costs: Mapping[str, Any], with_qwen: bool) -> str:
+    """費用の 1 行。Codex・DeepSeek は従来の書式のまま、組に Qwen がいるときだけ Qwen を足す (不明なら明記)。"""
+    line = (
+        f"Codex: {costs['codex_calls']} 回 / {costs['codex_tokens']:,} tokens、"
+        f"DeepSeek: {costs['ds_calls']} 回 / ¥{costs['ds_yen']:.3f}"
+    )
+    if not with_qwen:
+        return line
+    known = costs.get("qwen_cost_known", True)
+    line += f"、Qwen: {costs.get('qwen_calls', 0)} 回 / {costs.get('qwen_tokens', 0):,} tokens / ¥{costs.get('qwen_yen', 0.0):.2f}"
+    return line + ("" if known else "（usage を取得できない呼出があり、費用は不明を 0 として数えた）")
+
+
 def _omitted_label(items: Sequence[dict[str, Any]], limit: int = 160) -> str:
     """表から外したクラスタの題名を並べる。行数を増やさず、外した指摘の存在と中身を見えるようにする。"""
     titles = " / ".join(_safe_cell(item["title"]) for item in items)
@@ -729,17 +876,19 @@ def _short_reason(reason: str) -> str:
     return re.split(r"[(:]", reason, maxsplit=1)[0].strip()
 
 
-def _missing_view(name: str) -> str:
-    """欠けた者の視点とベンダー (例: DeepSeek(技術))。"""
-    spec = next((item for item in REVIEWERS if item.name == name), None)
+def _missing_view(name: str, roster: Sequence[ReviewerSpec] = REVIEWERS) -> str:
+    """欠けた者の視点とベンダー (例: DeepSeek(技術))。同じベンダー・視点が組に複数いるときは強度も添える (Codex(技術・high))。"""
+    spec = next((item for item in roster if item.name == name), None)
     if spec is None:
         return name
-    return f"{spec.vendor}({'技術' if spec.kind == 'technical' else '批評'})"
+    twins = [item for item in roster if item.vendor == spec.vendor and item.kind == spec.kind]
+    effort = f"・{spec.effort}" if spec.effort and len(twins) > 1 else ""
+    return f"{spec.vendor}({'技術' if spec.kind == 'technical' else '批評'}{effort})"
 
 
-def partial_warning(missing: Sequence[dict[str, str]]) -> str:
+def partial_warning(missing: Sequence[dict[str, str]], roster: Sequence[ReviewerSpec] = REVIEWERS) -> str:
     names = "、".join(item["name"] for item in missing)
-    views = "、".join(_missing_view(item["name"]) for item in missing)
+    views = "、".join(_missing_view(item["name"], roster) for item in missing)
     return f"⚠ 暫定: {names} が欠けています。収束の判定が弱く、{views} の指摘が出ていません。"
 
 
@@ -757,8 +906,34 @@ def build_report(
     partial_missing: Sequence[dict[str, str]] = (),
     redaction_count: int = 0,
     no_finding_reviewers: Sequence[str] = (),
+    roster: Sequence[ReviewerSpec] = REVIEWERS,
+    no_qwen: bool = False,
+    roster_name: str = DEFAULT_ROSTER,
 ) -> str:
     ranks = {"🔴": 3, "🟠": 2, "🟡": 1, "高": 3, "中": 2, "低": 1}
+    # 表のベンダー列は組にいるベンダーだけ (lv3 は Codex・DeepSeek の 2 列で従来どおり)。--no-ds / --no-qwen で
+    # 外した者の列も残す (空欄のまま。lv3 の --no-ds の既存の見え方を保つため)
+    vendors = roster_vendors(roster)
+    columns = 4 + len(vendors)
+
+    def marks(item: dict[str, Any]) -> str:
+        return " | ".join("✅" if vendor in item["vendors"] else "" for vendor in vendors)
+
+    def table_head(first: str, second: str, last: str) -> list[str]:
+        return [
+            f"| {first} | {second} | " + " | ".join(vendors) + f" | 採否案 | {last} |",
+            "|---|---|" + "---|" * len(vendors) + "---|---|",
+        ]
+
+    def row(item: dict[str, Any]) -> str:
+        title = item["title"] + (" (単独)" if item["single_source"] else "")
+        return f"| {_safe_cell(title)} | {item['severity']} | {marks(item)} | {_safe_cell(item.get('adopt', ''))} | {_safe_cell(item.get('proposal', ''))} |"
+
+    def omitted_row(items: Sequence[dict[str, Any]]) -> str:
+        return f"| {_omitted_label(items)} |" + " |" * (columns - 1)
+
+    # 批評のレビュアーがいない組 (lv7) では、空の批評の表を出さない (lv3・lv8 は従来どおり出す)
+    has_critic = any(item.kind == "critic" for item in roster)
     ordered = sorted(clusters, key=lambda item: (-ranks[item["severity"]], -len(item["vendors"])))
     technical = [item for item in ordered if item["kind"] == "technical"]
     critics = [item for item in ordered if item["kind"] == "critic"]
@@ -768,9 +943,14 @@ def build_report(
         status = f"暫定（欠落: {detail}）"
     else:
         status = "成功"
-    header = [f"# {run_name}", "", f"所要: {elapsed:.1f} 秒 / 状態: {status}" + (" / DS なし" if no_ds else "")]
+    header = [
+        f"# {run_name}", "",
+        f"所要: {elapsed:.1f} 秒 / 状態: {status}" + (" / DS なし" if no_ds else "") + (" / Qwen なし" if no_qwen else ""),
+    ]
+    if roster_name != DEFAULT_ROSTER:  # lv3 の見出しは従来どおり (組の名前を出さない)
+        header.append(f"組: {roster_name}（{' / '.join(item.name for item in roster)}）")
     if partial_missing:
-        header.append(partial_warning(partial_missing))
+        header.append(partial_warning(partial_missing, roster))
     if redaction_count:
         header.append(f"伏字: {redaction_count} 件（詳細は redaction.json）")
     if no_finding_reviewers:
@@ -779,20 +959,17 @@ def build_report(
 
     def render(detail_limit: int | None = None, truncate_descriptions: bool = False) -> list[str]:
         lines = list(header)
-        lines.extend(("## 技術レビュー", "", "| 指摘 | 重大度 | Codex | DeepSeek | 採否案 | 対応案 |", "|---|---|---|---|---|---|"))
-        for item in shown_tech:
-            title = item["title"] + (" (単独)" if item["single_source"] else "")
-            lines.append(f"| {_safe_cell(title)} | {item['severity']} | {'✅' if 'Codex' in item['vendors'] else ''} | {'✅' if 'DeepSeek' in item['vendors'] else ''} | {_safe_cell(item.get('adopt', ''))} | {_safe_cell(item.get('proposal', ''))} |")
+        lines.extend(("## 技術レビュー", "", *table_head("指摘", "重大度", "対応案")))
+        lines.extend(row(item) for item in shown_tech)
         omitted = len(technical) - len(shown_tech)
         if omitted:
-            lines.append(f"| {_omitted_label([i for i in technical if i not in shown_tech])} | | | | | |")
-        lines.extend(("", "## 批評レビュー", "", "| 観点 | 困り度 | Codex | DeepSeek | 採否案 | 改善の方向 |", "|---|---|---|---|---|---|"))
-        for item in shown_crit:
-            title = item["title"] + (" (単独)" if item["single_source"] else "")
-            lines.append(f"| {_safe_cell(title)} | {item['severity']} | {'✅' if 'Codex' in item['vendors'] else ''} | {'✅' if 'DeepSeek' in item['vendors'] else ''} | {_safe_cell(item.get('adopt', ''))} | {_safe_cell(item.get('proposal', ''))} |")
-        omitted = len(critics) - len(shown_crit)
-        if omitted:
-            lines.append(f"| {_omitted_label([i for i in critics if i not in shown_crit])} | | | | | |")
+            lines.append(omitted_row([i for i in technical if i not in shown_tech]))
+        if has_critic:
+            lines.extend(("", "## 批評レビュー", "", *table_head("観点", "困り度", "改善の方向")))
+            lines.extend(row(item) for item in shown_crit)
+            omitted = len(critics) - len(shown_crit)
+            if omitted:
+                lines.append(omitted_row([i for i in critics if i not in shown_crit]))
         lines.extend(("", "## 🔴 の詳細", ""))
         red = [item for item in technical if item["severity"] == "🔴"]
         if not red:
@@ -824,7 +1001,7 @@ def build_report(
         )
         if not actions:
             lines.append("なし")
-        lines.extend(("", "## 費用", "", f"Codex: {costs['codex_calls']} 回 / {costs['codex_tokens']:,} tokens、DeepSeek: {costs['ds_calls']} 回 / ¥{costs['ds_yen']:.3f}", "", "## 生ログ", "", str(run_dir)))
+        lines.extend(("", "## 費用", "", cost_summary(costs, "Qwen" in vendors), "", "## 生ログ", "", str(run_dir)))
         return lines
 
     detail_limit: int | None = None
@@ -865,12 +1042,72 @@ def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="")
 
 
-def default_usage_logger() -> None:
+def default_usage_logger(note: str = "lv3a") -> None:
+    # 記録するレベルは組によらず 3。lv7/lv8 と記録すると Workflow 必須のゲートが張られ、無関係な Codex 直叩きを止めてしまう
     subprocess.run(
-        [sys.executable, str(TOOLS / "cgd_usage_log.py"), "record", "--level", "3", "--note", "lv3a"],
+        [sys.executable, str(TOOLS / "cgd_usage_log.py"), "record", "--level", "3", "--note", note],
         capture_output=True,
         check=False,
     )
+
+
+def active_specs(roster: Sequence[ReviewerSpec], no_ds: bool, no_qwen: bool) -> list[ReviewerSpec]:
+    """組から、--no-ds / --no-qwen で明示的に外した者を除いたレビュアー (外した者は「欠落」に数えない)。"""
+    return [
+        item for item in roster
+        if not (no_ds and item.vendor == "DeepSeek") and not (no_qwen and item.vendor == "Qwen")
+    ]
+
+
+# qwen_advisor.py の DEFAULT_BASE_URL と同じ既定 (Singapore)。契約テストが一致を守る。QWEN_BASE_URL があればそれを優先する
+DEFAULT_QWEN_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+QWEN_REGIONS = {
+    "dashscope-intl.aliyuncs.com": "国際（シンガポール）",
+    "dashscope-us.aliyuncs.com": "米国（バージニア）",
+    "dashscope.aliyuncs.com": "中国本土（北京）",
+}
+
+
+def qwen_destination(environ: Mapping[str, str] | None = None) -> str:
+    """Qwen の送信先の表示。QWEN_BASE_URL が指す DashScope のリージョンを添える (表示するのはホスト名だけ。鍵は出さない)。"""
+    base = (os.environ if environ is None else environ).get("QWEN_BASE_URL") or DEFAULT_QWEN_BASE_URL
+    host = urlparse(base).hostname or "(ホスト不明)"
+    return f"Qwen（Alibaba DashScope・{QWEN_REGIONS.get(host, 'リージョン不明')}: {host}）"
+
+
+def plan_targets(specs: Sequence[ReviewerSpec]) -> str:
+    """送信先の一覧。Codex は統合に必ず使う。DeepSeek・Qwen は組に (除外されずに) いるときだけ。"""
+    vendors = roster_vendors(specs)
+    parts = ["Codex（OpenAI）"]
+    if "DeepSeek" in vendors:
+        parts.append("DeepSeek（中国本土サーバ）")
+    if "Qwen" in vendors:
+        parts.append(qwen_destination())
+    return "、".join(parts)
+
+
+def plan_calls(specs: Sequence[ReviewerSpec]) -> tuple[str, int]:
+    """呼出予定の文と、Codex の呼出回数の見込み (Codex のレビュアー数 + 統合 1。再実行は数えない)。"""
+    codex = [item for item in specs if item.vendor == "Codex"]
+    labels = [("技術" if item.kind == "technical" else "批評") + (f"[{item.effort}]" if item.effort else "") for item in codex]
+    text = f"Codex {len(codex) + 1} 回（{'・'.join([*labels, '統合'])}）"
+    for vendor, short in (("DeepSeek", "DS"), ("Qwen", "Qwen")):
+        count = sum(item.vendor == vendor for item in specs)
+        if count:
+            text += f"、{short} {count} 回"
+    return text, len(codex) + 1
+
+
+def print_roster(name: str, roster: Sequence[ReviewerSpec], specs: Sequence[ReviewerSpec]) -> None:
+    """組の内訳 (名前・ベンダー・視点・強度)。--no-ds / --no-qwen で外した者は「除外」と明記する。"""
+    print(f"組: {name}（{len(specs)} 者）")
+    for item in roster:
+        view = "技術" if item.kind == "technical" else "批評"
+        effort = ""
+        if item.vendor == "Codex":
+            effort = f" / 強度 {item.effort}" if item.effort else f" / 強度 --effort（既定 {DEFAULT_EFFORT}）"
+        excluded = "" if item in specs else "（除外: --no-ds / --no-qwen）"
+        print(f"- {item.name}: {item.vendor} / {view}{effort}{excluded}")
 
 
 def print_redaction_preview(brief_path: Path, redactions: Sequence[Redaction]) -> None:
@@ -892,6 +1129,7 @@ def print_redaction_preview(brief_path: Path, redactions: Sequence[Redaction]) -
 
 def command_plan(args: argparse.Namespace, resolver: Callable[[], str | None], weekly: Callable[[], float | None]) -> int:
     try:
+        roster = roster_specs(args.roster)
         inputs = load_inputs(Path(args.brief), [Path(item) for item in args.files], redact=args.redact)
     except FrontError as exc:
         print(str(exc), file=sys.stderr)
@@ -915,10 +1153,13 @@ def command_plan(args: argparse.Namespace, resolver: Callable[[], str | None], w
         print_redaction_preview(Path(args.brief), inputs.redactions)
     print(f"Codex: {codex_path}")
     print("週枠: 不明（取得失敗）" if weekly_percent is None else f"週枠: {weekly_percent:.1f}%")
-    targets = "Codex（OpenAI）" + ("" if args.no_ds else "、DeepSeek（中国本土サーバ）")
-    calls = "Codex 3 回（技術・批評・統合）" + ("" if args.no_ds else "、DS 2 回")
-    print(f"送信先: {targets}")
-    print(f"呼出予定: {calls} / Codex 想定 tokens: 約 6 万")
+    specs = active_specs(roster, args.no_ds, args.no_qwen)
+    print_roster(args.roster, roster, specs)
+    calls, codex_calls = plan_calls(specs)
+    print(f"送信先: {plan_targets(specs)}")
+    print(f"呼出予定: {calls} / Codex 想定 tokens: 約 {2 * codex_calls} 万")
+    if any(item.vendor == "Qwen" for item in specs) and "DASHSCOPE_API_KEY" not in os.environ:  # 有無だけ見る (値は見ない・出さない)
+        print("⚠ DASHSCOPE_API_KEY が未設定です: Qwen は失敗し、暫定版（exit 20）になります（--no-qwen で外せます）")
     return 0
 
 
@@ -931,7 +1172,16 @@ def command_run(
     resolver: Callable[[], str | None],
     weekly: Callable[[], float | None],
 ) -> int:
+    if args.roster in FIXED_EFFORT_ROSTERS and args.effort is not None:
+        # 黙って無視しない: 強度を選んだつもりのまま、組が決めた強度で走ってしまうため
+        print(
+            f"--roster {args.roster} では Codex の強度を組で固定しているため、--effort は併用できません"
+            "（指定を外してください）",
+            file=sys.stderr,
+        )
+        return 1
     try:
+        roster = roster_specs(args.roster)
         inputs = load_inputs(Path(args.brief), [Path(item) for item in args.files], redact=args.redact)
     except FrontError as exc:
         print(str(exc), file=sys.stderr)
@@ -952,7 +1202,7 @@ def command_run(
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", args.label):
         print("label は英数字・ピリオド・アンダースコア・ハイフンだけ使用できます", file=sys.stderr)
         return 1
-    if args.codex_timeout <= 0 or args.ds_timeout <= 0:
+    if args.codex_timeout <= 0 or args.ds_timeout <= 0 or args.qwen_timeout <= 0:
         print("timeout は正の整数で指定してください", file=sys.stderr)
         return 1
     try:
@@ -965,17 +1215,22 @@ def command_run(
     if redactions:
         # 伏字にした場所 (ファイル・行・パターン名) だけ。中身は入れない
         write_json(run_dir / "redaction.json", [asdict(item) for item in redactions])
-    specs = [item for item in REVIEWERS if not (args.no_ds and item.vendor == "DeepSeek")]
-    prompts = {spec.name: reviewer_input(spec, packed) for spec in specs}
+    specs = active_specs(roster, args.no_ds, args.no_qwen)
+    has_qwen = any(item.vendor == "Qwen" for item in roster)
+    base_effort = args.effort or DEFAULT_EFFORT
+    # 実際に渡す強度: lv7/lv8 は組が固定した値、lv3 は --effort (Codex 以外は使わないので値は無関係)
+    efforts = {spec.name: spec.effort or base_effort for spec in specs}
+    focus = args.roster in FOCUS_ROSTERS
+    prompts = {spec.name: reviewer_input(spec, packed, focus=focus) for spec in specs}
     results: dict[str, ExecResult] = {}
     result_history: list[tuple[ReviewerSpec, ExecResult]] = []
     attempts: dict[str, list[dict[str, Any]]] = {spec.name: [] for spec in specs}
-    timeouts = {"Codex": args.codex_timeout, "DeepSeek": args.ds_timeout}
+    timeouts = {"Codex": args.codex_timeout, "DeepSeek": args.ds_timeout, "Qwen": args.qwen_timeout}
     with ThreadPoolExecutor(max_workers=len(specs)) as executor:
         futures = {
             executor.submit(
                 reviewer_runner, spec, prompts[spec.name], run_dir,
-                timeouts[spec.vendor], codex_path, TOOLS, args.effort,
+                timeouts[spec.vendor], codex_path, TOOLS, efforts[spec.name],
             ): spec
             for spec in specs
         }
@@ -994,15 +1249,24 @@ def command_run(
     }
     base_state: dict[str, Any] = {
         "run_name": run_dir.name,
+        "roster": args.roster,
         "weekly_percent": weekly_percent,
         "no_ds": args.no_ds,
         "no_partial": args.no_partial,
         "redactions": len(redactions),
     }
+    if has_qwen:
+        base_state["no_qwen"] = args.no_qwen
+    by_name = {spec.name: spec for spec in specs}
 
     def reviewer_state() -> dict[str, Any]:
         return {
-            name: {**asdict(result), "attempts": attempts[name]}
+            name: {
+                **asdict(result),
+                "attempts": attempts[name],
+                "vendor": by_name[name].vendor,
+                "effort": efforts[name] if by_name[name].vendor == "Codex" else None,
+            }
             for name, result in results.items()
         }
 
@@ -1013,7 +1277,7 @@ def command_run(
                 "exit_code": exit_code,
                 "elapsed_seconds": time.monotonic() - started,
                 "reviewers": reviewer_state(),
-                "costs": calculate_costs(result_history, integration_results),
+                "costs": calculate_costs(result_history, integration_results, with_qwen=has_qwen),
                 **extra,
             }
         )
@@ -1045,8 +1309,8 @@ def command_run(
         with ThreadPoolExecutor(max_workers=len(retry_specs)) as executor:
             futures = {
                 executor.submit(
-                    reviewer_runner, spec, prompts[spec.name] + "\n" + RETRY_NOTE + "\n",
-                    run_dir, timeouts[spec.vendor], codex_path, TOOLS, args.effort,
+                    reviewer_runner, spec, retry_input(spec, prompts[spec.name], gate_errors[spec.name]),
+                    run_dir, timeouts[spec.vendor], codex_path, TOOLS, efforts[spec.name],
                 ): spec
                 for spec in retry_specs
             }
@@ -1157,7 +1421,7 @@ def command_run(
         )
     clusters = enrich_clusters(payload, metadata)
     questions = prepare_questions(payload, brief, metadata)
-    costs = calculate_costs(result_history, integration_results)
+    costs = calculate_costs(result_history, integration_results, with_qwen=has_qwen)
     elapsed = time.monotonic() - started
     exit_code = PARTIAL_EXIT if partial else 0
     state = {
@@ -1180,6 +1444,7 @@ def command_run(
     report = build_report(
         run_dir.name, elapsed, clusters, metadata, payload, questions, costs, run_dir, args.no_ds,
         partial_missing=missing_records, redaction_count=len(redactions), no_finding_reviewers=no_finding_names,
+        roster=roster, no_qwen=args.no_qwen and has_qwen, roster_name=args.roster,
     )
     (run_dir / "report.md").write_text(report, encoding="utf-8", newline="")
     print(report, end="")
@@ -1190,6 +1455,23 @@ def command_run(
     return exit_code
 
 
+def add_roster_options(parser: argparse.ArgumentParser) -> None:
+    """plan と run に共通の、レビュアーの組 (roster) の指定。"""
+    parser.add_argument(
+        "--roster", choices=tuple(ROSTERS), default=DEFAULT_ROSTER,
+        help="レビュアーの組。lv3=Codex/DeepSeek の技術×批評 4 者(既定) / lv7=Codex 多重+DeepSeek+Qwen の技術 4 者"
+             " / lv8=lv7+批評 2 者(Codex high・DeepSeek)",
+    )
+    parser.add_argument(
+        "--no-qwen", action="store_true",
+        help="Qwen を使わない (--no-ds と同じ。明示的に外した者は「欠落」に数えない。Qwen のいない組では何もしない)",
+    )
+    parser.add_argument(
+        "--qwen-timeout", type=int, default=300,
+        help="Qwen 1 回あたりの待ち時間（秒。既定は DeepSeek と同じ。plan は何も呼ばないので、run と同じ引数列を渡せるよう受け付けるだけ）",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="cgd Lv3A レビュー・ドライバ")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1197,6 +1479,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--brief", required=True)
     plan.add_argument("--files", nargs="*", default=[])
     plan.add_argument("--no-ds", action="store_true")
+    add_roster_options(plan)
     plan.add_argument(
         "--redact", action="store_true",
         help="秘匿候補を伏字にした場合のプレビューを出す (要ユーザー承認。中身は表示しない)",
@@ -1205,8 +1488,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--brief", required=True)
     run.add_argument("--files", nargs="*", default=[])
     run.add_argument("--label", default="lv3a")
-    run.add_argument("--effort", choices=("medium", "high"), default="medium")
+    run.add_argument(
+        "--effort", choices=("medium", "high"), default=None,
+        help=f"Codex の推論強度 (既定 {DEFAULT_EFFORT})。--roster lv7/lv8 は組が固定するので併用できない (exit 1)",
+    )
     run.add_argument("--no-ds", action="store_true")
+    add_roster_options(run)
     run.add_argument(
         "--no-partial", action="store_true",
         help="一部のレビュアーが失敗したとき暫定版にせず、従来どおり停止する (exit 10/12)",
@@ -1243,6 +1530,9 @@ def main(
         return 0 if int(exc.code) == 0 else 1
     if args.command == "plan":
         return command_plan(args, resolver, weekly)
+    if usage_logger is default_usage_logger and args.roster != DEFAULT_ROSTER:
+        # 既定の記録器だけ、組の名前をメモに残す (差し替えられた記録器は、引数なしの契約のままそのまま使う)
+        usage_logger = partial(default_usage_logger, f"lv3a roster={args.roster}")
     return command_run(
         args,
         reviewer_runner=reviewer_runner,

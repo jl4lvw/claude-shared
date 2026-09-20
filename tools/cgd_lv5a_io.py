@@ -48,6 +48,13 @@ CHILD_ENV_ALLOWED = frozenset({
     "NUMBER_OF_PROCESSORS", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
 })
 CHILD_ENV_PREFIXES = ("DEEPSEEK_", "CODEX_", "CGD_")
+# Lv3A だけは Qwen の鍵 (DASHSCOPE_・QWEN_) も要る (--roster lv7/lv8 のとき Lv3A が qwen_advisor.py へ渡す)。
+# Lv0 には渡さない (最小権限)
+LV3A_ENV_PREFIXES = (*CHILD_ENV_PREFIXES, "DASHSCOPE_", "QWEN_")
+
+# Lv3A の --roster の選択肢と既定 (Lv3A の内部関数は import しない。一致は契約テストが守る)
+ROSTERS = ("lv3", "lv7", "lv8")
+DEFAULT_ROSTER = "lv3"
 
 RUN_LINE_RE = re.compile(r"基準の RUN:\s*(\S+)（記録:\s*(.+?)）")
 CHECKS_RE = re.compile(r"^最終の検査:\s*(.+)$", re.MULTILINE)
@@ -87,10 +94,10 @@ def read_child_json(path: Path, notes: list[str], what: str) -> Any | None:
         return None
 
 
-def child_env(source: Mapping[str, str] | None = None) -> dict[str, str]:
+def child_env(source: Mapping[str, str] | None = None, prefixes: tuple[str, ...] = CHILD_ENV_PREFIXES) -> dict[str, str]:
     """許可リストの変数と許可した接頭辞の変数だけを子プロセスへ渡す (大文字小文字は無視)。"""
     env = {k: v for k, v in (os.environ if source is None else source).items()
-           if k.upper() in CHILD_ENV_ALLOWED or k.upper().startswith(CHILD_ENV_PREFIXES)}
+           if k.upper() in CHILD_ENV_ALLOWED or k.upper().startswith(prefixes)}
     return {**env, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
 
 
@@ -100,7 +107,8 @@ def run_cli(script: Path, args: Sequence[str], timeout: int) -> CliResult:
     try:
         proc = subprocess.Popen(
             [sys.executable, str(script), *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, cwd=str(TOOLS), env=child_env(), creationflags=NO_WINDOW)
+            stderr=subprocess.PIPE, cwd=str(TOOLS), env=child_env(prefixes=LV3A_ENV_PREFIXES if script == LV3A_SCRIPT else CHILD_ENV_PREFIXES),
+            creationflags=NO_WINDOW)
     except OSError as exc:
         return CliResult(EXIT_GENERIC, "", f"起動できない: {exc}")
     timed_out = False
@@ -233,6 +241,8 @@ class Lv3aRun:
     partial_missing: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     cache: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    roster: str = ""  # run.json の roster (Lv3A が実際に使った組)。古い Lv3A の run.json には無い
+    vendors: dict[str, str] = field(default_factory=dict)  # レビュアー名 → ベンダー (run.json の reviewers.<名>.vendor)
 
     @property
     def ok(self) -> bool:
@@ -250,7 +260,8 @@ class Lv3aRun:
         """指摘 ID (R2#7) の (出所ベンダー, 見出し)。レビュアーの生ログの JSON から引く。引けなければ見出しは空。"""
         alias, _, number = member.partition("#")
         name = self.mapping.get(alias, "")
-        vendor = "Codex" if name.startswith("codex") else "DeepSeek" if name.startswith("ds") else name
+        vendor = self.vendors.get(name) or (
+            "Codex" if name.startswith("codex") else "DeepSeek" if name.startswith("ds") else "Qwen" if name.startswith("qwen") else name)
         if self.run_dir is None or not name or not number.isdigit():
             return vendor, ""
         if name not in self.cache:
@@ -282,6 +293,8 @@ def parse_lv3a(result: CliResult, work_root: Path) -> Lv3aRun:
         run.mapping = {str(k): str(v) for k, v in (data.get("mapping") or {}).items()}
         reviewers = data["reviewers"] if isinstance(data.get("reviewers"), dict) else {}
         run.retried = {n for n, v in reviewers.items() if isinstance(v, dict) and len(v.get("attempts", [])) > 1}
+        run.vendors = {n: v["vendor"] for n, v in reviewers.items() if isinstance(v, dict) and isinstance(v.get("vendor"), str)}
+        run.roster = data["roster"] if isinstance(data.get("roster"), str) else ""
         partial = data.get("partial")
         missing = partial.get("missing") if isinstance(partial, dict) else None
         run.partial_missing = [m for m in missing if isinstance(m, dict)] if isinstance(missing, list) else []
@@ -293,12 +306,22 @@ def parse_lv3a(result: CliResult, work_root: Path) -> Lv3aRun:
 
 def lv3a_cost(run: Lv3aRun) -> dict[str, Any]:
     cost: dict[str, Any] = {k: int(run.costs.get(k) or 0) for k in ("codex_calls", "codex_tokens", "ds_calls")}
-    return {**cost, "ds_yen": float(run.costs.get("ds_yen") or 0.0)}
+    cost["ds_yen"] = float(run.costs.get("ds_yen") or 0.0)
+    if "qwen_calls" in run.costs:  # 組に Qwen がいた run だけ (lv3 の費用の形は変えない)
+        cost.update(qwen_calls=int(run.costs.get("qwen_calls") or 0), qwen_tokens=int(run.costs.get("qwen_tokens") or 0),
+                    qwen_yen=float(run.costs.get("qwen_yen") or 0.0),
+                    qwen_unknown_runs=0 if run.costs.get("qwen_cost_known", True) else 1)
+    return cost
+
+
+QWEN_COST_KEYS = ("qwen_calls", "qwen_tokens", "qwen_yen", "qwen_unknown_runs")
 
 
 def total_costs(stages: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """失敗した工程も含めて合算する (どの工程も state に残るため)。"""
+    """失敗した工程も含めて合算する (どの工程も state に残るため)。Qwen の項目は、Qwen を使った工程があるときだけ足す。"""
     total: dict[str, Any] = {"codex_calls": 0, "codex_tokens": 0, "ds_calls": 0, "ds_yen": 0.0, "ds_yen_unknown_calls": 0}
+    if any("qwen_calls" in (stage.get("cost") or {}) for stage in stages):
+        total.update({"qwen_calls": 0, "qwen_tokens": 0, "qwen_yen": 0.0, "qwen_unknown_runs": 0})
     for stage in stages:
         for key in total:
             total[key] += (stage.get("cost") or {}).get(key, 0)
@@ -307,5 +330,9 @@ def total_costs(stages: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 def cost_line(costs: Mapping[str, Any]) -> str:
     unknown = costs.get("ds_yen_unknown_calls", 0)
-    return (f"Codex: {costs['codex_calls']} 回 / {costs['codex_tokens']:,} tokens、DeepSeek: {costs['ds_calls']} 回 / "
+    line = (f"Codex: {costs['codex_calls']} 回 / {costs['codex_tokens']:,} tokens、DeepSeek: {costs['ds_calls']} 回 / "
             f"¥{costs['ds_yen']:.3f}" + (f"（ほか Lv0 の DeepSeek レビュー {unknown} 回は費用不明）" if unknown else ""))
+    if costs.get("qwen_calls"):
+        line += (f"、Qwen: {costs['qwen_calls']} 回 / {costs.get('qwen_tokens', 0):,} tokens / ¥{costs.get('qwen_yen', 0.0):.2f}"
+                 + ("（usage を取得できない呼出があり、費用は不明を 0 として数えた）" if costs.get("qwen_unknown_runs") else ""))
+    return line

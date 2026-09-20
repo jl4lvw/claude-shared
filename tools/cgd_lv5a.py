@@ -28,13 +28,13 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from cgd_lv5a_io import (
-    EXIT_AWAITING, EXIT_CODEX_FAILED, EXIT_GENERIC, EXIT_NEEDS_JUDGMENT, EXIT_OK, EXIT_REVIEW_FAILED, LV3A_OK,
-    REDACT_UNSUPPORTED, CliResult, Drivers, Lv0Run, Lv3aRun, cost_line, default_drivers, lv0_cost, lv3a_cost, map_lv0_exit,
+    DEFAULT_ROSTER, EXIT_AWAITING, EXIT_CODEX_FAILED, EXIT_GENERIC, EXIT_NEEDS_JUDGMENT, EXIT_OK, EXIT_REVIEW_FAILED, LV3A_OK,
+    REDACT_UNSUPPORTED, ROSTERS, CliResult, Drivers, Lv0Run, Lv3aRun, cost_line, default_drivers, lv0_cost, lv3a_cost, map_lv0_exit,
     map_lv3a_exit, parse_lv0, parse_lv3a, total_costs)
 from cgd_lv5a_text import (
-    DESIGN_EXCERPT, FACTS_HEADING, G1_REDO, G1_YES, RED, add_facts, add_review_target, answer_lines, answers_fact, build_fix_spec,
-    build_impl_spec, clip, cluster_block, consult_lines, design_spec, final_lines, fit_report, fix_targets, g1_question,
-    g2_question, impl_targets, same_title, technical)
+    DESIGN_EXCERPT, FACTS_HEADING, G1_REDO, G1_YES, RED, ROSTER_LABELS, add_facts, add_review_target, answer_lines, answers_fact,
+    build_fix_spec, build_impl_spec, clip, cluster_block, consult_lines, design_spec, final_lines, fit_report, fix_targets,
+    g1_question, g2_question, impl_targets, roster_of, same_title, technical)
 
 DEFAULT_WORK_ROOT = Path("C:/tmp-ai/cgd_lv5a")
 P_CONSULTING, P_AWAIT_DIR, P_IMPLEMENTING = "consulting", "awaiting_direction", "implementing"
@@ -167,14 +167,51 @@ def lv0_argv(state: Mapping[str, Any], spec: Path, effort: str, fix_rounds: int,
 # ---------------------------------------------------------------- plan / consult
 
 
-def flag_args(no_ds: bool) -> list[str]:
-    """Lv3A へ引き継ぐフラグ。--redact は引き継がない (Lv5A は受け付けない。REDACT_UNSUPPORTED)。"""
-    return ["--no-ds"] if no_ds else []
+def flag_args(no_ds: bool, no_qwen: bool = False) -> list[str]:
+    """Lv3A へ引き継ぐフラグ。--redact は引き継がない (Lv5A は受け付けない。REDACT_UNSUPPORTED)。
+
+    --no-qwen は --no-ds と同じ扱いで透過する (Qwen のいない組 lv3 では、Lv3A 側が何もしない)。
+    """
+    return [*(["--no-ds"] if no_ds else []), *(["--no-qwen"] if no_qwen else [])]
+
+
+def roster_args(roster: str) -> list[str]:
+    """Lv3A へ組を透過する引数。既定 (lv3) のときは何も足さない (今までの呼び出しをそのまま保つ。Lv3A の既定も lv3)。"""
+    return [] if roster == DEFAULT_ROSTER else ["--roster", roster]
+
+
+def review_flags(roster: str, effort: str, no_ds: bool, no_qwen: bool) -> list[str]:
+    """設計レビュー・差分レビューの Lv3A に渡す、組・強度・除外のフラグ。
+
+    --effort は lv3 のときだけ渡す。lv7/lv8 は Codex の強度を組が固定しており、Lv3A は --effort との併用を
+    exit 1 で拒否するため (Lv0 への --effort は、これとは別に今までどおり渡す)。
+    """
+    return [*roster_args(roster), *(["--effort", effort] if roster == DEFAULT_ROSTER else []), *flag_args(no_ds, no_qwen)]
+
+
+def rereview_flags(effort: str) -> list[str]:
+    """🔴 の自動修正のあとの再レビュー。組を透過せず、軽い構成 (lv3・DeepSeek なし) のままにする。
+
+    目的は「🔴 が解消したか」の確認だけで、cgd の Lv7 でも再レビューは Codex 単独 (medium)。
+    ここで組まで重くすると、自動修正 1 周の費用が数倍になる。
+    """
+    return ["--effort", effort, "--no-ds"]
+
+
+def roster_problem(run: Lv3aRun, roster: str) -> str:
+    """Lv3A が要求どおりの組で走ったかを run.json の roster で確かめる (黙って別の組で走った結果を使わない)。
+
+    lv3 は、この機能より前の Lv3A の run.json (roster なし) も許す。それ以外は記録が一致しなければ不一致。
+    """
+    if run.roster == roster or (roster == DEFAULT_ROSTER and not run.roster):
+        return ""
+    return f"Lv3A が組 {run.roster or '(記録なし)'} で走った（要求: {roster}）。要求した組のレビューではないため使わない"
 
 
 def plan_calls(args: argparse.Namespace, drivers: Drivers) -> list[tuple[str, CliResult]]:
     lv0 = ["plan", "--workdir", args.workdir, "--checks", args.checks] + ([] if args.no_ds else ["--review", "deepseek"])
-    lv3a = ["plan", "--brief", args.brief, *(["--files", *args.files] if args.files else []), *flag_args(args.no_ds)]
+    lv3a = ["plan", "--brief", args.brief, *(["--files", *args.files] if args.files else []), *roster_args(args.roster),
+            *flag_args(args.no_ds, args.no_qwen)]
     return [("1. 実装側の点検（cgd_lv0_auto.py plan）", drivers.lv0(lv0, PLAN_TIMEOUT)),
             ("2. 設計レビュー側の点検（cgd_lv3a.py plan）", drivers.lv3a(lv3a, PLAN_TIMEOUT))]
 
@@ -187,10 +224,14 @@ def command_plan(args: argparse.Namespace, drivers: Drivers) -> int:
         print(f"\n## {title}  exit={result.returncode}\n{result.stdout.rstrip()}")
         if result.stderr.strip():
             print(result.stderr.rstrip(), file=sys.stderr)
-    targets = "Codex（OpenAI）" + ("" if args.no_ds else "、DeepSeek（中国本土サーバ）")
+    uses_qwen = args.roster != DEFAULT_ROSTER and not args.no_qwen
+    targets = ("Codex（OpenAI）" + ("" if args.no_ds else "、DeepSeek（中国本土サーバ）")
+               + ("、Qwen（Alibaba DashScope。リージョンは上の Lv3A の点検の送信先）" if uses_qwen else ""))
     print("\n## 3. 流れと送信先\n"
           "- consult: 設計案（Codex が docs/lv5a_design_<label>.md に書く）→ Lv3A の 2社x2視点レビュー → 質問（G1）で停止\n"
           "- implement: Codex 実装+機械検査 → 差分レビュー → 🔴 の自動修正（最大 1 周）→ 最終質問（G2）\n"
+          f"- 組: {ROSTER_LABELS.get(args.roster, args.roster)}。設計レビューと差分レビューに適用"
+          "（🔴 の自動修正のあとの再レビューは、軽い構成 = lv3・DeepSeek なしのまま）\n"
           f"- 送信先: {targets}。作業フォルダの内容と依頼文が渡る。巻き戻せるのは Lv0 の写し（2MB 以下の通常ファイル）だけ\n"
           "- 作業フォルダに設計ファイル docs/lv5a_design_<label>.md が残る（削除しません）")
     return next((r.returncode for _, r in results if r.returncode != 0), EXIT_OK)
@@ -231,11 +272,12 @@ def command_consult(args: argparse.Namespace, drivers: Drivers) -> int:
             return result.returncode
     run_dir = new_run_dir(Path(args.work_root), args.label)
     write_text(run_dir / "brief.md", brief_text)
+    # roster は args にも置く: implement は consult の値をここから読む (implement に --roster は無い)
     state = {"version": 1, "label": args.label, "run_dir": str(run_dir), "phase": P_CONSULTING, "created": now_iso(),
-             "design_rel": design_rel, "history": [], "stages": [],
+             "roster": args.roster, "design_rel": design_rel, "history": [], "stages": [],
              "args": {"brief": str(Path(args.brief).resolve()), "workdir": str(workdir), "checks": str(checks),
                       "checks_sha256": sha256_file(checks), "files": [str(Path(f).resolve()) for f in args.files],
-                      "effort": args.effort, "no_ds": args.no_ds}}
+                      "effort": args.effort, "no_ds": args.no_ds, "roster": args.roster, "no_qwen": args.no_qwen}}
     sess = Session(run_dir, state, drivers)
     sess.phase(P_CONSULTING)
     try:
@@ -276,15 +318,17 @@ def consult_body(sess: Session, brief_text: str) -> int:
     write_text(brief_review, add_review_target(
         brief_text, f"これは実装前の**設計案**（{design_rel}）のレビュー依頼です。コードはまだありません。"
                     "設計の妥当性・抜け・リスク・依頼文との整合を評価してください。"))
-    root = run_dir / "review_design"
+    root, roster = run_dir / "review_design", roster_of(a)
     rv = sess.lv3a("design_review", ["run", "--brief", str(brief_review), "--files", str(design_path), *a["files"],
-                                     "--label", f"{st['label']}-design", "--work-root", str(root), "--effort", a["effort"],
-                                     *flag_args(a["no_ds"])], root)
+                                     "--label", f"{st['label']}-design", "--work-root", str(root),
+                                     *review_flags(roster, a["effort"], a["no_ds"], bool(a.get("no_qwen")))], root)
     if rv.exit_code not in LV3A_OK:
         return sess.fail(P_CONSULT_FAILED, map_lv3a_exit(rv.exit_code),
                          f"設計レビュー（Lv3A）が失敗（exit {rv.exit_code}）: {clip(' '.join(rv.stderr.split()), 300)}")
     if rv.run_dir is None:
         return sess.fail(P_CONSULT_FAILED, EXIT_REVIEW_FAILED, "Lv3A の run ディレクトリを特定できない（唯一のサブフォルダが無い）")
+    if problem := roster_problem(rv, roster):
+        return sess.fail(P_CONSULT_FAILED, EXIT_REVIEW_FAILED, f"設計レビュー: {problem}")
     if any(q.get("id") == "G1" for q in rv.questions):
         return sess.fail(P_CONSULT_FAILED, EXIT_REVIEW_FAILED, "Lv3A の質問 ID が G1 と衝突した")
     warnings += rv.warnings
@@ -380,15 +424,20 @@ class Review:
 
 
 def diff_review(sess: Session, suffix: str, brief: str, facts: Sequence[str], patches: Sequence[Path],
-                design_path: Path, effort: str, no_ds: bool) -> Review:
-    """差分と設計ファイルを Lv3A に回す。--redact は付けない (実装差分の伏字はユーザー承認が取れないため)。"""
+                design_path: Path, flags: Sequence[str], roster: str) -> Review:
+    """差分と設計ファイルを Lv3A に回す。--redact は付けない (実装差分の伏字はユーザー承認が取れないため)。
+
+    flags は Lv3A へ渡す組・強度・除外 (review_flags / rereview_flags)。roster は「そのレビューで期待する組」で、
+    Lv3A の run.json の roster と食い違えばレビュー未実施として扱う (要ユーザー判断)。
+    """
     name = f"review_{suffix}"
     root, brief_path = sess.run_dir / name, sess.run_dir / f"brief_{name}.md"
     write_text(brief_path, add_review_target(
         add_facts(brief, facts), "実装差分（unified diff）と、その設計ファイルです。実装コードとして評価してください。"))
     rv = sess.lv3a(name, ["run", "--brief", str(brief_path), "--files", *map(str, patches), str(design_path),
-                          "--label", f"{sess.state['label']}-{suffix}", "--work-root", str(root), "--effort", effort,
-                          *(["--no-ds"] if no_ds else [])], root)
+                          "--label", f"{sess.state['label']}-{suffix}", "--work-root", str(root), *flags], root)
+    if rv.ok and (problem := roster_problem(rv, roster)):
+        return Review(False, f"レビュー未実施（{problem}）", rv)
     if rv.ok:
         return Review(True, ("暫定: " + rv.partial_note) if rv.partial_note else "", rv)
     detail = clip(" ".join(rv.stderr.split()), 300) or "Lv3A の run ディレクトリを特定できない"
@@ -412,6 +461,7 @@ def implement_body(sess: Session, args: argparse.Namespace, questions: Sequence[
                    answers: Mapping[str, str], notes: str, design_path: Path) -> int:
     st, a, run_dir = sess.state, sess.state["args"], sess.run_dir
     effort, no_ds = args.effort or a["effort"], bool(a["no_ds"] or args.no_ds)
+    roster, no_qwen = roster_of(a), bool(a.get("no_qwen") or args.no_qwen)  # 組は consult の値 (implement に --roster は無い)
     brief = (run_dir / "brief.md").read_text(encoding="utf-8")
     checks = read_required_json(Path(a["checks"]), "検査定義")
     frozen = [p for p in (checks.get("frozen") if isinstance(checks, dict) else None) or [] if isinstance(p, str)]
@@ -442,7 +492,8 @@ def implement_body(sess: Session, args: argparse.Namespace, questions: Sequence[
                  "変更ファイル: " + (", ".join(impl.changed[:10]) or "(不明)"),
                  f"設計ファイル {st['design_rel']} は実装前に Lv3A でレビュー済みで、採用/部分採用の 🔴/🟠 は実装依頼に含めた",
                  answers_fact(decided)]
-        review1 = diff_review(sess, "impl", brief, facts, [run_dir / "impl_overall.patch"], design_path, effort, no_ds)
+        review1 = diff_review(sess, "impl", brief, facts, [run_dir / "impl_overall.patch"], design_path,
+                              review_flags(roster, effort, no_ds, no_qwen), roster)
     final = review1
     if review1.performed and fix_targets(review1.clusters):
         final = autofix_once(sess, autofix, review1, brief, design_path, effort, frozen, decided)
@@ -480,7 +531,7 @@ def autofix_once(sess: Session, autofix: dict[str, Any], review1: Review, brief:
     facts = ["直前のレビューの 🔴（" + " / ".join(titles) + "）を Codex に自動修正させた（1 周・機械検査は全部合格: " + check_text(fix) + "）",
              "差分は 2 つ。1 つ目が最初の実装、2 つ目が自動修正（1 つ目の上に適用）。再レビューの目的は 🔴 が解消したかの確認", answers_fact(decided)]
     review2 = diff_review(sess, "impl2", brief, facts, [run_dir / "impl_overall.patch", run_dir / "fix_overall.patch"],
-                          design_path, effort, True)
+                          design_path, rereview_flags(effort), DEFAULT_ROSTER)
     if not review2.performed:
         autofix["stop_reason"] = f"再レビューを確認できない: {review2.reason}。要ユーザー判断"
         return review2
@@ -502,7 +553,8 @@ def autofix_once(sess: Session, autofix: dict[str, Any], review1: Review, brief:
 def command_status(args: argparse.Namespace, drivers: Drivers) -> int:
     run_dir = Path(args.run)
     st = load_state(run_dir)
-    print(f"phase: {st['phase']}（label={st.get('label')} / exit={st.get('exit_code', '-')}）\nrun: {run_dir}\n作業フォルダ: {st['args']['workdir']}")
+    print(f"phase: {st['phase']}（label={st.get('label')} / exit={st.get('exit_code', '-')}）\nrun: {run_dir}\n作業フォルダ: {st['args']['workdir']}\n"
+          f"組: {roster_of(st['args'])}")
     if st.get("failure"):
         print(f"失敗: {st['failure']['reason']}（exit {st['failure']['exit']}）")
     for s in st.get("stages", []):
@@ -522,6 +574,9 @@ def build_parser() -> argparse.ArgumentParser:
             sp.add_argument(flag, required=True)
         sp.add_argument("--files", nargs="*", default=[])
         sp.add_argument("--no-ds", action="store_true")
+        sp.add_argument("--no-qwen", action="store_true", help="Qwen を使わない（--no-ds と同じ。Lv3A へ透過する）")
+        sp.add_argument("--roster", choices=ROSTERS, default=DEFAULT_ROSTER,
+                        help="設計レビューと差分レビューのレビュアーの組（Lv3A へ透過）。lv3=既定 / lv7=integration バグ重視 / lv8=lv7+批評")
         sp.add_argument("--redact", action="store_true", help="使えない（指定すると拒否する。設計段階に伏字が効かないため）")
 
     inputs(sub.add_parser("plan", help="承認用の事前情報（何も書かない）"))
@@ -536,6 +591,7 @@ def build_parser() -> argparse.ArgumentParser:
     impl.add_argument("--effort", choices=("medium", "high"), default=None)
     impl.add_argument("--max-fix-rounds", type=int, default=2, choices=range(0, 4))
     impl.add_argument("--no-ds", action="store_true")
+    impl.add_argument("--no-qwen", action="store_true", help="Qwen を使わない（組は consult のときの値。implement に --roster は無い）")
     sub.add_parser("status", help="状態を表示（何も書かない）").add_argument("--run", required=True)
     return parser
 

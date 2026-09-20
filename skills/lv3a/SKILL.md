@@ -1,8 +1,8 @@
 ---
 name: lv3a
-description: cgd Lv3（Codex と DeepSeek の 2社×2視点レビュー・実装なし）を、統合まで Codex 側に任せて回す軽量スキル。「Lv3A」「レベル3A」「取りまとめをCodexに任せて」で使う。Claude は依頼文を書く→承認→1コマンド起動→短いレポートを読む→質問を取り次ぐ、だけ。cgd 全文（約 76K トークン）を読み込まない分離版
+description: cgd Lv3（Codex と DeepSeek の 2社×2視点レビュー・実装なし）を、統合まで Codex 側に任せて回す軽量スキル。`--roster lv7|lv8` で Lv7/Lv8 相当（Codex 多重+DeepSeek+Qwen の技術 4 者／+批評 2 者）のレビューだけも回せる（レベル 7A/8A）。「Lv3A」「レベル3A」「レベル7A」「取りまとめをCodexに任せて」で使う。Claude は依頼文を書く→承認→1コマンド起動→短いレポートを読む→質問を取り次ぐ、だけ。cgd 全文（約 76K トークン）を読み込まない分離版
 ---
-<!-- SKILL_VERSION: 2026-09-20_150111 -->
+<!-- SKILL_VERSION: 2026-09-20_201458 -->
 
 # lv3a — レビューの取りまとめまで Codex に任せる Lv3（Claude のトークンを最小にする）
 
@@ -23,6 +23,19 @@ Claude がやるのは **依頼文を書く → 承認を取る → 1 コマン�
 | 対象を 200KB 以内のファイルで渡せる | 対象が鍵・個人情報を含み、伏せられない（秘匿スキャンが止める。伏字にして送ってよいかは手順 2 で毎回承認を取る） |
 | Codex の週枠に余裕がある（80% 未満） | 会話でしか分からない事情が多く、依頼文に書き切れない（→ 通常の Lv3） |
 
+## レビュアーの組（`--roster`）— レベル 7A / 8A（レビューのみ）
+| 組 | 構成 | いつ使う |
+|---|---|---|
+| `lv3`（既定） | Codex・DeepSeek の 技術×批評 4 者 | 通常の設計・仕様・差分のレビュー |
+| `lv7` | Codex medium+high・DeepSeek・Qwen の **技術 4 者**（integration バグ重視の重点観点を付ける） | 論点が関数間の整合性・状態管理・呼出経路ごとの副作用・例外の握り潰し |
+| `lv8` | lv7 の 4 者 + 批評 2 者（Codex high・DeepSeek）= 6 者 | 技術の最深掘りに加え、使い勝手・あるべき論も見たい最重要の変更 |
+- 「レベル 7A ＝ `/lv3a --roster lv7`（レビューのみ）または `/lv5a --roster lv7`（設計→実装まで）」。降格先は従来の `/cgd` Lv7/Lv8（Workflow 版。Claude が関連関数を抜粋して DS/Qwen に渡す）。生ログは残る
+- `--roster lv7|lv8` と `--effort` は併用不可（exit 1。Codex の強度は組が固定: medium / high。統合は medium）。`--no-qwen` は `--no-ds` と同じ（外した者は「欠落」に数えない）。Qwen の鍵が無いと plan が警告する。Qwen は JSON の最上位を配列だけにして不合格になりやすいので、Qwen にだけ形式の注意を付け、再実行では不合格の理由も渡す（実走で発覚）
+- 送信先に **Qwen（Alibaba DashScope。リージョンは `QWEN_BASE_URL`。plan に出る）** が加わる。承認に含める。Codex の呼出は「Codex のレビュアー数 + 統合 1」回（lv7=3・lv8=4）
+- 全レビュアーに同じ入力（依頼文+`--files`）を渡す。Lv7 の「Claude が関連関数を事前抽出して DS/Qwen に渡す」工程は無いので、論点の関数は `--files` に含める
+- 費用の目安（玩具・対象 1KB・実測）: lv7 = 約 2.5〜3 分・Codex 3 回 約 2.9 万 tok・DS ¥0.3・Qwen ¥0.7（約 2 千 tok）／ lv8 = 約 3.5 分・Codex 4 回 約 4.3 万 tok・DS ¥0.5・Qwen ¥0.7（lv3 は約 3 分・3 万 tok・DS ¥0.7）。plan の「Codex 想定 tokens」は 1 回約 2 万の安全側の見積り（実測は約 1 万/回）
+- **入力は 50KB 程度までに絞る**（実測: 差分 100KB で lv7 を回すと DeepSeek が 351 秒でタイムアウトし、Qwen は 1 回 ¥5.25・Codex は 3 回で 9.7 万 tok。DS/Qwen は入力に比例して遅く高い）。差分と論点の関数だけを `--files` に渡す。大きい入力で回すなら `--ds-timeout` `--qwen-timeout` を延ばす。欠けても使える者が 2 者以上なら暫定（exit 20）で続く
+
 ## 手順
 
 ### 1. 依頼文を書く（Claude・Write ツール）
@@ -41,7 +54,7 @@ Claude がやるのは **依頼文を書く → 承認を取る → 1 コマン�
 
 ### 2. 承認（Claude → ユーザー）
 ```bash
-python "C:/ClaudeCode/.claude/tools/cgd_lv3a.py" plan --brief "<依頼文>" --files "<対象1>" "<対象2>" [--no-ds] [--redact]
+python "C:/ClaudeCode/.claude/tools/cgd_lv3a.py" plan --brief "<依頼文>" --files "<対象1>" "<対象2>" [--roster lv3|lv7|lv8] [--no-ds] [--no-qwen] [--redact]
 ```
 （`--redact` は秘匿候補が出たときの伏字プレビュー用。最初から付けない。送信は何もしない）
 出力（依頼文の先頭・詰めるファイルとサイズ・Codex と週枠・**送信先**）を表にして **AskUserQuestion で承認**。承認が外部送信（Codex=OpenAI／DeepSeek=中国本土サーバ）の秘匿確認を兼ねる。承認前に run しない。
@@ -58,9 +71,9 @@ python "C:/ClaudeCode/.claude/tools/cgd_lv3a.py" plan --brief "<依頼文>" --fi
 
 ### 3. 実行（バックグラウンド・待つだけ）
 ```bash
-python "C:/ClaudeCode/.claude/tools/cgd_lv3a.py" run --brief "<依頼文>" --files "<対象…>" --label "<名前>" [--effort medium|high] [--no-ds] [--no-partial] [--redact]
+python "C:/ClaudeCode/.claude/tools/cgd_lv3a.py" run --brief "<依頼文>" --files "<対象…>" --label "<名前>" [--roster lv3|lv7|lv8] [--effort medium|high] [--no-ds] [--no-qwen] [--no-partial] [--redact]
 ```
-Bash の **`run_in_background: true`** で起動し、終了通知を待つ。所要は約 2〜4 分（実測 187 秒。対象が大きいと 5〜10 分）。**途中で様子を見に行かない**。終了通知が指す出力ファイルを Read し、**末尾のレポート**を読む（手順 4）。推論強度は Claude が自動選択（既定 `medium`）。
+Bash の **`run_in_background: true`** で起動し、終了通知を待つ。所要は約 2〜4 分（実測 187 秒。対象が大きいと 5〜10 分）。**途中で様子を見に行かない**。終了通知が指す出力ファイルを Read し、**末尾のレポート**を読む（手順 4）。推論強度は Claude が自動選択（既定 `medium`。lv7/lv8 は組が固定するので `--effort` を付けない）。
 - `--no-partial`: 暫定版を受け付けない（4 者そろわなければ意味がないとき）。付けると 1 者の失敗でも従来どおり停止する（exit 10/12）。**既定は付けない**（暫定版を返す）
 - `--redact`: 手順 2 でユーザーの承認を取った場合**だけ**付ける
 
@@ -80,12 +93,12 @@ Bash の **`run_in_background: true`** で起動し、終了通知を待つ。�
 AskUserQuestion の **header には質問の id（Q1 など）を使う**（`questions.json` に header 欄は無い）。1 回に出せるのは 4 問まで。推奨の理由（`recommended_reason`）は、推奨の選択肢の description の末尾に「（根拠: …）」として足す。label は変えない。
 
 ### 6. 費用
-レポートの「費用」の数字をそのまま報告（Codex の呼出回数・tokens／DeepSeek の呼出回数・¥）。
+レポートの「費用」の数字をそのまま報告（Codex の呼出回数・tokens／DeepSeek の呼出回数・¥／lv7・lv8 は Qwen の呼出回数・tokens・¥。「費用は不明」とあれば usage を取れていない）。
 
 ## 終了コード
 | exit | 意味 | やること |
 |---|---|---|
-| 0 | 成功（4 者そろった／`--no-ds` は 2 者） | レポートを読む |
+| 0 | 成功（全員そろった: lv3=4 者・lv7=4 者・lv8=6 者。`--no-ds`/`--no-qwen` で外した者は数えない） | レポートを読む |
 | 1 | 前段で停止（欄なし・秘匿候補・サイズ超過・引数。`--redact` 後も当たりが残った場合を含む） | 依頼文/対象を直す。秘匿候補は手順 2 の承認手順 |
 | 2 | 使える Codex 実行ファイルが無い | `python C:/ClaudeCode/.claude/tools/cgd_lv0_codex.py resolve` |
 | 10 | 使えるレビュアーが 2 者未満で、原因に実行失敗（終了コード非 0・タイムアウト）がある。`--no-partial` なら 1 者の失敗でも | run.json を見て 1 回だけ再実行。続くなら降格 |
@@ -100,7 +113,7 @@ AskUserQuestion の **header には質問の id（Q1 など）を使う**（`que
 
 ## ガードレール（機械が守る）
 - 秘匿スキャン（鍵・JWT・接続文字列等）は fail-closed。1 件でもあれば何も送らない。表示は「パターン名 + 行番号」だけ。`--redact` を付けたときだけ、当たった位置から行末まで（秘密鍵は BEGIN〜END）を `[伏字:<種別>]` に置換して続行し、置換後にもう一度走査して当たりが残れば止まる。**承認はドライバが取らない**（手順 2 で Claude がユーザーから毎回取る）
-- Codex・DeepSeek の子プロセスには、最小限の環境変数（と、それぞれの接頭辞）だけを渡す
+- Codex・DeepSeek・Qwen の子プロセスには、最小限の環境変数（と、それぞれの接頭辞: Qwen は `DASHSCOPE_`/`QWEN_`）だけを渡す
 - 再実行しても初回の生ログは消えない（`*.retry1.*`）。失敗した試行の費用も集計に入る
 - 週枠 80% 以上で停止。週枠が取れないときは「不明」と明示して続行する
 - 統合結果（採否案・対応案）は提案。**最終判断はユーザー**（Claude ではない）

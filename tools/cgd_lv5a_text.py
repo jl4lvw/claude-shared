@@ -6,7 +6,7 @@ import difflib
 import re
 from typing import Any, Callable, Mapping, Sequence
 
-from cgd_lv5a_io import Lv3aRun, cost_line, total_costs
+from cgd_lv5a_io import DEFAULT_ROSTER, Lv3aRun, cost_line, total_costs
 
 G1_YES, G1_STOP = "この設計で実装する", "中止する"
 G1_REDO = "設計を直したい（依頼文を直して consult をやり直す）"
@@ -14,6 +14,12 @@ G2_ACCEPT, G2_REDO, G2_DISCARD = "受け入れる（反映は別手順）", "指
 FACTS_HEADING = "## 確認済みの事実"
 SPEC_LIMIT, REPORT_LIMIT, DESIGN_EXCERPT = 12 * 1024, 60, 25
 ADOPTED, RED, ORANGE, YELLOW = ("採用", "部分採用"), "🔴", "🟠", "🟡"
+# レビュアーの組 (Lv3A の --roster) の表示名。Lv3A の定義は import しない (説明の文だけ。選択肢の一致は契約テストが守る)
+ROSTER_LABELS = {
+    "lv3": "lv3（Codex・DeepSeek の 技術×批評 4 者）",
+    "lv7": "lv7（Codex medium+high・DeepSeek・Qwen の 技術 4 者。integration バグ重視）",
+    "lv8": "lv8（lv7 の 4 者 + 批評 2 者〔Codex high・DeepSeek〕= 6 者）",
+}
 
 
 def clip(text: str, limit: int) -> str:
@@ -169,6 +175,18 @@ def answers_fact(lines: Sequence[str]) -> str:
     return "ユーザーが方向性を確認済み（回答の原文）: " + " / ".join(ln.removeprefix("- ") for ln in lines)
 
 
+def roster_of(args: Mapping[str, Any]) -> str:
+    """state の args から組の名前。組が無い (この機能より前の) state は lv3。"""
+    return str(args.get("roster") or DEFAULT_ROSTER)
+
+
+def roster_line(args: Mapping[str, Any], note: str = "") -> str:
+    """レポートの「組: …」の 1 行。--no-ds / --no-qwen で外した者があれば添える (Qwen のいない lv3 の --no-qwen は無関係)。"""
+    roster = roster_of(args)
+    off = [name for name, flag in (("DeepSeek", args.get("no_ds")), ("Qwen", args.get("no_qwen") and roster != DEFAULT_ROSTER)) if flag]
+    return f"組: {ROSTER_LABELS.get(roster, roster)}" + (f"（{'・'.join(off)} なし）" if off else "") + note
+
+
 # ---------------------------------------------------------------- レポート (60 行以内)
 
 
@@ -193,7 +211,8 @@ def consult_lines(st: Mapping[str, Any], design_text: str, rv: Lv3aRun, n_design
     count = {m: len(technical(rv.clusters, m)) for m in (RED, ORANGE, YELLOW)}
     reds = [f"- [{RED}] {c.get('title')}（{c.get('adopt')}）: {clip(str(c.get('proposal')), 90)}" for c in technical(rv.clusters, RED)]
     lines = [f"# Lv5A consult レポート — {st['label']}", f"run: {st['run_dir']}", f"作業フォルダ: {st['args']['workdir']}",
-             f"設計ファイル: {st['design_rel']}（作業フォルダに残る。削除しない）", "", f"## 設計案（冒頭 {n_design} 行）"]
+             f"設計ファイル: {st['design_rel']}（作業フォルダに残る。削除しない）", roster_line(st["args"], "（設計レビューに適用）"),
+             "", f"## 設計案（冒頭 {n_design} 行）"]
     lines += [f"> {clip(line, 160)}" for line in [ln for ln in design_text.splitlines() if ln.strip()][:n_design]]
     lines += ["", "## 設計レビュー（Lv3A）",
               f"technical: 🔴{count[RED]} 🟠{count[ORANGE]} 🟡{count[YELLOW]} / クラスタ計 {len(rv.clusters)} 件（Lv3A exit {rv.exit_code}）"]
@@ -211,6 +230,7 @@ def final_lines(st: Mapping[str, Any], n_red: int, n_orange: int) -> list[str]:
     mod, add, dele = impl["counts"]
     lines = [f"# Lv5A 最終レポート — {st['label']}",
              "状態: " + ("要ユーザー判断（exit 21）" if r["needs"] else "完了・🔴 なし（exit 0）"), f"作業フォルダ: {st['args']['workdir']}",
+             roster_line(st["args"], "（差分レビューに適用" + ("。🔴 の自動修正後の再レビューは軽い構成のまま）" if autofix["rounds"] else "）")),
              "", "## 実装結果",
              f"- 変更: 更新 {mod} / 新規 {add} / 削除 {dele}、+{impl['plus']} -{impl['minus']} 行（{', '.join(impl['files'][:6]) or '-'}）",
              f"- Codex: {impl['rounds']} 周 / {impl['tokens']:,} tokens / {impl['seconds']} 秒。検査: "
