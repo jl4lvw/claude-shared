@@ -75,6 +75,13 @@ _HOOKS: tuple[tuple[str, str | None, str, int, str], ...] = (
         "pv: Step4 の collect 検証が済んでいない run を毎ターン提示する",
     ),
     (
+        "SessionStart",
+        "startup",
+        ".claude/hooks/session_name_prompt.py",
+        5,
+        "セッション名 `072★写真アルバム 4` を開始時に選んでもらう指示を注入(CLAUDE.md「セッション名の基本ルール」)",
+    ),
+    (
         # 実際の登録は matcher="Bash|PowerShell" / command は `python -X utf8 ...`。
         # ここが実態とズレていると、登録済みなのに [ADD] と判定して**二重登録**する
         # (2026-08-12 に --check で検出)。PowerShell 経由の codex 起動も塞ぐ必要が
