@@ -47,6 +47,7 @@ EXIT_NO_CODEX = 2
 EXIT_CODEX_FAILED = 3
 EXIT_CHECKS_FAILED = 10  # 検査が通らないまま上限に達した・失敗が変わらず停滞した
 EXIT_QUOTA = 11  # 利用枠が上限に達したため止めた
+EXIT_NEEDS_JUDGMENT = 21  # 実装と検査は成功したが、レビュー結果に人の判断が要る
 EXIT_TIMEOUT = 30
 
 STATUS_EXIT = {
@@ -57,6 +58,7 @@ STATUS_EXIT = {
     "codex_failed": EXIT_CODEX_FAILED,
     "no_change": EXIT_CODEX_FAILED,
     "engine_error": EXIT_GENERIC,
+    "review_needs_judgment": EXIT_NEEDS_JUDGMENT,
 }
 
 STATIC_TYPES = frozenset({"js-syntax", "lf", "ruff"})
@@ -579,6 +581,7 @@ class Outcome:
     weekly: float | None = None
     shots: list[str] = field(default_factory=list)
     questions: str = ""
+    lv3a: dict | None = None
 
 
 def _write(path: Path, text: str) -> None:
@@ -715,12 +718,72 @@ NEXT_STEPS = {
     "codex_failed": "Codex 側の失敗。最終報告と stderr を確認し、新しい run で再実行するか Lv2 に切り替える",
     "no_change": "最終報告の質問に答えて仕様を直し、新しい run で再実行する",
     "engine_error": "下請け（prepare/run）が止まった。メッセージを確認して新しい run で再実行する",
+    "review_needs_judgment": "🔴 と要判断の理由を読み、🔴 は生ログを grep で原文突合する。直すなら小さく直して `check` で再検査",
 }
 STATUS_LABEL = {
     "ok": "OK（全検査合格）", "checks_failed": "検査が通らない", "stalled": "停滞（同じ失敗）",
     "quota_stop": "利用枠で停止", "codex_failed": "Codex 失敗", "no_change": "変更なし",
-    "engine_error": "実行エラー",
+    "engine_error": "実行エラー", "review_needs_judgment": "実装OK・レビューで要判断",
 }
+
+
+def _clip_report(text: object, limit: int = 90) -> str:
+    compact = " ".join(str(text).split())
+    return compact if len(compact) <= limit else compact[: limit - 1] + "…"
+
+
+def render_lv3a_section(data: dict) -> list[str]:
+    """Lv3A の短い要約。空行を含めて 25 行以内に固定する。"""
+    bundles = data.get("bundles", [])
+    reds = [r for b in bundles for r in b.get("reds", [])]
+    oranges = [title for b in bundles for title in b.get("oranges", [])]
+    yellows = sum(int(b.get("yellows", 0)) for b in bundles)
+    lines = ["", "## Lv3A レビュー"]
+    if not data.get("performed"):
+        reason = _clip_report(data.get("reason") or "理由不明", 160)
+        if reason.startswith("レビュー省略"):  # 小さい差分の意図した省略。警告ではない
+            lines.append(f"{reason}。常にレビューするなら --review-min-plus 0")
+        else:
+            prefix = "レビュー未実施: " if reason.startswith("実装が ok でない") else "実装は OK だがレビューは行われていない: "
+            lines.append(f"**{prefix}{reason}**")
+    lines += [f"- 組: {data.get('roster', 'lv3')} / 束: {len(bundles)}",
+              f"- 指摘: 🔴{len(reds)} 🟠{len(oranges)} 🟡{yellows}"]
+    for red in reds[:6]:
+        lines.append(f"- [🔴] {_clip_report(red.get('title'))}（{red.get('adopt') or '-'}）: {_clip_report(red.get('proposal'))}")
+    if len(reds) > 6:
+        lines.append(f"- ほか 🔴 {len(reds) - 6} 件")
+    for title in oranges[:4]:
+        lines.append(f"- [🟠] {_clip_report(title)}")
+    if len(oranges) > 4:
+        lines.append(f"- ほか 🟠 {len(oranges) - 4} 件")
+    partials = data.get("partial_notes", [])
+    if partials:
+        lines.append("- 暫定成功: " + _clip_report(" / ".join(partials), 160))
+    if data.get("unreviewed"):
+        lines.append("- 未レビュー: " + _clip_report(", ".join(data["unreviewed"]), 160))
+    autofix = data.get("autofix", {})
+    if autofix.get("rounds"):
+        lines.append(f"- 自動修正: 対象 {len(autofix.get('targets', []))} / 解消 {autofix.get('resolved', 0)} / "
+                     f"残り {len(autofix.get('remaining', []))} / 再発 {len(autofix.get('recurred', []))}"
+                     "（再レビューは軽い構成: lv3・DeepSeek なし）")
+        if autofix.get("base_run"):  # 上の「変更」は最初の実装だけ。自動修正で増減した分をここで補う
+            lines.append(f"- 自動修正の変更: +{autofix.get('fix_plus', 0)} -{autofix.get('fix_minus', 0)} 行"
+                         f"（{_clip_report(', '.join(autofix.get('fix_files') or []) or '不明', 100)}）"
+                         f"・基準 RUN {autofix['base_run']}（上の「変更」は最初の実装だけ）")
+        if autofix.get("remaining"):  # 再レビューで残った 🔴 は、上の 🔴 の一覧（最初のレビュー）には出ない
+            lines.append("- 残った 🔴（再レビュー）: " + _clip_report(" / ".join(autofix["remaining"]), 160))
+    elif autofix.get("targets"):
+        lines.append(f"- 自動修正: 対象 {len(autofix['targets'])} / 実施せず")
+    else:
+        lines.append("- 自動修正: 対象なし")
+    if autofix.get("stop_reason"):
+        lines.append("- 停止理由: " + _clip_report(autofix["stop_reason"], 160))
+    reasons = [r for r in data.get("judgment_reasons") or [] if r != autofix.get("stop_reason")]
+    if data.get("performed") and reasons:  # レビュー未実施のときは、上の太字の行が理由を述べている
+        lines.append("- 要判断の理由: " + _clip_report(" / ".join(reasons), 160))
+    lines += ["- 費用: " + str(data.get("cost_line") or "記録なし"),
+              "- 記録: " + str(data.get("record_dir") or "なし")]
+    return lines[:25]
 
 
 def render_report(out: Outcome) -> str:
@@ -767,6 +830,8 @@ def render_report(out: Outcome) -> str:
         lines.append("スクリーンショット: " + " , ".join(out.shots))
     if out.questions:
         lines += ["", "Codex の最終報告（抜粋）:", "```", tail(out.questions, 12, 1200), "```"]
+    if out.lv3a is not None:
+        lines += render_lv3a_section(out.lv3a)
     lines += ["", f"次にすること: {NEXT_STEPS.get(out.status, '')}"]
     return "\n".join(line for line in lines if line is not None) + "\n"
 
@@ -779,7 +844,36 @@ def _load_inputs(args: argparse.Namespace) -> tuple[Path, Manifest]:
     return workdir, load_manifest(Path(args.checks))
 
 
-def cmd_plan(args: argparse.Namespace) -> int:
+def _lv3a_preflight(args: argparse.Namespace, drivers: object | None = None) -> int:
+    import cgd_lv0_review  # noqa: PLC0415 — none/deepseek の経路では依存させない
+
+    result = cgd_lv0_review.preflight(
+        engine.RUNS_BASE, args.roster, args.no_ds, args.no_qwen, drivers=drivers)
+    print("\nLv3A の点検:")
+    if result.stdout.strip():
+        print(result.stdout.rstrip())
+    if result.stderr.strip():
+        print(result.stderr.rstrip())
+    if result.returncode != EXIT_OK:
+        print(f"NG: Lv3A の事前点検が失敗（exit {result.returncode}）。レビューできないため実装を始めない")
+    return result.returncode
+
+
+def _run_lv3a_stage(args: argparse.Namespace, cfg: Config, out: Outcome, drivers: object | None = None) -> None:
+    import cgd_lv0_review  # noqa: PLC0415 — none/deepseek の経路では依存させない
+
+    if out.status != "ok":
+        out.lv3a = {"performed": False, "reason": "実装が ok でないためレビューは未実施"}
+        return
+    # 子の Lv0（自動修正）は別の作業ディレクトリで起動するので、相対パスの検査定義でも読めるよう絶対パスにする
+    out.lv3a = cgd_lv0_review.review_stage(
+        cfg, out, checks_path=str(Path(args.checks).resolve()), roster=args.roster, no_ds=args.no_ds, no_qwen=args.no_qwen,
+        no_autofix=args.no_autofix, lv3a_timeout=args.lv3a_timeout, drivers=drivers)
+    if out.lv3a.get("needs_judgment"):
+        out.status = "review_needs_judgment"
+
+
+def cmd_plan(args: argparse.Namespace, drivers: object | None = None) -> int:
     workdir, manifest = _load_inputs(args)
     errors = engine.validate_workdir(workdir)
     for e in errors:
@@ -805,25 +899,41 @@ def cmd_plan(args: argparse.Namespace) -> int:
         print("アプリ起動: " + " ".join(manifest.serve.cmd) + "（空きポート・検査用の一時データで動かすこと）")
     print("凍結ファイル（出し直しで変更不可）: " + (" / ".join(manifest.frozen) or "なし"))
     print(f"出し直し: 最大 {args.max_fix_rounds} 周・週の利用枠 {args.quota_stop:.0f}% で停止・失敗が変わらなければ停止")
-    print("送信先: Codex（OpenAI）" + (" ＋ DeepSeek（中国本土サーバ・差分レビュー）" if args.review == "deepseek" else ""))
-    return EXIT_GENERIC if errors or choice.exe is None else EXIT_OK
+    if args.review == "lv3a":
+        targets = "送信先: Codex（OpenAI・実装とレビュー）"
+        if not args.no_ds:
+            targets += " ＋ DeepSeek（中国本土サーバ・レビュー）"
+        if args.roster != "lv3" and not args.no_qwen:
+            targets += " ＋ Qwen（Alibaba DashScope・レビュー）"
+        print(targets)
+        review_code = _lv3a_preflight(args, drivers)
+    else:
+        print("送信先: Codex（OpenAI）" + (" ＋ DeepSeek（中国本土サーバ・差分レビュー）" if args.review == "deepseek" else ""))
+        review_code = EXIT_OK
+    return EXIT_GENERIC if errors or choice.exe is None or review_code != EXIT_OK else EXIT_OK
 
 
-def cmd_run(args: argparse.Namespace) -> int:
+def cmd_run(args: argparse.Namespace, api: Engine | None = None, drivers: object | None = None) -> int:
     workdir, manifest = _load_inputs(args)
     spec = Path(args.spec).read_text(encoding="utf-8")
+    if args.review == "lv3a" and _lv3a_preflight(args, drivers) != EXIT_OK:
+        return EXIT_GENERIC
     contract = ""
     if any(c.type == "e2e" for c in manifest.checks) and CONTRACT_PATH.exists():
         contract = CONTRACT_PATH.read_text(encoding="utf-8")
     cfg = Config(workdir, spec, manifest, args.effort, args.max_fix_rounds, args.timeout,
                  args.quota_stop, args.review == "deepseek", args.review_min_plus, contract)
-    out = execute(cfg, Engine())
+    out = execute(cfg, api or Engine())
+    if args.review == "lv3a":
+        _run_lv3a_stage(args, cfg, out, drivers)
     report = render_report(out)
     if out.autodir:
         _write(Path(out.autodir) / "report.md", report)
-        _write(Path(out.autodir) / "outcome.json", json.dumps(
-            {"status": out.status, "note": out.note, "base_run": out.base_run,
-             "rounds": [r.__dict__ for r in out.rounds]}, ensure_ascii=False, indent=2))
+        outcome_data = {"status": out.status, "note": out.note, "base_run": out.base_run,
+                        "rounds": [r.__dict__ for r in out.rounds]}
+        if args.review == "lv3a":
+            outcome_data["lv3a"] = out.lv3a
+        _write(Path(out.autodir) / "outcome.json", json.dumps(outcome_data, ensure_ascii=False, indent=2))
     print(report)
     return STATUS_EXIT.get(out.status, EXIT_GENERIC)
 
@@ -854,23 +964,50 @@ def build_parser() -> argparse.ArgumentParser:
         if name in ("plan", "run"):
             p.add_argument("--max-fix-rounds", type=int, default=2, choices=range(0, 4))
             p.add_argument("--quota-stop", type=float, default=80.0, help="週の利用枠がこの %% 以上なら止める")
-        if name == "plan":
-            p.add_argument("--review", choices=("none", "deepseek"), default="none")
+        if name in ("plan", "run"):
+            p.add_argument("--review", choices=("none", "deepseek", "lv3a"), default="none")
+            p.add_argument("--roster", choices=("lv3", "lv7", "lv8"), default=None)
+            p.add_argument("--no-ds", action="store_true", default=None)
+            p.add_argument("--no-qwen", action="store_true", default=None)
         if name == "run":
             p.add_argument("--spec", required=True, help="仕様を書いたファイル（UTF-8）")
             p.add_argument("--effort", default="medium", choices=("low", "medium", "high"))
             p.add_argument("--timeout", type=int, default=3600, help="Codex 1 周あたりの打ち切り秒")
-            p.add_argument("--review", choices=("none", "deepseek"), default="none")
             p.add_argument("--review-min-plus", type=int, default=100)
+            p.add_argument("--no-autofix", action="store_true", default=None)
+            p.add_argument("--lv3a-timeout", type=int, default=None,
+                           help="Lv3A 1 回あたりの打ち切り秒（既定 3000）")
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def _validate_review_args(args: argparse.Namespace) -> None:
+    names = (("roster", "--roster"), ("no_ds", "--no-ds"), ("no_qwen", "--no-qwen"),
+             ("no_autofix", "--no-autofix"), ("lv3a_timeout", "--lv3a-timeout"))
+    if getattr(args, "review", None) != "lv3a":
+        for attr, flag in names:
+            if getattr(args, attr, None) is not None:
+                raise ValueError(f"{flag} は --review lv3a のときだけ指定できる")
+        return
+    args.roster = args.roster or "lv3"
+    args.no_ds = bool(args.no_ds)
+    args.no_qwen = bool(args.no_qwen)
+    if hasattr(args, "no_autofix"):
+        args.no_autofix = bool(args.no_autofix)
+        args.lv3a_timeout = 3000 if args.lv3a_timeout is None else args.lv3a_timeout
+        if args.lv3a_timeout <= 0:
+            raise ValueError("--lv3a-timeout は 1 以上にしてください")
+
+
+def main(argv: list[str] | None = None, *, api: Engine | None = None, drivers: object | None = None) -> int:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     args = build_parser().parse_args(argv)
-    handlers = {"plan": cmd_plan, "run": cmd_run, "check": cmd_check}
     try:
-        return handlers[args.command](args)
+        _validate_review_args(args)
+        if args.command == "plan":
+            return cmd_plan(args, drivers=drivers)
+        if args.command == "run":
+            return cmd_run(args, api=api, drivers=drivers)
+        return cmd_check(args)
     except ValueError as exc:
         print(f"NG: {exc}")
         return EXIT_GENERIC
