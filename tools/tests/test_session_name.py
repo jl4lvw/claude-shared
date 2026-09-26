@@ -178,6 +178,9 @@ def test_hook_injects_on_startup(monkeypatch: pytest.MonkeyPatch, capsys: pytest
     ctx = out["hookSpecificOutput"]["additionalContext"]
     assert out["hookSpecificOutput"]["hookEventName"] == "SessionStart"
     assert "★" in ctx and "AskUserQuestion" in ctx and "/handoff load" in ctx
+    # 2026-09-26: 名前のために最初の作業を止めない (一段落してから・確認に同梱)
+    assert "一段落" in ctx and "同梱" in ctx
+    assert "最初の作業より前" not in ctx
 
 
 @pytest.mark.parametrize("payload", [{"source": "resume"}, {"source": "compact"}, {"reason": "clear"}])
