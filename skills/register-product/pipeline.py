@@ -273,7 +273,8 @@ def preflight(g: str) -> dict:
                 "そのまま使わないこと")
     draft = {
         "g": g, "manage_number": mn, "sku_main": sku_main, "is_variation": is_var, "title": title,
-        "variants": [{**v, "estore_price": excl_tax(v["price"]) if v["price"] else None, "stock": None}
+        "variants": [{**v, "estore_price": excl_tax(v["price"]) if v["price"] else None,
+                     "stock": 0}  # 在庫数は必ず0で登録する(絶対ルール・2026-09-28 ユーザー決定。質問しない)
                      for v in variants],
         "estore_price_main": excl_tax(min(prices)) if prices else None,
         "estore_product_name": None,
@@ -295,7 +296,6 @@ def preflight(g: str) -> dict:
         "estore_name_examples": name_examples,
         "flags": flags,
         "questions": ["Eストア表示名(短く。参考例=estore_name_examples。楽天の長い商品名は使わない)",
-                      "在庫数(単品なら1つ、バリエーションは色×サイズごと。全て同数なら1つで可)",
                       "Eストア価格(既定: 楽天税込価格÷1.1)と納期日数(既定: 5日)",
                       "Yahoo!のコピー元商品",
                       "公開の可否(Eストア/Yahoo!)。Yahoo!の店頭反映はストア全体の未反映分をまとめて公開する"],
