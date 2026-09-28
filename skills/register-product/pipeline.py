@@ -197,6 +197,27 @@ def yahoo_copy_candidates(title: str, price: int | None, n_axes: int, exclude: s
     return [{"code": c, "name": n[:50], "price": p, "same_price": s} for s, c, n, p in cands[:limit]]
 
 
+def estore_name_examples(title: str, limit: int = 6) -> list[dict]:
+    """Eストア表示名を短くする際の参考例(実在の兄弟SKU)。そのまま使う候補ではなく、
+
+    文体の参考にする(2026-09-25 の教訓: 機械的なテンプレート適用は誤変換を生む。
+    feedback_naming_use_sibling_clean_template 参照)。
+    """
+    keywords = [k for k in ("ワッペン", "Tシャツ", "コイン", "帽子", "識別帽", "キャップ", "ポロシャツ",
+                            "パーカー", "タオル", "ぬいぐるみ", "バッグ", "ステッカー", "ポーチ", "ベルト",
+                            "短靴") if k in title]
+    if not keywords:
+        return []
+    rows = q_all("SELECT sku, product_name, estore_product_name FROM products "
+                 "WHERE estore_product_name IS NOT NULL AND estore_product_name != product_name "
+                 "AND deleted_at IS NULL")
+    out = []
+    for r in rows:
+        if any(k in (r["estore_product_name"] or "") or k in (r["product_name"] or "") for k in keywords):
+            out.append({"sku": r["sku"], "short_name": r["estore_product_name"], "length": len(r["estore_product_name"])})
+    return out[:limit]
+
+
 def preflight(g: str) -> dict:
     g = g.upper()
     if not G_RE.match(g):
@@ -223,11 +244,16 @@ def preflight(g: str) -> dict:
     pending_rows = y_pending.get("pending_rows", 0)
     if pending_rows:
         flags.append(f"Yahoo!に他の未反映が {pending_rows} 件あります。店頭反映するとこれらも一緒に公開されます(反映は人が行う設定を推奨)")
+    name_examples = estore_name_examples(title)
+    flags.append("Eストア表示名は登録時点で短く決める(未設定のまま登録すると、後で管理画面から手動で"
+                "直すことになり023の記録と食い違う実例があった: G2225 2026-09-25)。楽天の長い商品名を"
+                "そのまま使わないこと")
     draft = {
         "g": g, "manage_number": mn, "sku_main": sku_main, "is_variation": is_var, "title": title,
         "variants": [{**v, "estore_price": excl_tax(v["price"]) if v["price"] else None, "stock": None}
                      for v in variants],
         "estore_price_main": excl_tax(min(prices)) if prices else None,
+        "estore_product_name": None,
         "lead_time_days": 5,
         "estore": {"register": True, "publish": True},
         "yahoo": {"register": True, "copy_code": None, "publish": True,
@@ -242,8 +268,10 @@ def preflight(g: str) -> dict:
         "draft_plan": draft,
         "already_in_023": existing,
         "yahoo_copy_candidates": yahoo_copy_candidates(title, prices[0] if prices else None, n_axes, exclude=mn),
+        "estore_name_examples": name_examples,
         "flags": flags,
-        "questions": ["在庫数(単品なら1つ、バリエーションは色×サイズごと。全て同数なら1つで可)",
+        "questions": ["Eストア表示名(短く。参考例=estore_name_examples。楽天の長い商品名は使わない)",
+                      "在庫数(単品なら1つ、バリエーションは色×サイズごと。全て同数なら1つで可)",
                       "Eストア価格(既定: 楽天税込価格÷1.1)と納期日数(既定: 5日)",
                       "Yahoo!のコピー元商品",
                       "公開の可否(Eストア/Yahoo!)。Yahoo!の店頭反映はストア全体の未反映分をまとめて公開する"],
@@ -257,7 +285,7 @@ def _is_int(x: Any) -> bool:
 
 def validate_plan(p: dict) -> None:
     need = ["g", "manage_number", "sku_main", "is_variation", "variants", "estore_price_main",
-            "lead_time_days", "estore", "yahoo", "goq"]
+            "estore_product_name", "lead_time_days", "estore", "yahoo", "goq"]
     miss = [k for k in need if k not in p]
     if miss:
         raise SystemExit(f"NG: plan に不足: {miss}")
@@ -290,6 +318,16 @@ def validate_plan(p: dict) -> None:
         if not _is_int(p[key]) or p[key] <= 0:
             raise SystemExit(f"NG: {key} は正の整数で指定してください: {p[key]!r}")
     y, e = p["yahoo"], p["estore"]
+    if e["register"]:
+        name = (p.get("estore_product_name") or "").strip()
+        if not name:
+            raise SystemExit("NG: estore_product_name(Eストア表示名)が未設定です。登録時点で短い名前を決めてください"
+                             "(楽天の長い商品名をそのまま使わない)")
+        if len(name) > 60:
+            raise SystemExit(f"NG: estore_product_name が長すぎます({len(name)}文字)。既存の兄弟SKUは"
+                             "概ね40文字未満です。短くしてください")
+        if name == (p.get("title") or ""):
+            raise SystemExit("NG: estore_product_name が楽天の商品名(title)と同じです。短縮してください")
     if y["register"] and not y.get("copy_code"):
         raise SystemExit("NG: Yahoo! を登録するには copy_code が必要です")
     if y.get("copy_code") and str(y["copy_code"]).lower() == p["manage_number"]:
@@ -375,10 +413,13 @@ def _patch(sku: str, fields: dict) -> None:
 
 def step_prices(c: Ctx) -> tuple[str, str]:
     p = c.plan
-    _patch(c.main, {"estore_price": p["estore_price_main"], "lead_time_days": p["lead_time_days"]})
+    _patch(c.main, {"estore_price": p["estore_price_main"], "lead_time_days": p["lead_time_days"],
+                    "estore_product_name": p["estore_product_name"]})
     got = c.row(c.main)
     if got["estore_price"] != p["estore_price_main"] or got["lead_time_days"] != p["lead_time_days"]:
         raise StepFail("価格/納期の読み戻しが一致しない")
+    if got["estore_product_name"] != p["estore_product_name"]:
+        raise StepFail("estore_product_name(Eストア表示名)の読み戻しが一致しない")
     if p["is_variation"]:
         by_id = {v["variant_id"]: v for v in p["variants"]}
         for k in c.children():
@@ -389,7 +430,7 @@ def step_prices(c: Ctx) -> tuple[str, str]:
         for k in c.children():  # 子も読み戻す
             if k["estore_price"] != by_id[str(k["rakuten_variant_id"])]["estore_price"]:
                 raise StepFail(f"子 {k['sku']} の estore_price の読み戻しが一致しない")
-    return "OK", f"estore_price={got['estore_price']} 納期={got['lead_time_days']}日"
+    return "OK", f"estore_price={got['estore_price']} 納期={got['lead_time_days']}日 表示名={got['estore_product_name']!r}"
 
 
 def step_estore_register(c: Ctx) -> tuple[str, str]:

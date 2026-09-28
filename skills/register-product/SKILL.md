@@ -4,7 +4,7 @@ description: 楽天RMSに登録済みの新商品(G番号)を、023商品マス�
 trigger: 「Gxxxxを商品登録して」「新商品を登録」「023・Eストア・Yahoo!に登録」
 ---
 
-<!-- SKILL_VERSION: 2026-09-25_150436 -->
+<!-- SKILL_VERSION: 2026-09-28_102918 -->
 
 # register-product — 新商品登録(楽天登録済み → 023 / Eストア / Yahoo! / GoQ / 在庫)
 
@@ -38,22 +38,31 @@ G2225(ワッペン)の実登録(2026-09-25)で確立した手順を `pipeline.py
    ```bash
    python C:/ClaudeCode/.claude/skills/register-product/pipeline.py preflight G2225
    ```
-   出力: `draft_plan`(既定値入りの plan 下書き)・`yahoo_copy_candidates`・`flags`・`already_in_023`。
+   出力: `draft_plan`(既定値入りの plan 下書き)・`yahoo_copy_candidates`・`estore_name_examples`・`flags`・`already_in_023`。
    `flags` に出た項目(税抜の端数・**Yahoo!の他の未反映件数**・バリエーションの試験運用)は必ず質問に反映する。
-2. **AskUserQuestion(クリック形式)で、次を1回にまとめて聞く**(4問以内):
+2. **Eストア表示名の候補を Claude が作って先に提示する(必須・省略禁止)。** 1案だけ出して決めない
+   (amz-register の item_name 候補提示と同じ考え方)。`estore_name_examples`(実在の兄弟SKUの短縮名)を
+   文体の参考にし、**機械的なテンプレート当てはめはしない**(2026-08-27 の教訓: 素材語の二重表記等が
+   起きる。`feedback_naming_use_sibling_clean_template` 参照)。楽天の元の商品名(冗長・SEO詰め込み)を
+   Claude が読んで、2〜4案(文字数つき)を AskUserQuestion(単一選択+Other)で提示する。
+   **これを省略して楽天の長い商品名のままにしない**(2026-09-25 の実例: G2225 を長い名前のまま登録した
+   結果、後で担当者が管理画面から直接短縮し、023 の記録と食い違った)。
+3. 続けて **AskUserQuestion(クリック形式)で、次を1回にまとめて聞く**(4問以内):
    | 質問 | 選択肢 |
    |---|---|
    | 在庫数 | 単品は数を1つ。バリエーションは「全variantを同数にする」を既定にし、例外は Other か本文で受ける(色×サイズの一覧を本文に出す)。**必ず最初に聞く(2026-09-25 ユーザー指摘)** |
    | Eストア価格・納期 | 既定=楽天税込価格÷1.1、納期5日。`flags` に端数があれば丸め方も聞く |
    | Yahoo! のコピー元 | `yahoo_copy_candidates` の上位3つ+「Yahoo!は登録しない」(候補は同種・同じ軸数・同価格・新しい順) |
    | 公開の範囲 | 「Eストア公開+Yahoo!公開・店頭反映」/「Yahoo!の反映は人が行う」/「非公開のまま登録」。**Yahoo!の店頭反映はストア全体の未反映分を一緒に公開する**と一言添える。下見で他の未反映があれば件数を示し、「反映は人が行う」を推奨する |
-3. 答えを `draft_plan` に反映して plan を確定する(`stock`・`estore_price`・`estore_price_main`・`copy_code`・
-   `estore.publish`・`yahoo.publish`・`yahoo.reserve_publish`)。Python か Edit で JSON を直接直す。
-4. **確認画面(アーティファクト)を1つだけ出し、承認を1回取る。** JSON ではなく、店の担当者が読める日本語で:
-   商品名・楽天税込価格とEストア価格(税抜)・納期・**在庫数(色×サイズの表)**・公開範囲(何がお客様に見えるか)・
-   Yahoo!のコピー元・登録される全SKU・**対象外(Amazon/LCL/7S)**・途中で止まりうる場合。
-   (`artifact-design` の手順で作る。データが変わったら同じURLへ再publish)
-5. 承認を得たら plan に承認を刻む(24時間有効。承認後に plan を編集すると無効になる):
+4. 答えを `draft_plan` に反映して plan を確定する(`estore_product_name`・`stock`・`estore_price`・
+   `estore_price_main`・`copy_code`・`estore.publish`・`yahoo.publish`・`yahoo.reserve_publish`)。
+   Python か Edit で JSON を直接直す。`estore_product_name` は**楽天の title と同一だと弾かれる**
+   (`validate_plan` が拒否する。短縮を忘れた事故対策)。
+5. **確認画面(アーティファクト)を1つだけ出し、承認を1回取る。** JSON ではなく、店の担当者が読める日本語で:
+   **Eストア表示名(短縮後)**・楽天税込価格とEストア価格(税抜)・納期・**在庫数(色×サイズの表)**・
+   公開範囲(何がお客様に見えるか)・Yahoo!のコピー元・登録される全SKU・**対象外(Amazon/LCL/7S)**・
+   途中で止まりうる場合。(`artifact-design` の手順で作る。データが変わったら同じURLへ再publish)
+6. 承認を得たら plan に承認を刻む(24時間有効。承認後に plan を編集すると無効になる):
    ```bash
    python C:/ClaudeCode/.claude/skills/register-product/pipeline.py approve --plan <plan.json>
    ```
@@ -71,7 +80,7 @@ python C:/ClaudeCode/.claude/skills/register-product/pipeline.py run --plan <pla
 | step | 内容 | 検証・SKIP の根拠 |
 |---|---|---|
 | import | 楽天→023 取込(画像込み) | 子SKUの集合が plan と一致・画像あり |
-| prices | `estore_price`(親・子)と納期を PATCH | 親と全子を読み戻して一致 |
+| prices | `estore_price`(親・子)・納期・**Eストア表示名**を PATCH | 親と全子を読み戻して一致(表示名も) |
 | estore_register | Eストアへ非表示で新規登録+画像FTP | final_status=ok・画像失敗0 |
 | estore_images | 画像台帳CSVの往復(保存セッションでブラウザ操作) | 023 の紐付け記録で SKIP 判定。CSV の画像名が対象SKUの送信済み画像と**完全一致**のときだけ送る |
 | estore_bind | 画像を商品に紐付け | 023 の `bound_at` が全画像で埋まる |
@@ -118,6 +127,12 @@ python C:/ClaudeCode/.claude/skills/register-product/pipeline.py run --plan <pla
 
 - 楽天の manageNumber は**小文字**(`g2225`)。大文字は 400。023 の SKU は大文字(`G2225`)。バリエーション商品の親は `{G番号}-parent`。
 - Eストア価格 = 楽天税込価格 ÷ 1.1(G2223: 1694→1540、G2224: 1815→1650)。納期は既存品と同じ5日。
+- **Eストア表示名は楽天の商品名(長い・SEO詰め込み)と別に、短い名前を持つのが既存の慣習。**
+  実例: `ワッペン(軍艦旗＆戦艦大和)ベルクロ付`(19文字)・`Tシャツ(海上自衛隊・ドルフィンマークワッペン)`
+  (24文字)・`部隊識別帽(海上自衛隊 練習艦しまかぜ)アゴヒモ付き`(26文字)。楽天の元名は44〜90文字程度あり、
+  そのまま使うと後で管理画面から手動修正することになる(G2225 2026-09-25 実例。修正は023を経由せず直接
+  行われたため、023の記録は古い長い名前のまま残った)。**技術的な文字数上限ではなく業務上の慣習**
+  なので、Amazon item_name と同じく毎回 Claude が候補案を作りユーザーに選んでもらう(自動生成しない)。
 - **023 の在庫欄(`products.stock`)は API で書けない**(GoQ・モール側が正)。在庫数は GoQ に書く。
 - 画像台帳CSVは**全件ダンプではなく「未登録画像のリスト」**。再アップロードは追記型で既存画像を消さない。
 - Yahoo!の `register-new` は `publish` を指定できる。`publish=true` で display=1 で登録し、店頭に出るのは店頭反映の後。

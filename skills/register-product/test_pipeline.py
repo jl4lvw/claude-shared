@@ -17,7 +17,7 @@ def _single() -> dict:
         "g": "G2225", "manage_number": "g2225", "sku_main": "G2225", "is_variation": False,
         "title": "自衛隊 ワッペン 護衛艦ちょうかい派米記念",
         "variants": [{"variant_id": "g2225", "selectors": {}, "price": 1694, "estore_price": 1540, "stock": 20}],
-        "estore_price_main": 1540, "lead_time_days": 5,
+        "estore_price_main": 1540, "estore_product_name": "ワッペン(護衛艦ちょうかい派米記念)ベルクロ付", "lead_time_days": 5,
         "estore": {"register": True, "publish": True},
         "yahoo": {"register": True, "copy_code": "g2223", "publish": True, "reserve_publish": True,
                   "pending_before": {"rows": 0, "item_pages": 0}, "pending_allow": 4},
@@ -53,12 +53,24 @@ def test_valid_plans_pass():
     lambda p: p["estore"].update(register=False),  # 登録しないのに公開
     lambda p: p["yahoo"].update(publish=False),  # 公開しないのに店頭反映
     lambda p: p["variants"].append(dict(p["variants"][0])),  # 単品なのに variant が複数
+    lambda p: p.update(estore_product_name=""),
+    lambda p: p.update(estore_product_name=None),
+    lambda p: p.update(estore_product_name=p["title"]),  # 楽天の長い名前をそのまま使っている
+    lambda p: p.update(estore_product_name="あ" * 61),
 ])
 def test_invalid_single_plans_rejected(mutate):
     p = _single()
     mutate(p)
     with pytest.raises(SystemExit):
         pl.validate_plan(p)
+
+
+def test_estore_product_name_not_required_when_estore_register_false():
+    p = _single()
+    p["estore"]["publish"] = False
+    p["estore"]["register"] = False
+    p["estore_product_name"] = None
+    pl.validate_plan(p)  # Eストアに登録しないなら短縮名は不要
 
 
 def test_variation_rules():
