@@ -413,3 +413,17 @@ def test_wait_goq_judgement_returns_ng_without_waiting(monkeypatch):
     monkeypatch.setattr(pl.time, "sleep", lambda s: (_ for _ in ()).throw(AssertionError("待ってはいけない")))
     ok, _ = pl._wait_goq_judgement(_C(_single()), wait=10_000, every=1)
     assert not ok and len(calls) == 1
+
+
+def test_store_links_for_single_all_malls():
+    assert pl.store_links(_single()) == [
+        ("楽天", "https://item.rakuten.co.jp/seifukunofuji/g2225/"),
+        ("Eストア", "https://seifukunofuji.co.jp/SHOP/G2225.html"),
+        ("Yahoo!", "https://store.shopping.yahoo.co.jp/seifukunofuji/g2225.html"),
+    ]
+
+
+def test_store_links_omit_unregistered_malls():
+    p = _single()
+    p["yahoo"]["register"] = False
+    assert [m for m, _ in pl.store_links(p)] == ["楽天", "Eストア"]

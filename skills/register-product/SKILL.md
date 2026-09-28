@@ -4,7 +4,7 @@ description: 楽天RMSに登録済みの新商品(G番号)を、023商品マス�
 trigger: 「Gxxxxを商品登録して」「新商品を登録」「023・Eストア・Yahoo!に登録」
 ---
 
-<!-- SKILL_VERSION: 2026-09-28_142100 -->
+<!-- SKILL_VERSION: 2026-09-28_143331 -->
 
 # register-product — 新商品登録(楽天登録済み → 023 / Eストア / Yahoo! / GoQ / 在庫)
 
@@ -144,6 +144,10 @@ python C:/ClaudeCode/.claude/skills/register-product/pipeline.py run --plan <pla
 - **未実施**(Amazon・LCL・7S)と、**人がやること**(あれば)
 - Yahoo!店頭反映を実行したときは「反映前の未反映件数」と、他の担当者の分も公開された可能性
 - 最初に聞き漏らして途中で問い合わせた項目(あれば)
+- **最後に販売ページのリンクを必ず貼る(2026-09-28 ユーザー指示・省略禁止)。** ユーザーが実際に開いて
+  手動で状態を確認するため。`run`/`verify` が終了コード0で終わると、最後に `LINK <モール>: <URL>` を
+  出力するので、それをそのまま報告の末尾に並べる(楽天・Eストア・Yahoo!。登録対象外のモールは出ない)。
+  形式: `楽天: https://item.rakuten.co.jp/seifukunofuji/g2231/` のように1行1モール。
 
 ## 実装・運用メモ(G2225 で実測した事実)
 

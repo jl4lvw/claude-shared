@@ -47,6 +47,20 @@ ACTOR = "register-product"
 PY = sys.executable
 STORE_SHOPSERVE = "https://seifukunofuji.co.jp/SHOP/{code}.html"
 STORE_YAHOO = "https://store.shopping.yahoo.co.jp/seifukunofuji/{code}.html"
+STORE_RAKUTEN = "https://item.rakuten.co.jp/seifukunofuji/{code}/"
+
+
+def store_links(plan: dict) -> list[tuple[str, str]]:
+    """完了報告の最後に貼る販売ページのリンク(ユーザーが実際に開いて目視確認する。2026-09-28 ユーザー指示).
+
+    登録・公開の対象にしたモールだけを返す。楽天は本スキルの登録対象ではないが元商品として必ず含める。
+    """
+    links = [("楽天", STORE_RAKUTEN.format(code=plan["manage_number"]))]
+    if plan["estore"]["register"]:
+        links.append(("Eストア", STORE_SHOPSERVE.format(code=plan["g"])))
+    if plan["yahoo"]["register"]:
+        links.append(("Yahoo!", STORE_YAHOO.format(code=plan["manage_number"])))
+    return links
 TAX = 1.1
 EXIT_NEEDS_USER = 10
 APPROVAL_TTL = timedelta(hours=24)
@@ -1065,9 +1079,12 @@ def main() -> int:
         path.write_text(json.dumps(plan, ensure_ascii=False, indent=1), encoding="utf-8")
         print(f"OK: 承認を記録しました(24時間有効) hash={plan['approval']['hash'][:12]}")
         return 0
-    if a.cmd == "verify":
-        return run(Path(a.plan), "verify")
-    return run(Path(a.plan), a.only, a.reconcile)
+    rc = run(Path(a.plan), "verify") if a.cmd == "verify" else run(Path(a.plan), a.only, a.reconcile)
+    if rc == 0:
+        plan = json.loads(Path(a.plan).read_text(encoding="utf-8"))
+        for mall, url in store_links(plan):
+            print(f"LINK {mall}: {url}")
+    return rc
 
 
 if __name__ == "__main__":
