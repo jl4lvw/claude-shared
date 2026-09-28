@@ -776,8 +776,13 @@ def step_goq_stock(c: Ctx) -> tuple[str, str]:
             raise StepFail(f"set-quantity enqueue HTTP {code}: {str(q)[:200]}")
         job = _wait_queue(q["id"])
         res = job.get("result") or {}
-        if job["status"] != "ok" or res.get("row_count") != 1 or res.get("quantity") != int(qty) \
-                or res.get("target_row_ids") != [row_id]:
+        # row_count は「反映画面で選択された全行数」であり「変更された行数」ではない
+        # (goq_worker.set_quantity の仕様: 選択チェックボックスは全行必須のため、row_ids で絞っても
+        # 検索にヒットした行数がそのまま row_count になる。バリエーション商品で row_count==1 を
+        # 要求すると常に FAIL する実装ミスだった。実際に変更された行は changed_fields で判定する。
+        # 2026-09-28 G2230 実登録で発覚)
+        if job["status"] != "ok" or res.get("changed_fields") != [f"stock[{row_id}]"] \
+                or res.get("quantity") != int(qty) or res.get("target_row_ids") != [row_id]:
             raise StepFail(f"在庫数の反映に失敗 row={row_id}: {job.get('error_msg')} "
                            f"{json.dumps(res, ensure_ascii=False)[:200]}")
         progress[row_id] = qty  # 行ごとに進捗を残す(途中で落ちても済んだ行を再実行しない)
