@@ -190,20 +190,27 @@ def parse_variants(remote: dict) -> list[dict]:
     return out
 
 
-def yahoo_copy_candidates(title: str, price: int | None, n_axes: int, exclude: str = "",
+def yahoo_copy_candidates(title: str, price: int | None, is_variation: bool, exclude: str = "",
                           limit: int = 4) -> list[dict]:
-    """Yahoo! 新規登録のコピー元候補: 同種キーワードを含み、軸の数が同じで、同価格・新しい順."""
+    """Yahoo! 新規登録のコピー元候補: 同種キーワードを含み、単品/バリエーションの種別が同じで、同価格・新しい順.
+
+    バリエーション判定は `yahoo_snapshot_products.variation{1-5}_name` を見ない
+    (2026-09-28 実データで判明: このシステムの実登録では軸名がこれらの列に入っておらず、
+    実際にサイズ違いの sub-code を持つ商品でも全列 NULL/空文字のまま。実際に軸を持つかどうかは
+    `yahoo_snapshot_variants` に行があるかで判定する必要がある。旧ロジックは軸数の完全一致を
+    要求しており、バリエーション商品では常に候補 0 件になっていた=G2230 で発覚)。
+    """
     keywords = [k for k in ("ワッペン", "Tシャツ", "コイン", "帽子", "キャップ", "ポロシャツ", "パーカー",
                             "タオル", "ぬいぐるみ", "バッグ", "ステッカー") if k in title]
-    rows = q_all("SELECT code, name, price, variation1_name, variation2_name, variation3_name, "
-                 "variation4_name, variation5_name FROM yahoo_snapshot_products")
+    rows = q_all("SELECT code, name, price FROM yahoo_snapshot_products")
+    variant_codes = {(r["code"] or "").lower() for r in q_all("SELECT DISTINCT code FROM yahoo_snapshot_variants")}
     cands = []
     for r in rows:
         name = r["name"] or ""
         if keywords and not any(k in name for k in keywords):
             continue
-        axes = sum(1 for i in range(1, 6) if r[f"variation{i}_name"])
-        if axes != n_axes or (r["code"] or "").lower() == exclude.lower():
+        code_l = (r["code"] or "").lower()
+        if (code_l in variant_codes) != is_variation or code_l == exclude.lower():
             continue
         try:
             same_price = price is not None and int(r["price"]) == int(price)
@@ -256,7 +263,6 @@ def preflight(g: str) -> dict:
             flags.append(f"税抜換算に端数あり: {v['variant_id']} {v['price']}円 → {v['price'] / TAX:.2f}(丸め方を決めてください)")
     if is_var:
         flags.append("バリエーション商品は初回の実機検証が済んでいません(試験運用): GoQ の行の対応確認などで途中で確認が入る可能性があります")
-    n_axes = len(variants[0]["selectors"]) if is_var and variants else 0
     y_pending = run_json_tool(["tools/yahoo_publish_tool.py", "summary"])
     pending_rows = y_pending.get("pending_rows", 0)
     if pending_rows:
@@ -285,7 +291,7 @@ def preflight(g: str) -> dict:
     return {
         "draft_plan": draft,
         "already_in_023": existing,
-        "yahoo_copy_candidates": yahoo_copy_candidates(title, prices[0] if prices else None, n_axes, exclude=mn),
+        "yahoo_copy_candidates": yahoo_copy_candidates(title, prices[0] if prices else None, is_var, exclude=mn),
         "estore_name_examples": name_examples,
         "flags": flags,
         "questions": ["Eストア表示名(短く。参考例=estore_name_examples。楽天の長い商品名は使わない)",
