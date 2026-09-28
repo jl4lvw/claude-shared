@@ -302,3 +302,114 @@ def test_run_allows_reapproved_plan_when_not_yet_complete(tmp_path, monkeypatch)
     monkeypatch.setattr(pl, "STEPS", [("import", fake_step)])
     assert pl.run(plan_path, only=None) == 0
     assert calls == [10]  # 変更後の plan の内容で実行された(hash 変化を理由に拒否されない)
+
+
+# --- Yahoo!コピー元のパス(2026-09-28 G2231 でユーザー指摘: パスを見せないと判断できない) ---
+
+_WAPPEN = "(海自・海軍・マリン)グッズ:ファッション:パッチ(ワッペン)・肩章:パッチ(ワッペン):海上自衛隊"
+_LAND = "組織・キャラで選ぶ(グッズ関連):海上自衛隊:陸上部隊"
+
+
+def _fake_db(monkeypatch, products, variant_codes=()):
+    def q_all(sql, params=()):
+        if "yahoo_snapshot_variants" in sql:
+            return [{"code": c} for c in variant_codes]
+        return products
+
+    def q_one(sql, params=()):
+        code = params[0]
+        return next((p for p in products if p["code"].lower() == code), None)
+
+    monkeypatch.setattr(pl, "q_all", q_all)
+    monkeypatch.setattr(pl, "q_one", q_one)
+
+
+def _yrow(code, path, name="自衛隊 ワッペン テスト", cat="42624"):
+    return {"code": code, "name": name, "path": path, "product_category": cat}
+
+
+def test_copy_candidates_grouped_by_path_and_thin_last(monkeypatch):
+    _fake_db(monkeypatch, [
+        _yrow("g2225", "【ネコポス可】"), _yrow("g2223", "【ネコポス可】"), _yrow("g2207", "【ネコポス可】"),
+        _yrow("g2134", f"{_WAPPEN}\n【ネコポス可】\n{_LAND}"),
+        _yrow("g2120", f"{_LAND}\n{_WAPPEN}\n【ネコポス可】"),  # 並び順が違っても同じパス集合
+        _yrow("g2163", f"{_WAPPEN}\n【ネコポス可】"),
+    ])
+    c = pl.yahoo_copy_candidates("自衛隊 ワッペン 第１水陸両用戦隊", False, exclude="g2231")
+    assert [d["code"] for d in c] == ["g2134", "g2163", "g2225"]
+    assert c[0]["count"] == 2 and c[0]["other_codes"] == ["g2120"]
+    assert c[0]["org_paths"] == [_LAND]
+    assert c[-1]["thin_path"] is True and c[-1]["count"] == 3
+    assert all("price" not in d for d in c)  # 価格はコピーされないので判断材料にしない
+
+
+def test_copy_candidates_respect_variation_kind(monkeypatch):
+    _fake_db(monkeypatch, [_yrow("g0129", _WAPPEN, name="Tシャツ"), _yrow("g0128", _WAPPEN, name="Tシャツ")],
+             variant_codes=("g0128",))
+    assert [d["code"] for d in pl.yahoo_copy_candidates("Tシャツ", True)] == ["g0128"]
+    assert [d["code"] for d in pl.yahoo_copy_candidates("Tシャツ", False)] == ["g0129"]
+
+
+def test_pin_copy_source_paths_records_expected(monkeypatch):
+    _fake_db(monkeypatch, [_yrow("g2134", f"{_WAPPEN}\n【ネコポス可】\n{_LAND}")])
+    p = _single()
+    p["yahoo"]["copy_code"] = "g2134"
+    pl.pin_copy_source_paths(p)
+    assert p["yahoo"]["expected_paths"] == sorted([_WAPPEN, "【ネコポス可】", _LAND])
+
+
+def test_pin_copy_source_paths_rejects_thin_path(monkeypatch):
+    _fake_db(monkeypatch, [_yrow("g2225", "【ネコポス可】")])
+    p = _single()
+    p["yahoo"]["copy_code"] = "g2225"
+    with pytest.raises(SystemExit, match="ネコポス"):
+        pl.pin_copy_source_paths(p)
+    p["yahoo"]["allow_thin_path"] = True
+    pl.pin_copy_source_paths(p)
+    assert p["yahoo"]["expected_paths"] == ["【ネコポス可】"]
+
+
+def test_pin_copy_source_paths_rejects_missing_snapshot(monkeypatch):
+    _fake_db(monkeypatch, [])
+    p = _single()
+    with pytest.raises(SystemExit, match="yahoo_snapshot_products"):
+        pl.pin_copy_source_paths(p)
+
+
+def test_pin_copy_source_paths_skips_when_yahoo_not_registered(monkeypatch):
+    _fake_db(monkeypatch, [])
+    p = _single()
+    p["yahoo"]["register"] = False
+    pl.pin_copy_source_paths(p)
+    assert "expected_paths" not in p["yahoo"]
+
+
+def test_yahoo_path_problems_compares_as_sets():
+    p = _single()
+    p["yahoo"]["expected_paths"] = sorted([_WAPPEN, _LAND])
+    c = _C(p)
+    assert pl._yahoo_path_problems(c, {"paths": [_LAND, _WAPPEN]}) == []
+    probs = pl._yahoo_path_problems(c, {"paths": ["【ネコポス可】"]})
+    assert len(probs) == 1 and "不足" in probs[0] and "ネコポス" in probs[0]
+
+
+def test_yahoo_path_problems_skips_old_plans_without_expected():
+    assert pl._yahoo_path_problems(_C(_single()), {"paths": []}) == []
+
+
+def test_wait_goq_judgement_waits_until_row_exists(monkeypatch):
+    # 判定行が無い(404)間は待ち、行ができたら返す(G2231: 取込まで約84秒かかった)
+    seq = iter([(False, {"detail": "判定なし"}), (False, {"detail": "判定なし"}),
+                (True, {"ok": True, "detail": {"rakuten": True}})])
+    monkeypatch.setattr(pl, "_goq_all_ok", lambda c: next(seq))
+    monkeypatch.setattr(pl.time, "sleep", lambda s: None)
+    ok, body = pl._wait_goq_judgement(_C(_single()), wait=10_000, every=1)
+    assert ok and body["ok"] is True
+
+
+def test_wait_goq_judgement_returns_ng_without_waiting(monkeypatch):
+    calls = []
+    monkeypatch.setattr(pl, "_goq_all_ok", lambda c: calls.append(1) or (False, {"ok": False, "detail": {"yahoo": False}}))
+    monkeypatch.setattr(pl.time, "sleep", lambda s: (_ for _ in ()).throw(AssertionError("待ってはいけない")))
+    ok, _ = pl._wait_goq_judgement(_C(_single()), wait=10_000, every=1)
+    assert not ok and len(calls) == 1

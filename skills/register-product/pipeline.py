@@ -190,21 +190,36 @@ def parse_variants(remote: dict) -> list[dict]:
     return out
 
 
-def yahoo_copy_candidates(title: str, price: int | None, is_variation: bool, exclude: str = "",
-                          limit: int = 4) -> list[dict]:
-    """Yahoo! 新規登録のコピー元候補: 同種キーワードを含み、単品/バリエーションの種別が同じで、同価格・新しい順.
+THIN_PATHS = {"【ネコポス可】"}  # これだけでは商品カテゴリにも組織フォルダにも出ない
 
-    バリエーション判定は `yahoo_snapshot_products.variation{1-5}_name` を見ない
-    (2026-09-28 実データで判明: このシステムの実登録では軸名がこれらの列に入っておらず、
-    実際にサイズ違いの sub-code を持つ商品でも全列 NULL/空文字のまま。実際に軸を持つかどうかは
-    `yahoo_snapshot_variants` に行があるかで判定する必要がある。旧ロジックは軸数の完全一致を
-    要求しており、バリエーション商品では常に候補 0 件になっていた=G2230 で発覚)。
+
+def path_lines(path: str | None) -> list[str]:
+    return [p.strip() for p in (path or "").split("\n") if p.strip()]
+
+
+def yahoo_copy_candidates(title: str, is_variation: bool, exclude: str = "", limit: int = 60) -> list[dict]:
+    """Yahoo! 新規登録のコピー元候補を「紐付くパスの組み合わせ」ごとにまとめて返す.
+
+    コピー元から引き継ぐのは **path(ストア内カテゴリ)と product_category だけ**
+    (`yahoo_register_export.COPY_FIELDS`)。名前・価格・説明文は楽天の内容が入る。
+    したがって候補は価格ではなく**どのフォルダへ紐付くか**で選ぶ(2026-09-28 G2231 でユーザー指摘:
+    「コピー元と同じフォルダに紐付くなら、陸上部隊や潜水艦が護衛艦と紐付く不整合が起きる。
+    パスを見せてもらわないと判断できない」)。旧版は同価格・新しい順で、実際に g2225 等
+    「【ネコポス可】」しか持たない商品を推奨しており、G2225 はワッペンのカテゴリにも出ない状態で登録された。
+
+    - 同じパス集合の商品は1グループにまとめ、件数と代表コード(新しい順)を返す
+    - `org_paths`(組織・キャラで選ぶ…)が艦・部隊の紐付き先。Claude が商品に合うものを選び、
+      質問ではパス全文を必ず見せる
+    - パスが【ネコポス可】だけのグループは `thin_path=True` として末尾に回す(推奨しない)
+
+    バリエーション判定は `yahoo_snapshot_variants` の有無で行う(variation{1-5}_name 列は実データで
+    常に空。2026-09-28 G2230 で発覚)。
     """
     keywords = [k for k in ("ワッペン", "Tシャツ", "コイン", "帽子", "キャップ", "ポロシャツ", "パーカー",
                             "タオル", "ぬいぐるみ", "バッグ", "ステッカー") if k in title]
-    rows = q_all("SELECT code, name, price FROM yahoo_snapshot_products")
+    rows = q_all("SELECT code, name, path, product_category FROM yahoo_snapshot_products")
     variant_codes = {(r["code"] or "").lower() for r in q_all("SELECT DISTINCT code FROM yahoo_snapshot_variants")}
-    cands = []
+    groups: dict[tuple, dict] = {}
     for r in rows:
         name = r["name"] or ""
         if keywords and not any(k in name for k in keywords):
@@ -212,13 +227,47 @@ def yahoo_copy_candidates(title: str, price: int | None, is_variation: bool, exc
         code_l = (r["code"] or "").lower()
         if (code_l in variant_codes) != is_variation or code_l == exclude.lower():
             continue
-        try:
-            same_price = price is not None and int(r["price"]) == int(price)
-        except (TypeError, ValueError):
-            same_price = False
-        cands.append((same_price, r["code"], name, r["price"]))
-    cands.sort(key=lambda t: (not t[0], -int(re.sub(r"\D", "", t[1]) or 0)))
-    return [{"code": c, "name": n[:50], "price": p, "same_price": s} for s, c, n, p in cands[:limit]]
+        lines = path_lines(r["path"])
+        if not lines:
+            continue
+        key = (str(r["product_category"] or ""), tuple(sorted(lines)))
+        g = groups.setdefault(key, {"codes": [], "names": {}, "lines": lines})
+        g["codes"].append(r["code"])
+        g["names"][r["code"]] = name
+    out = []
+    for (cat, key_lines), g in groups.items():
+        codes = sorted(g["codes"], key=lambda c: -int(re.sub(r"\D", "", c) or 0))
+        rep = codes[0]
+        out.append({
+            "code": rep, "name": g["names"][rep][:50], "product_category": cat,
+            "count": len(codes), "other_codes": codes[1:4],
+            "thin_path": set(key_lines) <= THIN_PATHS,
+            "org_paths": [p for p in g["lines"] if p.startswith("組織・キャラ")],
+            "paths": g["lines"],
+        })
+    out.sort(key=lambda d: (d["thin_path"], -d["count"], -int(re.sub(r"\D", "", d["code"]) or 0)))
+    return out[:limit]
+
+
+def pin_copy_source_paths(plan: dict) -> None:
+    """承認時にコピー元のパスを plan へ固定する(承認ハッシュの対象になる).
+
+    - コピー元が 023 のスナップショットに無い → 拒否(register-new が拒否するため。API で取り込む)
+    - パスが【ネコポス可】だけ → 拒否(`yahoo.allow_thin_path: true` を明示した場合だけ通す)
+    - 固定したパスは `step_yahoo_register` が登録後の読み戻しと突き合わせる
+    """
+    y = plan["yahoo"]
+    if not y.get("register"):
+        return
+    row = q_one("SELECT path FROM yahoo_snapshot_products WHERE lower(code)=?", (str(y["copy_code"]).lower(),))
+    if row is None:
+        raise SystemExit(f"NG: コピー元 {y['copy_code']} が023の yahoo_snapshot_products にありません"
+                         "(Yahoo!に実在するなら get_item で取得して取り込む。SKILL.md 参照)")
+    lines = path_lines(row["path"])
+    if set(lines) <= THIN_PATHS and not y.get("allow_thin_path"):
+        raise SystemExit(f"NG: コピー元 {y['copy_code']} のパスが {lines} だけで、ワッペン等のカテゴリにも"
+                         "組織フォルダにも出ません。別のコピー元を選ぶ(意図的なら yahoo.allow_thin_path=true)")
+    y["expected_paths"] = sorted(lines)
 
 
 def estore_name_examples(title: str, limit: int = 6) -> list[dict]:
@@ -292,12 +341,12 @@ def preflight(g: str) -> dict:
     return {
         "draft_plan": draft,
         "already_in_023": existing,
-        "yahoo_copy_candidates": yahoo_copy_candidates(title, prices[0] if prices else None, is_var, exclude=mn),
+        "yahoo_copy_candidates": yahoo_copy_candidates(title, is_var, exclude=mn),
         "estore_name_examples": name_examples,
         "flags": flags,
         "questions": ["Eストア表示名(短く。参考例=estore_name_examples。楽天の長い商品名は使わない)",
                       "Eストア価格(既定: 楽天税込価格÷1.1)と納期日数(既定: 5日)",
-                      "Yahoo!のコピー元商品",
+                      "Yahoo!のコピー元商品(=紐付くパス。候補ごとにパス全文を見せる。【ネコポス可】だけの候補は推奨しない)",
                       "公開の可否(Eストア/Yahoo!)。Yahoo!の店頭反映はストア全体の未反映分をまとめて公開する"],
     }
 
@@ -596,9 +645,24 @@ def step_yahoo_register(c: Ctx) -> tuple[str, str]:
         problems.append("説明文なし")
     if not info.get("postage_set"):
         problems.append("送料未設定")
+    problems += _yahoo_path_problems(c, info)
     if problems:
         raise StepFail("Yahoo読み戻し不一致: " + ", ".join(problems))
     return "OK", f"画像={len(body['uploaded_images'])}枚 display={info['display']} 送料グループ={info['postage_set']}"
+
+
+def _yahoo_path_problems(c: Ctx, info: dict) -> list[str]:
+    """紐付くパスが承認時に固定したコピー元のパスと一致するか(2026-09-28 G2231 で追加).
+
+    `expected_paths` は `approve` が入れる。それ以前に承認された plan には無いので照合しない。
+    """
+    want = c.plan["yahoo"].get("expected_paths")
+    if want is None:
+        return []
+    got = sorted(info.get("paths") or [])
+    if got == sorted(want):
+        return []
+    return [f"パスがコピー元と不一致(不足={sorted(set(want) - set(got))} 余分={sorted(set(got) - set(want))})"]
 
 
 def _yahoo_on_storefront(c: Ctx) -> bool:
@@ -657,6 +721,26 @@ def _goq_all_ok(c: Ctx) -> tuple[bool, dict]:
     return ok, (body if isinstance(body, dict) else {})
 
 
+GOQ_JUDGE_WAIT = 300  # 秒
+
+
+def _wait_goq_judgement(c: Ctx, wait: int = GOQ_JUDGE_WAIT, every: int = 15) -> tuple[bool, dict]:
+    """連携判定が出るまで待つ.
+
+    判定(goq_sync_status)は goq_resync ジョブ自体では作られず、キューが空になった後に
+    サーバーが「連携表CSV出力→023取込」を1回まとめて行ったときに作られる(job_queue._worker_loop)。
+    旧版は 20 秒だけ待っており、G2230 では約30秒後の取込にたまたま間に合ったが、G2231 では
+    約84秒かかって FAIL した(2026-09-28)。判定行ができるまで最大 wait 秒待つ。
+    判定行ができて NG なら(取込は済んでいるので)待たずに返す。
+    """
+    deadline = time.time() + wait
+    while True:
+        ok, body = _goq_all_ok(c)
+        if ok or "ok" in body or time.time() >= deadline:
+            return ok, body
+        time.sleep(every)
+
+
 def step_goq_resync(c: Ctx) -> tuple[str, str]:
     if not c.plan["goq"]["resync"]:
         return "SKIP", "plan で対象外"
@@ -670,8 +754,7 @@ def step_goq_resync(c: Ctx) -> tuple[str, str]:
             raise StepFail(f"enqueue HTTP {code}: {str(q)[:200]}")
         job = _wait_queue(q["id"])
         if job["status"] == "ok":
-            time.sleep(20)
-            ok, body = _goq_all_ok(c)
+            ok, body = _wait_goq_judgement(c)
             if ok:
                 return "OK", f"GoQ連携判定 {body.get('detail')}"
             raise StepFail(f"resync は ok だが連携判定が全OKでない: {body}")
@@ -813,6 +896,12 @@ def step_verify(c: Ctx) -> tuple[str, str]:
             if n_img < 1:
                 issues.append("Eストア: 商品画像の参照が見つからない")
             facts.append(f"Eストア店頭OK(画像{n_img}枚)" + ("(在庫切れ表示)" if "btn_nostock" in html else ""))
+    if p["yahoo"]["register"]:
+        info = run_json_tool(["tools/yahoo_publish_tool.py", "item", c.mn])
+        path_issues = _yahoo_path_problems(c, info)
+        issues += [f"Yahoo!: {x}" for x in path_issues]
+        if not path_issues and p["yahoo"].get("expected_paths") is not None:
+            facts.append(f"Yahoo!パス一致({len(info.get('paths') or [])}本)")
     if p["yahoo"]["register"] and p["yahoo"]["publish"] and p["yahoo"]["reserve_publish"]:
         yahoo_key = (p.get("title") or "")[:12]
         code, html = fetch_text(STORE_YAHOO.format(code=c.mn))
@@ -971,7 +1060,8 @@ def main() -> int:
         path = Path(a.plan)
         plan = json.loads(path.read_text(encoding="utf-8"))
         validate_plan(plan)
-        plan["approval"] = {"hash": plan_hash(plan), "approved_at": datetime.now().isoformat(timespec="seconds")}
+        pin_copy_source_paths(plan)
+        plan["approval"] ={"hash": plan_hash(plan), "approved_at": datetime.now().isoformat(timespec="seconds")}
         path.write_text(json.dumps(plan, ensure_ascii=False, indent=1), encoding="utf-8")
         print(f"OK: 承認を記録しました(24時間有効) hash={plan['approval']['hash'][:12]}")
         return 0
