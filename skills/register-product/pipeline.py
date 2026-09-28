@@ -138,6 +138,16 @@ def excl_tax(price_incl: int) -> int:
     return round(price_incl / TAX)
 
 
+def _dict_body(body: Any) -> dict:
+    """http() の応答が JSON オブジェクトであることを要求する(サーバーが例外的にプレーンテキストや
+
+    HTML を 200 で返した場合に、その場の body.get() で AttributeError になるのを防ぐ)。
+    """
+    if not isinstance(body, dict):
+        raise StepFail(f"サーバー応答が JSON オブジェクトでない: {str(body)[:200]}")
+    return body
+
+
 def plan_hash(plan: dict) -> str:
     body = {k: v for k, v in plan.items() if k != "approval"}
     return hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
@@ -149,6 +159,13 @@ def rakuten_remote(mn: str) -> dict | None:
     sys.path.insert(0, str(PM_ROOT))
     from server.services import rakuten_sync
     return rakuten_sync.get_remote(mn)
+
+
+def rakuten_fingerprint(remote: dict) -> str:
+    """楽天側の内容指紋。承認後に楽天RMSが変更されていないかの検知に使う(023の既存関数を再利用)."""
+    sys.path.insert(0, str(PM_ROOT))
+    from server.services import rakuten_sync
+    return rakuten_sync.canonical_hash(remote)
 
 
 def _to_int(x: Any) -> int | None:
@@ -254,6 +271,7 @@ def preflight(g: str) -> dict:
                      for v in variants],
         "estore_price_main": excl_tax(min(prices)) if prices else None,
         "estore_product_name": None,
+        "rakuten_fingerprint": rakuten_fingerprint(remote),
         "lead_time_days": 5,
         "estore": {"register": True, "publish": True},
         "yahoo": {"register": True, "copy_code": None, "publish": True,
@@ -304,6 +322,11 @@ def validate_plan(p: dict) -> None:
     ids = [v.get("variant_id") for v in p["variants"]]
     if len(set(ids)) != len(ids):
         raise SystemExit("NG: variant_id が重複しています")
+    if p["is_variation"]:
+        axis_sets = {frozenset(v.get("selectors") or {}) for v in p["variants"]}
+        if len(axis_sets) != 1:
+            raise SystemExit(f"NG: variant 間で軸(色・サイズ等)の構成が一致しません: "
+                             f"{[dict(v.get('selectors') or {}) for v in p['variants']]}")
     for v in p["variants"]:
         label = v.get("selectors") or p["g"]
         st = v.get("stock")
@@ -318,14 +341,24 @@ def validate_plan(p: dict) -> None:
         if not _is_int(p[key]) or p[key] <= 0:
             raise SystemExit(f"NG: {key} は正の整数で指定してください: {p[key]!r}")
     y, e = p["yahoo"], p["estore"]
+    for section, name_s, keys in (("estore", e, ("register", "publish")),
+                                  ("yahoo", y, ("register", "publish", "reserve_publish"))):
+        for k in keys:
+            if not isinstance(name_s.get(k), bool):
+                raise SystemExit(f"NG: {section}.{k} は true/false で指定してください: {name_s.get(k)!r}")
+    if not isinstance(p["goq"].get("resync"), bool):
+        raise SystemExit(f"NG: goq.resync は true/false で指定してください: {p['goq'].get('resync')!r}")
+    allow = y.get("pending_allow", YAHOO_PENDING_ALLOW)
+    if not _is_int(allow) or allow < 0:
+        raise SystemExit(f"NG: yahoo.pending_allow は0以上の整数で指定してください: {allow!r}")
     if e["register"]:
         name = (p.get("estore_product_name") or "").strip()
         if not name:
             raise SystemExit("NG: estore_product_name(Eストア表示名)が未設定です。登録時点で短い名前を決めてください"
                              "(楽天の長い商品名をそのまま使わない)")
         if len(name) > 60:
-            raise SystemExit(f"NG: estore_product_name が長すぎます({len(name)}文字)。既存の兄弟SKUは"
-                             "概ね40文字未満です。短くしてください")
+            raise SystemExit(f"NG: estore_product_name が長すぎます({len(name)}文字・上限60文字)。"
+                             "参考: 既存の兄弟SKUは実測19〜52文字です。短くしてください")
         if name == (p.get("title") or ""):
             raise SystemExit("NG: estore_product_name が楽天の商品名(title)と同じです。短縮してください")
     if y["register"] and not y.get("copy_code"):
@@ -346,7 +379,13 @@ def check_approval(plan: dict) -> None:
         raise SystemExit("NG: 承認されていない plan です。ユーザーの承認後に `approve --plan` を実行してください")
     if ap.get("hash") != plan_hash(plan):
         raise SystemExit("NG: 承認後に plan が変更されています。内容を確認し直して `approve` からやり直してください")
-    age = datetime.now() - datetime.fromisoformat(ap["approved_at"])
+    try:
+        approved_at = datetime.fromisoformat(ap["approved_at"])
+    except (TypeError, ValueError, KeyError):
+        raise SystemExit("NG: 承認日時の形式が不正です。approve をやり直してください")
+    age = datetime.now() - approved_at
+    if age < timedelta(0):
+        raise SystemExit("NG: 承認日時が未来になっています。approve をやり直してください")
     if age > APPROVAL_TTL:
         raise SystemExit("NG: 承認から 24 時間を超えています。plan を作り直して承認を取り直してください")
 
@@ -362,7 +401,10 @@ class Ctx:
         self.main: str = plan["sku_main"]
 
     def save(self) -> None:
-        self.state_path.write_text(json.dumps(self.state, ensure_ascii=False, indent=1), encoding="utf-8")
+        # 途中終了で JSON が壊れて再開不能にならないよう、一時ファイル経由で置き換える
+        tmp = self.state_path.with_suffix(self.state_path.suffix + ".tmp")
+        tmp.write_text(json.dumps(self.state, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(tmp, self.state_path)
 
     def row(self, sku: str) -> sqlite3.Row | None:
         return q_one("SELECT * FROM products WHERE sku=? AND deleted_at IS NULL", (sku,))
@@ -375,6 +417,14 @@ class Ctx:
 
 
 def step_import(c: Ctx) -> tuple[str, str]:
+    if c.plan.get("rakuten_fingerprint"):
+        remote = rakuten_remote(c.mn)
+        if remote is None:
+            raise StepFail("楽天RMSに商品が見つかりません(承認後に削除された可能性)")
+        if rakuten_fingerprint(remote) != c.plan["rakuten_fingerprint"]:
+            raise NeedsUser("楽天RMS側の内容が下見(preflight)の時点から変わっています。"
+                            "価格・画像・バリエーション構成が古いまま登録される恐れがあるため中断しました。"
+                            "preflight をやり直して plan を作り直し、承認し直してください")
     if c.row(c.main):
         detail = f"023 に {c.main} あり"
         status = "SKIP"
@@ -383,6 +433,7 @@ def step_import(c: Ctx) -> tuple[str, str]:
                           {"manage_number": c.mn, "sku": c.main, "enable_sync": True, "include_images": True})
         if code != 200:
             raise StepFail(f"import HTTP {code}: {str(body)[:200]}")
+        body = _dict_body(body)
         if body.get("image_errors"):
             raise StepFail(f"画像取込エラー: {body['image_errors']}")
         detail = f"作成={body.get('created_skus')} 画像={body.get('images_imported')}枚"
@@ -413,12 +464,16 @@ def _patch(sku: str, fields: dict) -> None:
 
 def step_prices(c: Ctx) -> tuple[str, str]:
     p = c.plan
-    _patch(c.main, {"estore_price": p["estore_price_main"], "lead_time_days": p["lead_time_days"],
-                    "estore_product_name": p["estore_product_name"]})
+    fields = {"estore_price": p["estore_price_main"], "lead_time_days": p["lead_time_days"]}
+    if p["estore"]["register"]:
+        # Eストア対象外のときは estore_product_name に触れない(2026-09-28 実装漏れ: 対象外でも
+        # 無条件PATCHしており、既存の estore_product_name を None で上書き消去しかねなかった)
+        fields["estore_product_name"] = p["estore_product_name"]
+    _patch(c.main, fields)
     got = c.row(c.main)
     if got["estore_price"] != p["estore_price_main"] or got["lead_time_days"] != p["lead_time_days"]:
         raise StepFail("価格/納期の読み戻しが一致しない")
-    if got["estore_product_name"] != p["estore_product_name"]:
+    if p["estore"]["register"] and got["estore_product_name"] != p["estore_product_name"]:
         raise StepFail("estore_product_name(Eストア表示名)の読み戻しが一致しない")
     if p["is_variation"]:
         by_id = {v["variant_id"]: v for v in p["variants"]}
@@ -440,8 +495,11 @@ def step_estore_register(c: Ctx) -> tuple[str, str]:
     if row["estore_item_code"]:
         return "SKIP", f"登録済み item_code={row['estore_item_code']}"
     code, body = http("POST", f"/api/estore/register/{c.main}")
-    if code != 200 or body.get("final_status") != "ok" or body.get("images_failed"):
-        raise StepFail(f"Eストア登録 HTTP {code}: {json.dumps(body, ensure_ascii=False)[:300]}")
+    if code != 200:
+        raise StepFail(f"Eストア登録 HTTP {code}: {str(body)[:300]}")
+    body = _dict_body(body)
+    if body.get("final_status") != "ok" or body.get("images_failed"):
+        raise StepFail(f"Eストア登録 完了せず: {json.dumps(body, ensure_ascii=False)[:300]}")
     row = c.row(c.main)
     if not row["estore_item_code"]:
         raise StepFail("登録後に estore_item_code が空")
@@ -485,8 +543,10 @@ def step_estore_bind(c: Ctx) -> tuple[str, str]:
     if _all_bound(c):
         return "SKIP", "紐付け済み(023 の記録)"
     code, body = http("POST", f"/api/estore/bind-images/{c.main}")
-    if code != 200 or not body.get("ok"):
+    if code != 200:
         raise StepFail(f"bind-images HTTP {code}: {str(body)[:200]}")
+    if not _dict_body(body).get("ok"):
+        raise StepFail(f"bind-images 失敗: {str(body)[:200]}")
     if not _all_bound(c):
         raise StepFail("紐付け後も 023 の bound_at が埋まらない")
     return "OK", f"画像 {len(c.images())} 枚を商品に紐付け"
@@ -516,8 +576,11 @@ def step_yahoo_register(c: Ctx) -> tuple[str, str]:
         return "SKIP", f"Yahoo! に登録済み(内容は verify で確認) display={info.get('display')}"
     code, body = http("POST", f"/api/yahoo/api-sync/{c.main}/register-new",
                       {"copy_code": y["copy_code"], "publish": bool(y["publish"])})
-    if code != 200 or body.get("register_status") != "OK" or body.get("image_errors") or body.get("stock_errors"):
-        raise StepFail(f"Yahoo登録 HTTP {code}: {json.dumps(body, ensure_ascii=False)[:300]}")
+    if code != 200:
+        raise StepFail(f"Yahoo登録 HTTP {code}: {str(body)[:300]}")
+    body = _dict_body(body)
+    if body.get("register_status") != "OK" or body.get("image_errors") or body.get("stock_errors"):
+        raise StepFail(f"Yahoo登録 完了せず: {json.dumps(body, ensure_ascii=False)[:300]}")
     info = run_json_tool(["tools/yahoo_publish_tool.py", "item", c.mn])
     want = "1" if y["publish"] else "0"
     problems = []
@@ -614,15 +677,53 @@ def step_goq_resync(c: Ctx) -> tuple[str, str]:
 
 
 def _goq_rows(c: Ctx) -> list[dict]:
-    """GoQ の検索結果の行 (読み取り)。キューが空のときだけ呼ぶ."""
-    code, st = http("GET", "/api/queue/status")
-    if st.get("running") or st.get("queued"):
-        raise StepFail("キューが動いているため GoQ 検索を待機")
+    """GoQ の検索結果の行 (読み取り)。キューが空になるまで少し待ってから呼ぶ.
+
+    直前の goq_resync が終わった直後は、後続ジョブ(他 SKU の分等)がまだキューに残っている
+    ことがある。以前は即座に FAIL していたが、それだけで在庫設定が無用に失敗しうるため、
+    最大 2 分待ってから諦める(2026-09-28 cgd Lv3 指摘)。
+    """
+    for _ in range(12):
+        code, st = http("GET", "/api/queue/status")
+        if not (st.get("running") or st.get("queued")):
+            break
+        time.sleep(10)
+    else:
+        raise StepFail("キューが動いたままで GoQ 検索を開始できない(2分待機)。落ち着いてから再実行してください")
     code, res = http("POST", "/api/goq-browser/search", {"item_code": c.g})
     if code != 200:
         raise StepFail(f"GoQ検索 HTTP {code}: {str(res)[:200]}")
-    rows = res.get("rows") or []
+    rows = _dict_body(res).get("rows") or []
     return [{"value": str(r.get("value", "")), "text": json.dumps(r, ensure_ascii=False)} for r in rows]
+
+
+def _g_number_match(g: str, text: str) -> bool:
+    """商品番号が「部分文字列」ではなく単独で現れるかを見る(G2225 が G22250 に誤一致しない)."""
+    for m in re.finditer(re.escape(g), text, re.IGNORECASE):
+        start, end = m.start(), m.end()
+        if start > 0 and text[start - 1].isalnum():
+            continue
+        if end < len(text) and text[end].isdigit():
+            continue
+        return True
+    return False
+
+
+def _token_match(token: str, text: str) -> bool:
+    """selector 値(色・サイズ)が行テキストに含まれるかを見る.
+
+    英数字だけのトークン(サイズ "M"/"L"/"3L" 等)は前後が英数字でない位置での一致を要求する
+    ("M" が "ML" の一部に誤一致しない)。日本語トークン(色名等)は GoQ の行データが列構造を
+    持たず空白区切りの説明文しか無い(goq_browser.py の select_all_checkboxes 参照)ため、
+    単純な部分一致のまま(2026-09-28 cgd Lv3 で指摘: 構造化列を使った完全一致は現状のデータ
+    構造では実現できない。将来 goq_browser.py が列単位のデータを返すようになれば厳格化する)。
+    """
+    if not token:
+        return False
+    if re.fullmatch(r"[0-9A-Za-z]+", token):
+        pattern = re.compile(r"(?<![0-9A-Za-z])" + re.escape(token) + r"(?![0-9A-Za-z])")
+        return bool(pattern.search(text))
+    return token in text
 
 
 def _plan_goq_jobs(c: Ctx, rows: list[dict]) -> list[tuple[str, int]]:
@@ -632,7 +733,7 @@ def _plan_goq_jobs(c: Ctx, rows: list[dict]) -> list[tuple[str, int]]:
         if len(rows) != 1:
             raise NeedsUser(f"GoQ の対象行が {len(rows)} 行あります(単品は 1 行のはず)。"
                             f"行を確認してください: {[r['value'] for r in rows]}")
-        if c.g.lower() not in rows[0]["text"].lower():
+        if not _g_number_match(c.g, rows[0]["text"]):
             raise NeedsUser(f"GoQ の行に商品番号 {c.g} が見当たりません。別の商品の行の可能性があります: "
                             f"{rows[0]['text'][:120]}")
         return [(rows[0]["value"], p["variants"][0]["stock"])]
@@ -643,7 +744,7 @@ def _plan_goq_jobs(c: Ctx, rows: list[dict]) -> list[tuple[str, int]]:
     jobs, used = [], set()
     for v in p["variants"]:
         tokens = [t for t in v["selectors"].values() if t]
-        hit = [r for r in rows if all(t in r["text"] for t in tokens)]
+        hit = [r for r in rows if all(_token_match(t, r["text"]) for t in tokens)]
         if len(hit) != 1 or hit[0]["value"] in used:
             raise NeedsUser(
                 "GoQ の行を variant に一意に対応づけられません(初回のバリエーション商品は対応を確認してください)。"
@@ -654,6 +755,8 @@ def _plan_goq_jobs(c: Ctx, rows: list[dict]) -> list[tuple[str, int]]:
 
 
 def step_goq_stock(c: Ctx) -> tuple[str, str]:
+    if not c.plan["goq"]["resync"]:
+        return "SKIP", "plan で対象外(goq.resync=false のため在庫書込みも行わない)"
     progress: dict = c.state.setdefault("goq_stock_progress", {})
     rows = _goq_rows(c)
     jobs = _plan_goq_jobs(c, rows)
@@ -679,14 +782,17 @@ def step_goq_stock(c: Ctx) -> tuple[str, str]:
 
 def step_verify(c: Ctx) -> tuple[str, str]:
     p, issues, facts = c.plan, [], []
-    key = (p.get("title") or "")[:12]
+    # 店頭に出る表示名はチャネルで別物: Eストアは estore_product_name(短縮名)、Yahoo!は楽天由来の title
+    # (yahoo_register_export.build_preview が product_name をそのまま使うため)。両方に同じ key を
+    # 使うと、短縮名を導入した意味がなくなり正常登録でも FAIL する(2026-09-28 の実装漏れ)。
     if p["estore"]["register"] and p["estore"]["publish"]:
+        estore_key = (p.get("estore_product_name") or "")[:12]
         code, html = fetch_text(STORE_SHOPSERVE.format(code=c.g))
         if code != 200:
             issues.append(f"Eストア店頭 HTTP {code}")
         else:
-            if key and key not in html:
-                issues.append("Eストア: ページに商品名が見つからない(別ページの可能性)")
+            if estore_key and estore_key not in html:
+                issues.append("Eストア: ページに商品名(表示名)が見つからない(別ページの可能性)")
             if "limg/noimage.gif" in html:
                 issues.append("Eストア: 画像なし表示")
             price_txt = f"{p['estore_price_main']:,}円"
@@ -697,8 +803,9 @@ def step_verify(c: Ctx) -> tuple[str, str]:
                 issues.append("Eストア: 商品画像の参照が見つからない")
             facts.append(f"Eストア店頭OK(画像{n_img}枚)" + ("(在庫切れ表示)" if "btn_nostock" in html else ""))
     if p["yahoo"]["register"] and p["yahoo"]["publish"] and p["yahoo"]["reserve_publish"]:
+        yahoo_key = (p.get("title") or "")[:12]
         code, html = fetch_text(STORE_YAHOO.format(code=c.mn))
-        if code != 200 or (key and key not in html):
+        if code != 200 or (yahoo_key and yahoo_key not in html):
             issues.append(f"Yahoo!店頭が確認できない(HTTP {code})")
         else:
             facts.append("Yahoo!店頭OK" + ("(在庫切れ表示)" if re.search("在庫なし|売り切れ|在庫切れ", html) else ""))
@@ -729,14 +836,42 @@ STEPS: list[tuple[str, Callable[[Ctx], tuple[str, str]]]] = [
 
 
 # ------------------------------------------------------------------- run
+def _pid_alive(pid: int) -> bool | None:
+    """PID がまだ生きているか (Windows)。判定できない場合は None(呼び出し側は時間で判断する)."""
+    try:
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    except Exception:  # noqa: BLE001 — Windows 以外・ctypes 失敗時は判定不能を返す
+        return None
+
+
 def _acquire_lock(path: Path) -> None:
     if path.exists():
-        age = datetime.now() - datetime.fromtimestamp(path.stat().st_mtime)
-        if age < LOCK_STALE:
-            raise SystemExit(f"NG: 同じ plan が実行中です(ロック {path.name})。"
-                             "実行中でなければ、ロックファイルを削除してください")
-        path.unlink()
-    fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        try:
+            pid = int(path.read_text(encoding="utf-8").strip())
+        except (ValueError, OSError):
+            pid = None
+        alive = _pid_alive(pid) if pid else None
+        if alive is False:
+            # プロセスが確認できる範囲で死んでいるなら、経過時間に関係なく即座に回収してよい
+            path.unlink()
+        else:
+            # 生存確認できない(別OS・ctypes失敗)場合だけ、経過時間で判定する(旧来のフォールバック)
+            age = datetime.now() - datetime.fromtimestamp(path.stat().st_mtime)
+            if alive or age < LOCK_STALE:
+                raise SystemExit(f"NG: 同じ plan が実行中です(ロック {path.name}, pid={pid})。"
+                                 "実行中でなければ、ロックファイルを削除してください")
+            path.unlink()
+    try:
+        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise SystemExit(f"NG: 同じ plan がちょうど実行を開始しました(ロック {path.name})。"
+                         "少し待って再実行してください")
     os.write(fd, str(os.getpid()).encode("ascii"))
     os.close(fd)
 
@@ -745,18 +880,26 @@ def run(plan_path: Path, only: str | None, reconcile: bool = False) -> int:
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     validate_plan(plan)
     read_only = only == "verify"
+    if only and not read_only and only not in dict(STEPS):
+        raise SystemExit(f"NG: --only に無効なステップ名です: {only!r}。"
+                         f"有効な値: {', '.join(n for n, _ in STEPS)}")
     if not read_only:
         check_approval(plan)
     c = Ctx(plan, plan_path.with_suffix(".state.json"))
     if not read_only:
-        h = plan_hash(plan)
-        if c.state.get("_plan_hash") not in (None, h):
-            raise SystemExit("NG: この state は別の内容の plan で作られています。plan を作り直してください")
-        all_done = all((c.state.get(n) or {}).get("status") in ("OK", "SKIP") for n, _ in STEPS)
-        if not only and not reconcile and all_done:
+        # 完了判定は state の実際の各ステップ状態で決める(hash やこれまでの実行回数に依らない)。
+        # --only を付けても、完了済み plan は素通りさせない (2026-09-28 cgd Lv3 指摘: 以前は
+        # `not only and ...` で --only 使用時にこの拒否が丸ごと外れており、完了後でも
+        # `--only goq_stock` 等の書き込み系を単発で再実行できてしまっていた)
+        all_done = bool(c.state) and all((c.state.get(n) or {}).get("status") in ("OK", "SKIP") for n, _ in STEPS)
+        if all_done and not reconcile:
             raise SystemExit("NG: この plan は完了済みです。確認だけなら `verify`、"
-                             "意図して再確認するなら `--reconcile` を付けてください")
-        c.state["_plan_hash"] = h
+                             "意図して再確認・再実行するなら `--reconcile` を付けてください")
+        # plan の内容が承認しなおされて変わった場合、未完了の run なら再開を許可する
+        # (NEEDS_USER で止まった plan を直して承認し直すのは SKILL.md が案内する正規の手順のため)。
+        # hash 不一致を無条件で拒否していた旧実装は、この案内どおりに動かせない矛盾があった
+        # (cgd Lv3 2026-09-28 指摘)。完了済みかどうかは上の all_done だけで判定する。
+        c.state["_plan_hash"] = plan_hash(plan)
     lock = plan_path.with_suffix(".lock")
     if not read_only:
         _acquire_lock(lock)
