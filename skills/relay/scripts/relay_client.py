@@ -14,6 +14,8 @@ import argparse
 import json
 import mimetypes
 import os
+import random
+import re
 import socket
 import sys
 import time
@@ -963,13 +965,185 @@ def cmd_release(args: argparse.Namespace) -> None:
         print(f"予約はありませんでした: thread_id={args.thread}")
 
 
+# 引き継ぎ書の置き場。/handoff スキルと同じ `<プロジェクト>/.handoff` に固定する
+# (`/handoff load NNN` と `/m` の先頭表示がここを見る)。テストだけ差し替える
+HANDOFF_DIR = Path(
+    os.environ.get("RELAY_HANDOFF_DIR")
+    or (Path(__file__).resolve().parents[4] / ".handoff")
+).expanduser()
+_HANDOFF_FILE_RE = re.compile(r"SESSION_\d{8}_\d{4}_(\d{3})\.md$")
+# サーバーの上限は 4000 字。GUI と同じく余裕を取る
+_HANDOFF_SUMMARY_MAX = 3800
+_HANDOFF_CREATE_ATTEMPTS = 5
+
+
+def _pick_handoff_no(handoff_dir: Path) -> int:
+    """3桁IDを選ぶ。ローカルの引き継ぎ書と番号を重ねない(サーバー側でも有効分は一意)。"""
+    used: set[int] = set()
+    try:
+        for p in handoff_dir.glob("SESSION_*.md"):
+            m = _HANDOFF_FILE_RE.match(p.name)
+            if m:
+                used.add(int(m.group(1)))
+    except OSError:
+        pass
+    candidates = [n for n in range(100, 1000) if n not in used]
+    return random.choice(candidates) if candidates else random.randint(100, 999)
+
+
+def _handoff_file_text(
+    no: int,
+    thread_id: str,
+    reason: str,
+    summary: str,
+    name: str,
+    message_ids: list[str],
+    now: datetime,
+) -> str:
+    """引き継ぎ書の本文。状態の正本はサーバーで、これは読み物。"""
+    lines = [f"# relay セッション引き継ぎ #{no:03d}", ""]
+    if name:
+        # /handoff load は先頭10行の「次セッション名:」で改名する
+        lines += [f"次セッション名: {name}", ""]
+    lines += [
+        f"- 発行: {now:%Y-%m-%d %H:%M}({SELF_USER_ID} 端末の relay 待ち受けから)",
+        f"- thread_id: `{thread_id}`",
+    ]
+    if message_ids:
+        lines.append("- 対象メッセージ: " + " ".join(f"#{m}" for m in message_ids))
+    lines += [
+        "- 状態の正本はサーバー(relay_handoffs)。このファイルは読み物",
+        "",
+        "## 最初にやること(必須)",
+        "",
+        "```",
+        f'"{sys.executable}" "{Path(__file__).resolve()}" handoff takeover {no}',
+        "```",
+        "",
+        "これが予約(lease)をこのセッションへ**原子的に**付け替え、着手を記録する。",
+        "実行するまで、見張りと処理役はこのスレッドに触らない(未着手30分で運用者へ通知が飛ぶ)。",
+        "takeover の出力に、経緯の取得・返信・完了(done)/差し戻し(return)の",
+        "コマンドが表示される。**holder と thread_id を ctx 台帳へ記録すること。**",
+        "",
+        "## 引き継いだ理由",
+        "",
+        reason or "(記載なし)",
+        "",
+        "## ここまでに分かっていること(処理役の要約)",
+        "",
+        summary,
+        "",
+        "## 注意",
+        "",
+        "- 経緯の全文・添付はサーバーが正本(takeover の出力にある check --peek で取得)",
+        "- 完了したら必ず `handoff done` を実行する(忘れると予約が残り、",
+        "  途絶扱いで運用者へ通知が出続ける)",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _handoff_create(args: argparse.Namespace) -> None:
+    """スレッドを新しいセッションへ引き継ぐ(常駐GUIの「セッションへ引き継ぐ」と同じ手順)。
+
+    GUI を廃止して待ち受けセッションに移したため、CLI からも発行できるようにした
+    (2026-09-30)。順番は GUI と同じで、**引き継ぎ書を先に書いてから**登録する。
+    逆順だと、登録成功後に書込が失敗したとき「番号が分からない・load できない・
+    誰も触らない」スレッドが残る。
+    """
+    if args.summary_file:
+        try:
+            summary = Path(args.summary_file).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            print(f"要約ファイルを読めません: {exc}", file=sys.stderr)
+            raise SystemExit(1)
+    else:
+        summary = (args.summary or "").strip()
+    if not summary:
+        print("要約が空です(--summary か --summary-file で渡してください)", file=sys.stderr)
+        raise SystemExit(2)
+    reason = (args.reason or "").strip()
+    name = (args.name or "").strip()
+    if "\n" in name or "\r" in name:
+        print("--name は1行で指定してください", file=sys.stderr)
+        raise SystemExit(2)
+    message_ids = [
+        x.strip().lstrip("#") for x in (args.messages or "").split(",") if x.strip()
+    ]
+    handoff_dir = HANDOFF_DIR
+    if not handoff_dir.is_absolute():
+        # 相対パスのまま書くと「成功したのに誰も見つけられない」行き止まりになる
+        print(f"引き継ぎ書の保存先が絶対パスではありません: {handoff_dir}", file=sys.stderr)
+        raise SystemExit(1)
+    try:
+        handoff_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"引き継ぎ書の保存先を作れません: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+    server_summary = (f"{reason}\n{summary}" if reason else summary)[:_HANDOFF_SUMMARY_MAX]
+
+    last_error = "引き継ぎ番号を確保できませんでした"
+    for _attempt in range(_HANDOFF_CREATE_ATTEMPTS):
+        no = _pick_handoff_no(handoff_dir)
+        now = datetime.now()
+        path = handoff_dir / f"SESSION_{now:%Y%m%d}_{now:%H%M}_{no:03d}.md"
+        text = _handoff_file_text(no, args.thread, reason, summary, name, message_ids, now)
+        try:
+            # 排他作成(x)。同名があれば上書きしない — 失敗時の unlink が
+            # **他人のファイルを消す**事故を構造的に防ぐ
+            with open(path, "x", encoding="utf-8", newline="") as fh:
+                fh.write(text)
+        except FileExistsError:
+            last_error = f"引き継ぎ書 #{no:03d} が既に存在します"
+            continue
+        except OSError as exc:
+            print(f"引き継ぎ書を書けません: {type(exc).__name__}: {exc}", file=sys.stderr)
+            raise SystemExit(1)
+        try:
+            body = _request_json(
+                "POST", "/handoffs",
+                payload={"handoff_no": no, "thread_id": args.thread,
+                         "summary": server_summary},
+                soft_status=(409,),
+            )
+        except BaseException:
+            # 登録できなかった書きかけは残さない(_request_json は失敗で SystemExit)
+            path.unlink(missing_ok=True)
+            raise
+        if isinstance(body, ApiConflict):
+            path.unlink(missing_ok=True)
+            last_error = body.detail
+            if "引き継ぎ番号" in body.detail:
+                continue  # 番号の衝突だけは選び直せば通る
+            # スレッドを誰かが予約している。番号を変えても通らない
+            print(f"引き継ぎを発行できません: {body.detail}", file=sys.stderr)
+            print(
+                "自分で予約している場合は先に release --thread <thread_id> --holder <holder>"
+                " で解放してください",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        print(f"引き継ぎ #{no:03d} を発行しました(thread_id={args.thread})")
+        print(f"  引き継ぎ書: {path}")
+        print("  着手までこのスレッドは見張りと処理役の対象外です(未着手30分で運用者へ通知)")
+        print("  新しいセッションで開くには:")
+        print(f"  /handoff load {no:03d}")
+        print(f"HANDOFF_NO={no:03d}")
+        return
+    print(f"引き継ぎを発行できませんでした: {last_error}", file=sys.stderr)
+    raise SystemExit(1)
+
+
 def cmd_handoff(args: argparse.Namespace) -> None:
-    """GUIから引き継いだ会話への着手・完了・差し戻し・一覧。
+    """会話の引き継ぎの発行・着手・完了・差し戻し・一覧。
 
     takeover はサーバー側で lease holder を**原子的に**自分へ付け替える。
     release→再取得の2段にしないのは、その隙間にGUIの巡回が滑り込むため。
     """
     sub = args.handoff_cmd
+    if sub == "create":
+        _handoff_create(args)
+        return
     if sub == "list":
         body = _request_json("GET", "/handoffs")
         active = body.get("active") or []
@@ -994,7 +1168,7 @@ def cmd_handoff(args: argparse.Namespace) -> None:
         print(f"引き継ぎ #{no} に着手しました(状態: 対応中)")
         print(f"  thread_id={body['thread_id']} 相手={peers} holder={holder}")
         if body.get("summary"):
-            print("---- GUIからの要約 ----")
+            print("---- 引き継ぎ時の要約 ----")
             print(body["summary"])
             print("----------------------")
         print("続け方:")
@@ -1025,7 +1199,7 @@ def cmd_handoff(args: argparse.Namespace) -> None:
         label = "完了" if sub == "done" else "差し戻し"
         print(f"引き継ぎ #{no} を{label}にしました(常駐GUIが引き取れる状態に戻りました)")
         return
-    print("handoff のサブコマンド: takeover / done / return / list", file=sys.stderr)
+    print("handoff のサブコマンド: create / takeover / done / return / list", file=sys.stderr)
     raise SystemExit(2)
 
 
@@ -1300,9 +1474,25 @@ def main() -> None:
     wait_parser.set_defaults(func=cmd_wait)
 
     handoff_parser = subparsers.add_parser(
-        "handoff", help="GUIから引き継いだ会話への着手・完了・差し戻し"
+        "handoff", help="会話の引き継ぎ(発行・着手・完了・差し戻し)"
     )
     handoff_sub = handoff_parser.add_subparsers(dest="handoff_cmd")
+    ho_create = handoff_sub.add_parser(
+        "create", help="スレッドを新しいセッションへ引き継ぐ(引き継ぎ書+予約)"
+    )
+    ho_create.add_argument("--thread", required=True, help="引き継ぐ thread_id")
+    ho_summary = ho_create.add_mutually_exclusive_group(required=True)
+    ho_summary.add_argument("--summary", default=None, help="ここまでに分かっていること")
+    ho_summary.add_argument(
+        "--summary-file", default=None, help="要約を書いたファイル(UTF-8)"
+    )
+    ho_create.add_argument("--reason", default="", help="引き継ぐ理由")
+    ho_create.add_argument(
+        "--name", default="", help="次セッション名(/handoff load で改名に使う)"
+    )
+    ho_create.add_argument(
+        "--messages", default="", help="対象メッセージID(カンマ区切り。記録用)"
+    )
     ho_take = handoff_sub.add_parser("takeover", help="引き継ぎに着手する(lease付け替え)")
     ho_take.add_argument("number", type=int, help="引き継ぎ番号(3桁)")
     ho_take.add_argument("--holder", default=None, help="省略時は自動採番")

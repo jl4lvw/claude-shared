@@ -19,7 +19,8 @@ description: relay(Claude間連携API)の自分宛未読メッセージをチェ
 `check`を実行すると、通常の受信箱の一覧より**前に**「あなたに引き継がれた会話がN件
 あります(未処理より先に扱ってください)」という専用ブロックが出ることがある。
 これは常駐GUIが判断に迷う等の理由で人手(あなた)へ一時的に手放した会話で、
-`.handoff\SESSION_*.md` にも引き継ぎ書が置かれる。通常の未読メッセージより
+`.handoff\SESSION_*.md` にも引き継ぎ書が置かれる(`/m watch` の待ち受けが重い案件を
+`relay_client.py handoff create` で引き継いだものも同じ扱い。2026-09-30〜)。通常の未読メッセージより
 **先に**扱う。
 
 手順:
@@ -268,7 +269,7 @@ python ".claude/skills/relay/scripts/relay_client.py" send --to <元の送信者
 | 役 | モデル | やること |
 |---|---|---|
 | 待ち受け(このセッション) | Haiku(開いたら `/model` で切り替える) | 見張りの起動・再起動、処理役の呼び出し、処理役の質問の取り次ぎ、`ack` |
-| 処理役 | Agent ツールのサブエージェント。既定は `model: "sonnet"`、重い案件だけ `"opus"` | 上の「手順」0〜3 で処理し、要約だけを返す |
+| 処理役 | Agent ツールのサブエージェント。既定は `model: "sonnet"`。重い案件は運用者が「このセッションで `"opus"`」か「新しいセッションへ引き継ぐ」かを選ぶ(W4-O) | 上の「手順」0〜3 で処理し、要約だけを返す |
 
 - **待ち受けは自分で処理しない。** relay の本文を読んで判断したり、返信・claim・done をしたりしない(取り違えと文脈の膨張を防ぐため)
 - **処理役をワークツリーで動かさない。** 本番は C:\ClaudeCode の未コミットの状態(2026-09-30 時点で1,469件)で動いており、ワークツリーの中からは見えない。直した結果も本番に届かない
@@ -310,7 +311,11 @@ Agent ツールを `subagent_type: "general-purpose"`、`model: "sonnet"`、`run
   OPTIONS: <選択肢1> | <選択肢2> | ...
   CONTEXT: <判断材料を2〜3行>
 - 削除・本番データの書き換え・force push・外部への送信など、元に戻せない操作は実行しない。「APPROVAL_NEEDED: <何をしようとしたか>」と返して止まる
-- 設計判断が要る・大きな改修になると判断したら、着手せずに「NEEDS_OPUS: <理由>」と返す
+- 設計判断が要る・大きな改修になると判断したら、それ以上進めずに止まる。取った claim は unclaim、スレッドを予約していれば release してから、最後の返答を次の形にする:
+  NEEDS_OPUS: <理由>
+  THREAD: <thread_id>
+  IDS: <対象メッセージID をカンマ区切り>
+  FINDINGS: <ここまでに調べて分かったことを3〜5行>
 - 処理が3分を超えそうなら、途中で次を実行して生存報告を送る(pwsh が無ければ powershell):
   pwsh -NoProfile -ExecutionPolicy Bypass -File ".claude\skills\message-check\scripts\relay_watch.ps1" -Mode beat
 - 終わったら「DONE: <処理したメッセージID> / <1〜3行の要約>」と返す
@@ -323,8 +328,42 @@ Agent ツールを `subagent_type: "general-purpose"`、`model: "sonnet"`、`run
 | `DONE:` | W5 へ |
 | `QUESTION:` | AskUserQuestion でクリック形式にして運用者に聞く(OPTIONS をボタンに、CONTEXT を質問文に添える)。回答は **SendMessage で同じ処理役へ**送る(新しい Agent を呼ばない。処理役の文脈を保ったまま続けさせるため。SendMessage は ToolSearch の `select:SendMessage` で読み込む)。返答が来たら W4 に戻る |
 | `APPROVAL_NEEDED:` | 運用者に内容をそのまま伝える。**待ち受けは実行しない。** W5 へ(スマホの PIN で承認する仕組みができるまでの暫定) |
-| `NEEDS_OPUS:` | 運用者に1行で伝え、W3 の依頼文のまま `model: "opus"` で呼び直す。返答が来たら W4 に戻る |
+| `NEEDS_OPUS:` | **W4-O へ**(Opus で続けるか引き継ぐかを運用者に選ばせる。確認なしに Opus を呼ばない) |
 | 上のどれでもない | 返答の要点を運用者に伝え、W5 へ |
+
+### W4-O. 重い案件(`NEEDS_OPUS`)は運用者に選ばせる(2026-09-30)
+
+Opus の処理は10分を超えることがあり、以前はその間ずっと見張りが止まっていた(W5 まで起動し直さないため)。そこで**選ぶ前に見張りを起動し直し**、どちらにするかは運用者が決める。
+
+1. 見張りの出力にある ack のコマンドを**そのまま**実行する(`-AckId <ID>` 付き)。続けて Bash を `run_in_background: true` にして `<W> -Mode watch` を起動する
+   - これで選択待ちの間も Opus の処理中も、生存報告と新着の検知が続く。新着があると見張りは終了するが、その通知はこのターンが終わってから届く(W2 で普通に扱う)
+   - **この経路に入ったあとは W5 をしない**(ack も見張りの起動も済んでいる)。W4 の表で「W5 へ」とある所は、すべて「要点を運用者に伝えてターンを終える」と読み替える
+2. AskUserQuestion(クリック形式)で聞く。質問文には対象の `#ID`・NEEDS_OPUS の理由・FINDINGS の要点(2〜3行)を入れる。選択肢は次の2つ:
+   - 「このセッションで Opus に任せる」— この待ち受けが処理役の返答を待つ(見張りは動いたまま)
+   - 「新しいセッションへ引き継ぐ」— 引き継ぎ書とスレッドの予約を作る。運用者が新しいセッションを Opus で開いて続ける
+3. **「このセッションで Opus に任せる」**: Agent を `model: "opus"`(他は W3 と同じ)で呼ぶ。依頼文は W3 の依頼文の末尾に次を足したもの:
+   ```text
+   前の処理役(Sonnet)がここまで調べて、Opus が要ると判断しました。同じ調査をやり直さず、ここから続けてください:
+   理由: <NEEDS_OPUS の理由>
+   THREAD: <THREAD> / IDS: <IDS>
+   FINDINGS: <FINDINGS>
+   あなたは Opus なので NEEDS_OPUS は返さないでください。生存報告(-Mode beat)は不要です(見張りが動いています)。
+   ```
+   返答は W4 の表で分ける(`QUESTION:` の取り次ぎも同じ。W5 はしない)
+4. **「新しいセッションへ引き継ぐ」**: NEEDS_OPUS を返した**同じ処理役**へ SendMessage で次を送る(新しい Agent を呼ばない。調べた文脈を引き継ぎ書に書かせるため):
+   ```text
+   運用者は新しいセッションへの引き継ぎを選びました。次の順で行ってください。
+   1. このスレッドで claim したメッセージが残っていれば unclaim、予約していれば release する
+   2. 次セッション名を決める: python .claude/tools/session_name.py next --topic "<案件の短い名詞句>" で得た名前を、python .claude/tools/session_name.py register "<名前>" で登録する(案件のフォルダ番号が分かれば next に --folder NNN を付ける。exit 3 なら next からやり直す)
+   3. ここまでに分かったことを、自分のスクラッチパッドに要約ファイル(UTF-8)として書く。API キー・PIN・パスワードの値は書かない
+   4. 次を実行する:
+      python .claude/skills/relay/scripts/relay_client.py handoff create --thread <THREAD> --summary-file <要約ファイル> --reason "<NEEDS_OPUS の理由>。Opus で開くこと" --name "<次セッション名>" --messages <IDS>
+   5. 最後の返答を「HANDOFF: <番号> / <次セッション名>」にする。失敗したら「HANDOFF_FAILED: <理由>」
+   ```
+   - `HANDOFF:` が返ったら、運用者に次を伝えてターンを終える: 「#ID を引き継ぎ #NNN にしました(次セッション名: …)。C:\ClaudeCode で新しいセッションを開き、モデルを Opus にしてから次を貼ってください」。続けて `/handoff load NNN` **だけ**を入れたコードブロックを出す(説明文と同じブロックに入れない)
+   - 引き継いだスレッドは予約(`handoff:NNN`)で見張りの件数と処理役の一覧から外れる。未着手が30分続くと運用者へ通知が飛び、その後も1時間ごとに再通知される。新しいセッションでは `/m` の先頭にも出る
+   - `HANDOFF_FAILED:` なら、理由と「#ID は未処理のままです(ack 済みなので見張りは起こしません)。`/m` で扱ってください」を伝えてターンを終える
+5. 運用者が選択肢以外を書いた(Other)ときは、その文を運用者の指示として NEEDS_OPUS を返した処理役へ SendMessage で送り、返答を W4 で分ける(W5 はしない。その処理役がまた NEEDS_OPUS を返したら、2 から聞き直す)
 
 ### W5. 片付けて見張りに戻る
 
