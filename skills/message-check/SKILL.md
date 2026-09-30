@@ -272,10 +272,11 @@ python ".claude/skills/relay/scripts/relay_client.py" send --to <元の送信者
 
 - **待ち受けは自分で処理しない。** relay の本文を読んで判断したり、返信・claim・done をしたりしない(取り違えと文脈の膨張を防ぐため)
 - **処理役をワークツリーで動かさない。** 本番は C:\ClaudeCode の未コミットの状態(2026-09-30 時点で1,469件)で動いており、ワークツリーの中からは見えない。直した結果も本番に届かない
-- 見張りのスクリプトは `C:\ClaudeCode\041.Claude間連携API\scripts\relay_watch.ps1`。**無い端末ではこのモードは使えない**(運用者にそう伝えて終わる)
+- 見張りのスクリプトは `.claude\skills\message-check\scripts\relay_watch.ps1`(このスキルと一緒に `/g-dl` で届く)。設定は `/m` と同じ `.claude\relay_local\.env` を読むので、**`/m` が動く端末ならそのまま使える**
+- **常駐GUIと同時に動かさない。** 同じ着信を二重に処理しようとする。先にその端末の `RelayGui` タスクを無効にしてから GUI を閉じる(順番が逆だと、5分ごとの定時実行で GUI が起動し直す)
 - Remote Control で開いておくと、取り次いだ質問がスマホに届く
 
-以下、`<W>` は `pwsh -NoProfile -File "C:\ClaudeCode\041.Claude間連携API\scripts\relay_watch.ps1"` を表す。
+以下、`<W>` は `pwsh -NoProfile -ExecutionPolicy Bypass -File ".claude\skills\message-check\scripts\relay_watch.ps1"` を表す(プロジェクトのルートで実行する。`pwsh` が無い端末では先頭を `powershell` に置き換える。Windows PowerShell 5.1 でも動く)。
 
 ### W1. 見張りを起動する
 
@@ -310,8 +311,8 @@ Agent ツールを `subagent_type: "general-purpose"`、`model: "sonnet"`、`run
   CONTEXT: <判断材料を2〜3行>
 - 削除・本番データの書き換え・force push・外部への送信など、元に戻せない操作は実行しない。「APPROVAL_NEEDED: <何をしようとしたか>」と返して止まる
 - 設計判断が要る・大きな改修になると判断したら、着手せずに「NEEDS_OPUS: <理由>」と返す
-- 処理が3分を超えそうなら、途中で次を実行して生存報告を送る:
-  pwsh -NoProfile -File "C:\ClaudeCode\041.Claude間連携API\scripts\relay_watch.ps1" -Mode beat
+- 処理が3分を超えそうなら、途中で次を実行して生存報告を送る(pwsh が無ければ powershell):
+  pwsh -NoProfile -ExecutionPolicy Bypass -File ".claude\skills\message-check\scripts\relay_watch.ps1" -Mode beat
 - 終わったら「DONE: <処理したメッセージID> / <1〜3行の要約>」と返す
 ```
 
