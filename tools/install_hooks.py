@@ -111,6 +111,16 @@ _HOOKS: tuple[tuple[str, str | None, str, int, str], ...] = (
         "relay 待ち受けセッション専用: 削除・force push・プロセス停止・外部送信などを拒否",
     ),
     (
+        # 同じスクリプトの Stop 側。待ち受けが見張りを止めたままターンを終えようと
+        # したら1回だけ差し戻す(2026-09-30 A で実際に止まった)。見張りの起動待ちで
+        # 最大6秒待つので timeout は長めに取る
+        "Stop",
+        None,
+        ".claude/hooks/relay_watch_guard.py",
+        15,
+        "relay 待ち受けセッション専用: 見張りを止めたまま終わろうとしたら1回差し戻す",
+    ),
+    (
         "PostToolUse",
         "Bash",
         ".claude/hooks/ai_telemetry.py",

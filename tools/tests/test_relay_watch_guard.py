@@ -226,6 +226,85 @@ def test_install_hooks_registers_it() -> None:
     spec.loader.exec_module(mod)
     rows = [h for h in mod._HOOKS if h[2] == ".claude/hooks/relay_watch_guard.py"]
     assert rows, "install_hooks.py に登録がありません(他の端末に入らない)"
-    event, matcher = rows[0][0], rows[0][1]
-    assert event == "PreToolUse"
-    assert set(matcher.split("|")) == {"Bash", "PowerShell", "Read"}
+    by_event = {h[0]: h for h in rows}
+    assert set(by_event) == {"PreToolUse", "Stop"}
+    assert set(by_event["PreToolUse"][1].split("|")) == {"Bash", "PowerShell", "Read"}
+    # Stop は見張りの起動を最大 WATCHER_START_GRACE_SEC 待つので、timeout はそれより長く
+    assert by_event["Stop"][3] > G.WATCHER_START_GRACE_SEC
+
+
+# --------------------------------------------------------------------- Stop
+
+
+def _stop(sid: str = SID, **extra) -> dict:
+    return {"session_id": sid, "hook_event_name": "Stop", "stop_hook_active": False, **extra}
+
+
+def _dead_pid() -> int:
+    p = subprocess.Popen([sys.executable, "-c", "pass"])
+    p.wait()
+    return p.pid
+
+
+def test_stop_is_sent_back_when_the_watcher_is_stopped(armed) -> None:
+    out = G.handle_stop(_stop(), armed, grace=0)
+    assert out["decision"] == "block"
+    assert "このセッションへの指示ではありません" in out["reason"]
+    assert "W5" in out["reason"]
+
+
+def test_stop_passes_while_the_watcher_runs(armed) -> None:
+    (armed / G.LOCK_FILE).write_text(f"{os.getpid()} 2026-09-30T18:00:00", encoding="ascii")
+    assert G.handle_stop(_stop(), armed, grace=0) is None
+
+
+def test_a_stale_lock_does_not_count_as_running(armed) -> None:
+    (armed / G.LOCK_FILE).write_text(f"{_dead_pid()} 2026-09-30T18:00:00", encoding="ascii")
+    assert G.handle_stop(_stop(), armed, grace=0)["decision"] == "block"
+    (armed / G.LOCK_FILE).write_text("", encoding="ascii")
+    assert G.handle_stop(_stop(), armed, grace=0)["decision"] == "block"
+
+
+def test_the_second_stop_is_allowed(armed) -> None:
+    """差し戻しは1回だけ。正当に止める場面(exit 4・運用者の指示等)で閉じ込めない。"""
+    assert G.handle_stop(_stop(stop_hook_active=True), armed, grace=0) is None
+
+
+def test_stop_ignores_other_sessions_and_unarmed(armed, tmp_path) -> None:
+    assert G.handle_stop(_stop(sid="other"), armed, grace=0) is None
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert G.handle_stop(_stop(), empty, grace=0) is None
+
+
+def test_stop_waits_for_a_watcher_that_is_just_starting(armed, monkeypatch) -> None:
+    """run_in_background 直後はロックがまだ無い。少し待って現れたら通す。"""
+    calls = {"n": 0}
+
+    def fake_alive(_d) -> bool:
+        calls["n"] += 1
+        return calls["n"] >= 3
+
+    monkeypatch.setattr(G, "watcher_alive", fake_alive)
+    monkeypatch.setattr(G.time, "sleep", lambda _s: None)
+    assert G.handle_stop(_stop(), armed, grace=5) is None
+    assert calls["n"] == 3
+
+
+def test_checking_a_pid_never_kills_it() -> None:
+    """Windows の os.kill(pid, 0) は TerminateProcess。生存確認で殺してはいけない。"""
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        assert G._pid_alive(p.pid) is True
+        assert G._pid_alive(p.pid) is True
+        assert p.poll() is None, "生存確認で見張りを終了させてしまいました"
+    finally:
+        p.kill()
+        p.wait()
+    assert G._pid_alive(p.pid) is False
+
+
+def test_the_script_blocks_stop_through_stdout(armed) -> None:
+    r = _run(json.dumps(_stop()).encode("utf-8"), armed)
+    assert r.returncode == 0
+    assert json.loads(r.stdout.decode("utf-8"))["decision"] == "block"
