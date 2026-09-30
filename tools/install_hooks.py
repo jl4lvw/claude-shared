@@ -101,6 +101,16 @@ _HOOKS: tuple[tuple[str, str | None, str, int, str], ...] = (
         "(同名が優先されて project 側の修正が隠れる事故の防止)",
     ),
     (
+        # relay の待ち受け(/m watch)は確認なし(bypass)で動かすので、その代わりに
+        # 危険な操作だけを止める。relay_watch.ps1 が登録したセッションにしか効かない
+        # (2026-09-30。GUI 廃止に伴い agent_runner の PreToolUse を移植)
+        "PreToolUse",
+        "Bash|PowerShell|Read",
+        ".claude/hooks/relay_watch_guard.py",
+        5,
+        "relay 待ち受けセッション専用: 削除・force push・プロセス停止・外部送信などを拒否",
+    ),
+    (
         "PostToolUse",
         "Bash",
         ".claude/hooks/ai_telemetry.py",

@@ -10,6 +10,13 @@ relay 新着見張り(2026-09-30)。常駐GUIを廃止し、Claude Code 本体�
   -Mode init    : いまの max_pending_id を「処理済み」として記録する(溜まっている分を無視)
   -Mode ack     : 処理し終えたIDを記録する(-AckId。省略時はいまの max_pending_id)
   -Mode beat    : 生存報告を1回だけ送る(処理が長引いているときにセッションから呼ぶ)
+  -Mode arm     : このセッションを「待ち受け」として登録する(危険操作の歯止めがこのセッションに効く)
+  -Mode disarm  : 登録を外す
+
+危険操作の歯止め(2026-09-30): 待ち受けと処理役は確認なし(bypass)で動かすので、その代わりに
+.claude\hooks\relay_watch_guard.py(PreToolUse)が削除・force push・プロセス停止などを拒否する。
+フックは %LOCALAPPDATA%\RelayWatch\guard_session.json のセッションID と一致したときだけ働く。
+arm はここへ環境変数 CLAUDE_CODE_SESSION_ID を書く(watch の起動時にも自動で書く)。
 
 **処理中はこのスクリプトは走っていない**(検知して終了しているため)。だから busy フラグは
 持たない。セッションが処理を終えたら ack して、もう一度 watch で起動する。
@@ -34,7 +41,7 @@ Windows PowerShell 5.1 と PowerShell 7 のどちらでも動く。
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('watch', 'status', 'init', 'ack', 'beat')]
+    [ValidateSet('watch', 'status', 'init', 'ack', 'beat', 'arm', 'disarm')]
     [string]$Mode = 'watch',
     [int]$IntervalSec = 30,
     [int]$MaxMinutes = 720,
@@ -57,6 +64,8 @@ $StatePath = Join-Path $StateDir 'state.json'
 # 二重起動防止(2026-09-30)。待ち受けセッションを2つ開くと、同じ着信で2回起こしてしまう
 # (claim で二重処理は防げるが、トークンは2回分かかる)
 $LockPath = Join-Path $StateDir 'watch.lock'
+# 危険操作の歯止めを効かせるセッション(relay_watch_guard.py が読む)
+$GuardPath = Join-Path $StateDir 'guard_session.json'
 
 function Write-WatchLog {
     param([string]$Message)
@@ -134,10 +143,30 @@ function Get-LiveWatcher {
     if ($lockPid -eq $PID) { return $null }
     $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$lockPid" -ErrorAction SilentlyContinue
     if ($proc -and $proc.CommandLine -match 'relay_watch\.ps1' -and
-        $proc.CommandLine -notmatch '-Mode\s+(status|init|ack|beat)') {
+        $proc.CommandLine -notmatch '-Mode\s+(status|init|ack|beat|arm|disarm)') {
         return $lockPid
     }
     return $null
+}
+
+function Set-Guard {
+    # このセッションを待ち受けとして登録する。セッションIDが取れなければ $null
+    $sid = ($env:CLAUDE_CODE_SESSION_ID + '').Trim()
+    if (-not $sid) { return $null }
+    if (-not (Test-Path -LiteralPath $StateDir)) {
+        New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+    }
+    [pscustomobject]@{
+        session_id    = $sid
+        registered_at = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')
+    } | ConvertTo-Json | Set-Content -LiteralPath $GuardPath -Encoding UTF8
+    return $sid
+}
+
+function Get-GuardSession {
+    if (-not (Test-Path -LiteralPath $GuardPath)) { return $null }
+    try { return (Get-Content -LiteralPath $GuardPath -Raw -Encoding UTF8 | ConvertFrom-Json).session_id }
+    catch { return $null }
 }
 
 function Exit-Watch {
@@ -222,6 +251,12 @@ switch ($Mode) {
         "名義: $me / 接続先: $base"
         $live = Get-LiveWatcher
         if ($live) { "見張り: 動作中 (PID $live)" } else { "見張り: 停止中" }
+        $guard = Get-GuardSession
+        if ($guard) {
+            $short = $guard.Substring(0, [Math]::Min(8, $guard.Length))
+            $mine = if ($guard -eq ($env:CLAUDE_CODE_SESSION_ID + '').Trim()) { '・このセッション' } else { '' }
+            "危険操作の歯止め: 登録済み (セッション $short…$mine)"
+        } else { "危険操作の歯止め: 未登録" }
         "処理済みとして記録している最大ID: $($s.handled_max_id) (更新 $($s.updated_at) / $($s.note))"
         ("着手してよい件数: {0} / 最大ID: {1} / 最終着信: {2}" -f `
             $sum.pending_count, $sum.max_pending_id, $sum.latest_created_at)
@@ -261,6 +296,22 @@ switch ($Mode) {
         "生存報告を送れませんでした: $script:LastPresenceError"
         exit 3
     }
+    'arm' {
+        $sid = Set-Guard
+        if (-not $sid) {
+            "このセッションのIDが取れないため、危険操作の歯止めを登録できません(CLAUDE_CODE_SESSION_ID が空)。"
+            exit 5
+        }
+        Write-WatchLog "arm: 歯止めをセッション $($sid.Substring(0, [Math]::Min(8, $sid.Length)))… に登録"
+        "このセッションを待ち受けとして登録しました。危険操作の歯止めはこのセッションと処理役に効きます。"
+        exit 0
+    }
+    'disarm' {
+        if (Test-Path -LiteralPath $GuardPath) { Remove-Item -LiteralPath $GuardPath -Force }
+        Write-WatchLog "disarm: 歯止めの登録を外した"
+        "危険操作の歯止めの登録を外しました。"
+        exit 0
+    }
 }
 
 # --- watch -------------------------------------------------------------
@@ -294,6 +345,11 @@ $lastBeat = [datetime]::MinValue
 $beatFailures = 0
 
 Write-WatchLog "watch 開始: handled_max_id=$handled / 間隔 ${IntervalSec}秒 / 上限 ${MaxMinutes}分"
+# 見張りを起動したセッションを待ち受けとして登録し直す(開き直したセッションでも歯止めが付いてくる)
+if (-not (Set-Guard)) {
+    Write-WatchLog "歯止めを登録できません(CLAUDE_CODE_SESSION_ID が空)"
+    "注意: このセッションのIDが取れないため、危険操作の歯止めが効いていません。"
+}
 "relay を見張ります(処理済み #$handled まで / ${IntervalSec}秒ごと)。新着があれば終了します。"
 # 起動直後に1回送る(GUIを止めてから最初の確認までの間も「停止」に見せない)
 if (-not (Send-Presence -Pending $null)) {
