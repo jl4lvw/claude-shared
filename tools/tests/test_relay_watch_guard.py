@@ -308,3 +308,48 @@ def test_the_script_blocks_stop_through_stdout(armed) -> None:
     r = _run(json.dumps(_stop()).encode("utf-8"), armed)
     assert r.returncode == 0
     assert json.loads(r.stdout.decode("utf-8"))["decision"] == "block"
+
+
+# ------------------------------------------------ 1台で複数名義(RC の Mac)
+
+
+SID_RC = "aaaaaaaa-0000-0000-0000-00000000000c"
+SID_RCS = "bbbbbbbb-0000-0000-0000-00000000000d"
+
+
+@pytest.fixture()
+def armed_multi(tmp_path: Path) -> Path:
+    (tmp_path / G.GUARD_FILE).write_text(json.dumps({"sessions": {
+        "RC": {"session_id": SID_RC, "registered_at": "2026-10-01T09:00:00"},
+        "RCS": {"session_id": SID_RCS},
+        "../evil": {"session_id": "cccccccc"},   # パスに使えない名義は読まない
+    }}), encoding="utf-8")
+    return tmp_path
+
+
+def test_each_identity_session_is_guarded(armed_multi) -> None:
+    assert _denied(G.handle_hook(_bash("rm -rf x", sid=SID_RC), armed_multi))
+    assert _denied(G.handle_hook(_bash("rm -rf x", sid=SID_RCS), armed_multi))
+    assert G.handle_hook(_bash("rm -rf x", sid="cccccccc"), armed_multi) is None
+    assert G.handle_hook(_bash("rm -rf x", sid=SID), armed_multi) is None
+
+
+def test_stop_looks_at_the_lock_of_that_identity(armed_multi) -> None:
+    (armed_multi / "RC").mkdir()
+    (armed_multi / "RC" / G.LOCK_FILE).write_text(f"{os.getpid()} x", encoding="ascii")
+    # RC の見張りは動いている / RCS の見張りは止まっている
+    assert G.handle_stop(_stop(sid=SID_RC), armed_multi, grace=0) is None
+    assert G.handle_stop(_stop(sid=SID_RCS), armed_multi, grace=0)["decision"] == "block"
+    # 直下の watch.lock は複数名義の登録では見ない
+    (armed_multi / G.LOCK_FILE).write_text(f"{os.getpid()} x", encoding="ascii")
+    assert G.handle_stop(_stop(sid=SID_RCS), armed_multi, grace=0)["decision"] == "block"
+
+
+def test_both_shapes_can_coexist(tmp_path) -> None:
+    (tmp_path / G.GUARD_FILE).write_text(json.dumps({
+        "session_id": SID, "sessions": {"RC": {"session_id": SID_RC}},
+    }), encoding="utf-8")
+    assert G.armed_sessions(tmp_path) == {
+        SID: tmp_path / G.LOCK_FILE,
+        SID_RC: tmp_path / "RC" / G.LOCK_FILE,
+    }

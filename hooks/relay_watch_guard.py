@@ -21,6 +21,8 @@ Stop(2026-09-30 追加):
   `relay_watch.ps1 -Mode arm`(watch の起動時にも自動で行う)が記録した
   セッションID と、フックに渡る session_id が一致したときだけ働く。
   普段の対話セッションには何もしない(判断は人がその場でできるため)。
+  1台で複数名義を待ち受ける端末(RC の Mac の RC/RCS)向けに、名義ごとの登録も読む
+  (形式は armed_sessions() を参照)。
 
 GUI との違い:
   GUI は危険な操作で承認カードを出して待ったが、ここでは**拒否する**。
@@ -69,13 +71,42 @@ def state_dir() -> Path:
     return Path(local) / "RelayWatch" if local else Path.home() / ".relay_watch"
 
 
-def armed_session(directory: Path) -> str | None:
+_IDENTITY_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+
+def _sid(value: object) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def armed_sessions(directory: Path) -> dict[str, Path]:
+    """登録済みの待ち受けセッション → その見張りのロックファイル。
+
+    形式は2つ読む(2026-10-01。RC の Mac では RC と RCS の2名義を1台で動かすため):
+      1台1名義(Windows): {"session_id": "..."}
+          → ロックは <dir>/watch.lock
+      1台で複数名義: {"sessions": {"RC": {"session_id": "..."}, "RCS": {"session_id": "..."}}}
+          → ロックは <dir>/<名義>/watch.lock
+    名義は英数・_・- だけを受け付ける(パスに使うため)。
+    """
     try:
         data = json.loads((directory / GUARD_FILE).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
-        return None
-    sid = data.get("session_id") if isinstance(data, dict) else None
-    return sid.strip() if isinstance(sid, str) and sid.strip() else None
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    found: dict[str, Path] = {}
+    single = _sid(data.get("session_id"))
+    if single:
+        found[single] = directory / LOCK_FILE
+    sessions = data.get("sessions")
+    if isinstance(sessions, dict):
+        for identity, entry in sessions.items():
+            if not isinstance(identity, str) or not _IDENTITY_RE.match(identity):
+                continue
+            sid = _sid(entry.get("session_id")) if isinstance(entry, dict) else None
+            if sid:
+                found[sid] = directory / identity / LOCK_FILE
+    return found
 
 
 # --- 危険な操作の判定(041 gui/agent_runner.py と同じ語彙) --------------------
@@ -212,8 +243,7 @@ def handle_hook(payload: dict, directory: Path | None = None) -> dict | None:
     if tool not in _SHELL_TOOLS and tool != "Read":
         return None
     directory = directory or state_dir()
-    armed = armed_session(directory)
-    if not armed or str(payload.get("session_id") or "") != armed:
+    if str(payload.get("session_id") or "") not in armed_sessions(directory):
         return None
     try:
         tool_input = payload.get("tool_input") or {}
@@ -273,20 +303,20 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def watcher_alive(directory: Path) -> bool:
+def watcher_alive(lock_path: Path) -> bool:
     """relay_watch のロック(先頭が PID)を見て、見張りが動いているか。"""
     try:
-        raw = (directory / LOCK_FILE).read_text(encoding="utf-8-sig", errors="replace")
+        raw = lock_path.read_text(encoding="utf-8-sig", errors="replace")
         pid = int(raw.split()[0])
     except (OSError, ValueError, IndexError):
         return False
     return _pid_alive(pid)
 
 
-def _wait_for_watcher(directory: Path, grace: float) -> bool:
+def _wait_for_watcher(lock_path: Path, grace: float) -> bool:
     deadline = time.monotonic() + grace
     while True:
-        if watcher_alive(directory):
+        if watcher_alive(lock_path):
             return True
         if time.monotonic() >= deadline:
             return False
@@ -308,12 +338,12 @@ def handle_stop(
     payload: dict, directory: Path | None = None, grace: float = WATCHER_START_GRACE_SEC
 ) -> dict | None:
     directory = directory or state_dir()
-    armed = armed_session(directory)
-    if not armed or str(payload.get("session_id") or "") != armed:
+    lock_path = armed_sessions(directory).get(str(payload.get("session_id") or ""))
+    if lock_path is None:
         return None
     if payload.get("stop_hook_active"):
         return None  # 差し戻しは1回だけ。2回目は止めてよい
-    if _wait_for_watcher(directory, grace):
+    if _wait_for_watcher(lock_path, grace):
         return None
     _log(directory, payload, "Stop", "watcher_stopped")
     return {"decision": "block", "reason": STOP_REASON}

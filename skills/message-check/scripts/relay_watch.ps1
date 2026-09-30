@@ -8,7 +8,9 @@ relay 新着見張り(2026-09-30)。常駐GUIを廃止し、Claude Code 本体�
   -Mode watch   : 監視する。新着で終了(exit 0)、上限時間で終了(exit 0・本文に「変化なし」)
   -Mode status  : いま台帳と受信箱がどうなっているかを表示するだけ
   -Mode init    : いまの max_pending_id を「処理済み」として記録する(溜まっている分を無視)
-  -Mode ack     : 処理し終えたIDを記録する(-AckId。省略時はいまの max_pending_id)
+  -Mode ack     : 処理し終えたIDを記録する(-AckId。省略時はいまの max_pending_id)。
+                  その範囲に誰も手を付けていない着信(未読・処理権なし)が残っていれば断る(exit 7)。
+                  処理しないと決めた件だけ -Force で記録できる
   -Mode beat    : 生存報告を1回だけ送る(処理が長引いているときにセッションから呼ぶ)
   -Mode arm     : このセッションを「待ち受け」として登録する(危険操作の歯止めがこのセッションに効く)
   -Mode disarm  : 登録を外す
@@ -53,7 +55,9 @@ param(
     [int]$MaxMinutes = 720,
     [int]$AckId = 0,
     # 省略時は relay_client.py と同じ順で探す: 環境変数 RELAY_ENV_FILE → <.claude>\relay_local\.env
-    [string]$EnvPath = ''
+    [string]$EnvPath = '',
+    # ack の歯止めを外す。運用者が「処理しない」と決めた件・処理役が APPROVAL_NEEDED で止めた件だけに使う
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -310,7 +314,27 @@ switch ($Mode) {
         }
         $prev = (Get-State).handled_max_id
         if ($max -lt $prev) { $max = $prev }  # 巻き戻さない
-        Set-State -HandledMaxId $max -Note 'ack' | Out-Null
+        # 未処理のまま ack させない(2026-10-01)。ack 済みの ID では見張りは二度と起こさないので、
+        # 待ち受けが処理役を呼ばずに ack すると、その着信は誰にも気づかれずに埋もれる
+        # (A の待ち受けが「情報通知なので処理不要」と自己判断して7件を埋もれさせた)。
+        # 「誰も手を付けていない」= 未読のまま・処理権なし。人が対応する件(human_only)は数えない。
+        # 別のセッションが予約中のスレッドは一覧に出ないので、これも数えない
+        if (-not $Force -and $max -gt $prev) {
+            $untouched = @(Get-PendingMeta | Where-Object {
+                [int]$_.id -gt $prev -and [int]$_.id -le $max -and -not $_.human_only -and
+                $_.status -eq 'unread' -and -not $_.claimed_by
+            })
+            if ($untouched.Count -gt 0) {
+                $ids = ($untouched | ForEach-Object { "#$($_.id)" }) -join ' '
+                Write-WatchLog "ack を断った(誰も手を付けていない: $ids)"
+                "まだ誰も手を付けていない着信があるため、ack しません:"
+                foreach ($row in $untouched) { '  ' + (Format-PendingLine -Row $row) }
+                "処理役に渡してください(/m watch の W3)。種類が result や report でも、処理役が読んで done にします。"
+                "処理役が APPROVAL_NEEDED で止めた件・運用者が「処理しない」と決めた件だけは、-Force を付けて ack できます。"
+                exit 7
+            }
+        }
+        Set-State -HandledMaxId $max -Note $(if ($Force) { 'ack -Force' } else { 'ack' }) | Out-Null
         Write-WatchLog "ack: handled_max_id=$max"
         "#$max まで処理済みとして記録しました。"
         exit 0
