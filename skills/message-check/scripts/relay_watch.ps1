@@ -22,7 +22,13 @@ arm はここへ環境変数 CLAUDE_CODE_SESSION_ID を書く(watch の起動時
 持たない。セッションが処理を終えたら ack して、もう一度 watch で起動する。
 
 watch の終了コード: 0=新着あり または 変化なし(出力の文言で見分ける) / 3=relay サーバーに届かない /
-4=別の見張りが既に動いている(二重起動しない)。ロックは %LOCALAPPDATA%\RelayWatch\watch.lock。
+4=別の見張りを止められない・セッションIDが無く担当を確かめられない / 6=待ち受けの担当が別のセッション
+(引き継がれた・登録が外された。起動し直さない)。ロックは %LOCALAPPDATA%\RelayWatch\watch.lock。
+
+引き継ぎ(2026-09-30 運用者決定: 後から起動したセッションが勝つ): /m watch は -Mode arm で担当を
+自分へ書き換えてから watch を起動する。前の担当の見張りは、担当の変化に1秒以内に気づいて exit 6 で
+終わる(古い版で気づけないものは、新しい見張りが5秒待ってから止める)。担当でないセッションの watch は
+exit 6 で起動しない(担当を外されたセッションが見張りを起動し直して取り返すのを防ぐ)。
 
 生存報告(2026-09-30 追加): watch 中は 60 秒ごとに POST /agent/presence を送る。
 常駐GUIが止まっても、スマホの端末一覧で「停止」にならないようにするため。
@@ -169,6 +175,28 @@ function Get-GuardSession {
     catch { return $null }
 }
 
+$script:GuardStamp = -1
+$script:GuardOwner = $null
+function Get-GuardOwnerCached {
+    # 見張りのループから毎秒呼ぶので、ファイルが変わったときだけ読み直す
+    # 戻り値: 担当のセッションID / $null(登録が外された) / '?'(書き込み途中などで読めない)
+    $item = Get-Item -LiteralPath $GuardPath -ErrorAction SilentlyContinue
+    if (-not $item) {
+        $script:GuardStamp = 0
+        $script:GuardOwner = $null
+        return $null
+    }
+    $stamp = $item.LastWriteTimeUtc.Ticks
+    if ($stamp -ne $script:GuardStamp) {
+        $read = Get-GuardSession
+        # 読めなかった結果は覚えない(Set-Content の書き込み途中を「登録が外れた」と取り違えない)
+        if (-not $read) { return '?' }
+        $script:GuardStamp = $stamp
+        $script:GuardOwner = $read
+    }
+    return $script:GuardOwner
+}
+
 function Exit-Watch {
     # watch の終了は必ずここを通す。自分が持っているロックだけ外す
     param([int]$Code)
@@ -255,8 +283,8 @@ switch ($Mode) {
         if ($guard) {
             $short = $guard.Substring(0, [Math]::Min(8, $guard.Length))
             $mine = if ($guard -eq ($env:CLAUDE_CODE_SESSION_ID + '').Trim()) { '・このセッション' } else { '' }
-            "危険操作の歯止め: 登録済み (セッション $short…$mine)"
-        } else { "危険操作の歯止め: 未登録" }
+            "待ち受けの担当(歯止めの対象): セッション $short…$mine"
+        } else { "待ち受けの担当(歯止めの対象): 未登録" }
         "処理済みとして記録している最大ID: $($s.handled_max_id) (更新 $($s.updated_at) / $($s.note))"
         ("着手してよい件数: {0} / 最大ID: {1} / 最終着信: {2}" -f `
             $sum.pending_count, $sum.max_pending_id, $sum.latest_created_at)
@@ -316,11 +344,61 @@ switch ($Mode) {
 
 # --- watch -------------------------------------------------------------
 
+# --- 担当の確認と引き継ぎ(2026-09-30 運用者決定: 後から起動したセッションが勝つ) ---
+# /m watch は先に -Mode arm で「待ち受けの担当」を自分へ書き換えてから watch を起動する。
+# だから、担当が別のセッションなのに watch が呼ばれるのは「担当を外された側」だけで、
+# そこで起動すると取り返し合いになる(A で前のセッションが見張りを起動し直し、
+# 担当を取り返した実例がある)。担当の見張りが既に動いていれば、それを引き継ぐ。
+$mySid = ($env:CLAUDE_CODE_SESSION_ID + '').Trim()
+$owner = Get-GuardSession
+if ($mySid -and $owner -and $owner -ne $mySid) {
+    $short = $owner.Substring(0, [Math]::Min(8, $owner.Length))
+    Write-WatchLog "watch 起動を見送り: 担当は別のセッション($short…)"
+    "待ち受けは別のセッション($short…)が担当しています。このセッションでは見張りを起動しません。"
+    "このセッションで引き継ぐときは、/m watch の手順どおり先に -Mode arm を実行してください。"
+    exit 6
+}
+if ($mySid -and -not $owner) {
+    Set-Guard | Out-Null
+}
+if (-not $mySid) {
+    Write-WatchLog "歯止めを登録できません(CLAUDE_CODE_SESSION_ID が空)"
+    "注意: このセッションのIDが取れないため、危険操作の歯止めと引き継ぎが効きません。"
+}
+
 $other = Get-LiveWatcher
+$tookOver = $null
 if ($other) {
-    Write-WatchLog "watch 起動を見送り: 既に見張りが動いています(PID $other)"
-    "既に見張りが動いています(PID $other)。二重には起動しません。"
-    exit 4
+    if (-not $mySid) {
+        # 担当を確かめられないので、従来どおり二重には起動しない
+        Write-WatchLog "watch 起動を見送り: 既に見張りが動いています(PID $other)"
+        "既に見張りが動いています(PID $other)。二重には起動しません。"
+        exit 4
+    }
+    # 担当はこのセッション。前の見張りが残っているので引き継ぐ。
+    # 新しい版の見張りは担当が変わったことに1秒以内に気づいて自分で終了する(exit 6)
+    Write-WatchLog "引き継ぎ: 前の見張り(PID $other)の終了を待つ"
+    $waitUntil = (Get-Date).AddSeconds(5)
+    while ((Get-Date) -lt $waitUntil -and (Get-LiveWatcher)) {
+        Start-Sleep -Milliseconds 500
+    }
+    $still = Get-LiveWatcher
+    if ($still) {
+        # 古い版(担当の変化に気づけない)と、同じセッションで二重に起動した場合はここに来る。
+        # 止めるのは Get-LiveWatcher がコマンドラインまで確かめた見張りだけ
+        try {
+            Stop-Process -Id $still -Force -ErrorAction Stop
+        } catch {
+            Write-WatchLog "引き継ぎ: 前の見張り(PID $still)を止められない: $($_.Exception.Message)"
+        }
+        Start-Sleep -Milliseconds 500
+        if (Get-LiveWatcher) {
+            "前の見張り(PID $still)を止められなかったため、起動しません。"
+            exit 4
+        }
+        Write-WatchLog "引き継ぎ: 前の見張り(PID $still)を停止した"
+    }
+    $tookOver = $other
 }
 if (-not (Test-Path -LiteralPath $StateDir)) {
     New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
@@ -345,10 +423,8 @@ $lastBeat = [datetime]::MinValue
 $beatFailures = 0
 
 Write-WatchLog "watch 開始: handled_max_id=$handled / 間隔 ${IntervalSec}秒 / 上限 ${MaxMinutes}分"
-# 見張りを起動したセッションを待ち受けとして登録し直す(開き直したセッションでも歯止めが付いてくる)
-if (-not (Set-Guard)) {
-    Write-WatchLog "歯止めを登録できません(CLAUDE_CODE_SESSION_ID が空)"
-    "注意: このセッションのIDが取れないため、危険操作の歯止めが効いていません。"
+if ($tookOver) {
+    "前の見張り(PID $tookOver)から引き継ぎました。"
 }
 "relay を見張ります(処理済み #$handled まで / ${IntervalSec}秒ごと)。新着があれば終了します。"
 # 起動直後に1回送る(GUIを止めてから最初の確認までの間も「停止」に見せない)
@@ -359,7 +435,24 @@ if (-not (Send-Presence -Pending $null)) {
 $lastBeat = Get-Date
 
 while ((Get-Date) -lt $deadline) {
-    Start-Sleep -Seconds $IntervalSec
+    # 1秒ずつ眠り、そのたびに担当が変わっていないかを見る(引き継ぎを待たせない)
+    for ($tick = 0; $tick -lt $IntervalSec; $tick++) {
+        Start-Sleep -Seconds 1
+        if (-not $mySid) { continue }
+        $nowOwner = Get-GuardOwnerCached
+        if ($nowOwner -eq '?') { continue }
+        if ($nowOwner -ne $mySid) {
+            if ($nowOwner) {
+                $short = $nowOwner.Substring(0, [Math]::Min(8, $nowOwner.Length))
+                Write-WatchLog "watch 終了: 担当が別のセッション($short…)へ移った"
+                "待ち受けは別のセッション($short…)に引き継がれました。このセッションでは見張りを再開しないでください(再開しても起動しません)。"
+            } else {
+                Write-WatchLog "watch 終了: 待ち受けの登録が外された"
+                "待ち受けの登録が外されたため、見張りを終了します。このセッションでは見張りを再開しないでください。"
+            }
+            Exit-Watch -Code 6
+        }
+    }
     $polls++
     try {
         $sum = Get-Summary

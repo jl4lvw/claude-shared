@@ -52,8 +52,9 @@ GUARD_FILE = "guard_session.json"
 LOCK_FILE = "watch.lock"
 LOG_FILE = "guard.log"
 # 見張りを run_in_background で起動した直後は、pwsh の起動に1〜2秒かかり
-# ロックがまだ無いことがある。その間に「止まっている」と誤判定しないよう少し待つ
-WATCHER_START_GRACE_SEC = 6.0
+# ロックがまだ無いことがある。その間に「止まっている」と誤判定しないよう少し待つ。
+# 引き継ぎ(前の見張りの終了を最大5秒待ち、古い版なら止める)が入ると8秒ほどかかるので長めに取る
+WATCHER_START_GRACE_SEC = 12.0
 PROBE = "relay-watch-guard-probe"
 _SHELL_TOOLS = {"Bash", "PowerShell"}
 _TAG = "[relay-watch-guard]"

@@ -113,7 +113,7 @@ _HOOKS: tuple[tuple[str, str | None, str, int, str], ...] = (
     (
         # 同じスクリプトの Stop 側。待ち受けが見張りを止めたままターンを終えようと
         # したら1回だけ差し戻す(2026-09-30 A で実際に止まった)。見張りの起動待ちで
-        # 最大6秒待つので timeout は長めに取る
+        # 最大12秒待つので timeout は長めに取る
         "Stop",
         None,
         ".claude/hooks/relay_watch_guard.py",
