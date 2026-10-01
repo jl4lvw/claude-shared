@@ -150,11 +150,13 @@ def _request_json(
     if act_as:
         req.add_header("X-Act-As", act_as)
     # スレッド予約(2026-08-04 /r#28)のクライアント識別子。
-    # APIキー(=actor)は常駐GUIもこのCLIも同じなので、これが無いと両者を区別できない。
+    # APIキー(=actor)は待ち受けセッション・常駐GUI・このCLIのどれでも同じなので、
+    # これが無いと区別できない。
     # 未指定なら「予約中スレッドは見えない」側に倒れる(fail safe)。
     if holder:
         req.add_header("X-Relay-Holder", holder)
-    # 常駐GUIのエージェントとして動いているなら名乗る(2026-08-25)。
+    # 常駐GUIのエージェントとして動いているなら名乗る(2026-08-25)。GUIは2026-09-30に
+    # Aで停止したが、コードは残っており、残る端末ではこの環境変数で動く。
     # `human_only` のメッセージはエージェントには見せない。
     # 運用者の `/m` はこの環境変数を持たないので従来どおり見える
     if os.environ.get("RELAY_AGENT", "").strip().lower() in ("1", "true", "yes"):
@@ -332,7 +334,7 @@ def cmd_send(args: argparse.Namespace) -> None:
         payload["human_only"] = True
 
     # 返信の受け取り手を、送信と同じ操作で予約する(2026-08-04 /r#28)。
-    # 送信してから別コマンドで予約すると、その隙に返信が届いて常駐GUIに攫われる。
+    # 送信してから別コマンドで予約すると、その隙に返信が届いて待ち受けや常駐GUIに攫われる。
     # サーバー側では同一トランザクションで処理されるため、この窓が生じない。
     holder: Optional[str] = None
     if getattr(args, "reserve", False):
@@ -349,8 +351,8 @@ def cmd_send(args: argparse.Namespace) -> None:
     name = f"{act_as}名義(実行はあなた)" if act_as else "自分名義"
     print(f"送信しました[{name}]: thread_id={message['thread_id']} message_id={message['id']}")
     # **毎回、返信を誰が受け取るかを言う**(2026-08-24)。
-    # 予約はオプトインで、忘れても何も起きず黙って常駐GUIが拾う。
-    # 実際に「委託した作業の返信をGUIが勝手に処理する」が起きた。
+    # 予約はオプトインで、忘れても何も起きず黙って待ち受け(/m watch。GUIが残る端末ではGUI)が拾う。
+    # 実際に「委託した作業の返信をGUIが勝手に処理する」が起きた(2026-08-24。当時の受け手は常駐GUI)。
     # 警告にしないのは、警告は慣れると読み飛ばされるから。事実を毎回置く。
     if holder:
         print(
@@ -368,14 +370,16 @@ def cmd_send(args: argparse.Namespace) -> None:
         )
     elif getattr(args, "human_only", False):
         # **AI が触らない件は「誰が受け取るか」の答えが違う。**
-        # 常駐GUIと書くと嘘になる(2026-08-25)
+        # 「待ち受け」と書くと嘘になる(2026-08-25。当時の表記は「常駐GUI」)
         print(
             "返信の受け取り手: 相手の運用者(AIの自動応答を禁止しました)。"
             "相手は /m で扱います"
         )
     else:
         print(
-            "返信の受け取り手: 常駐GUI(このセッションでは受け取りません)。"
+            "返信の受け取り手: 待ち受け(/m watch。常駐GUIが残る端末ではGUI)。"
+            "動いていなければ、次に /m を実行した人が受け取ります"
+            "(このセッションでは受け取りません)。"
             "自分で受け取るなら --reserve を付けて送り直すか、"
             f"reserve --thread {message['thread_id']} で今から予約してください"
         )
@@ -471,6 +475,8 @@ def _print_open_asks(act_as: Optional[str] = None) -> None:
 def cmd_answer(args: argparse.Namespace) -> None:
     """確認に CLI から答える。常駐GUIの確認パネルを待たずに引き取れる。
 
+    確認(ask)を出して待つのは常駐GUIのエージェント。GUIが止まっている端末
+    (2026-09-30 以降の A)では、取りに来る側がいない。
     回答の置き場はスマホから答えたときと同じ(サーバーに積み、常駐GUIが
     取りに来て待機中のエージェントへ渡す)。**危険操作の承認は答えられない** —
     パソコンの承認パネルで行う。
@@ -481,11 +487,12 @@ def cmd_answer(args: argparse.Namespace) -> None:
         payload={"ask_key": args.ask_key, "answer": args.answer},
     )
     print(f"回答しました: ask_key={data.get('ask_key')}")
-    print("常駐GUIが取りに来て、待っている処理へ渡します(最大60秒)。")
+    print("確認を出した常駐GUIが取りに来て、待っている処理へ渡します(最大60秒)。")
+    print("※ 常駐GUIが止まっている端末では取りに来る側がいないので、回答は処理されません。")
 
 
 def _is_agent_self() -> bool:
-    """自分が常駐GUIのエージェントとして動いているか。"""
+    """自分が常駐GUIのエージェントとして動いているか(GUIは2026-09-30にAで停止。残る端末向け)。"""
     return os.environ.get("RELAY_AGENT", "").strip().lower() in ("1", "true", "yes")
 
 
@@ -596,7 +603,7 @@ def cmd_check(args: argparse.Namespace) -> None:
     peek = getattr(args, "peek", False)
     target = act_as or SELF_USER_ID
     # holder未指定なら、他クライアントが予約中のスレッドはサーバー側で除外される。
-    # 常駐GUIの内蔵エージェントもこの check を通るため、ここで受け取らないことが
+    # 待ち受けの処理役や、常駐GUIの内蔵エージェントもこの check を通るため、ここで受け取らないことが
     # 「予約したセッションが返信を受け取る」の実効性を担保している
     params = {"to": target, "unread": "true"}
     if peek:
@@ -640,8 +647,8 @@ def cmd_check(args: argparse.Namespace) -> None:
             f"[{msg['type']}][{label}] thread_id={msg['thread_id']} message_id={msg['id']} "
             f"from={msg['from_user']} at={_fmt_local(msg['created_at'])}"
         )
-        # **AI の自動応答が禁止された件**(2026-08-25)。常駐GUIのエージェントには
-        # 見えないので、ここに出ている時点で「人が扱う」ものだと判る。
+        # **AI の自動応答が禁止された件**(2026-08-25)。常駐GUIのエージェントには見えず、
+        # 待ち受けの見張りの件数からも除かれるので、ここに出ている時点で「人が扱う」ものだと判る。
         # それでも明示する — 代理で AI に投げ返す誘惑を断つため
         if msg.get("human_only"):
             print("  ※ AIの自動応答は禁止されています。あなた(運用者)が判断してください")
@@ -740,11 +747,12 @@ EXIT_CLAIM_CONFLICT = 2
 def cmd_claim(args: argparse.Namespace) -> None:
     """処理権(claim)を取る。**処理を始める前に必ず実行する**(自分宛でも代理でも)。
 
-    同じ受信箱を複数の実行者が見ている(A端末のGUI + 手動セッション、
+    同じ受信箱を複数の実行者が見ている(A端末の待ち受け(旧GUI) + 手動セッション、
     A端末の代理処理 + TK端末本人)ため、claimを取らずに処理すると
     同じ依頼へ二重に返信してしまう。409なら他が着手済みなのでスキップする。
 
-    排他は (actor, holder) 単位(2026-09-05)。同じ名義でも別セッション(常駐GUI等)が
+    排他は (actor, holder) 単位(2026-09-05)。同じ名義でも別セッション(別の Claude Code
+    セッション・常駐GUI等)が
     持っていれば 409 になる。holder は _session_holder() が決める。
     """
     act_as = getattr(args, "act_as", None)
@@ -844,13 +852,14 @@ def cmd_revoke(args: argparse.Namespace) -> None:
 
 
 # --- スレッド予約と返信待ち受け(2026-08-04 /r#28) ------------------------
-# 常駐GUI「AIリレー コンソール」と、この CLI を使う Claude Code セッションは
-# 同じ受信箱(to=自分)を見ている。何もしなければ、送った相手からの返信は
-# 先にポーリングしたGUIが攫っていき、発信元セッションではラリーを続けられない。
+# 待ち受けセッション(/m watch)や、残っている端末の常駐GUI「AIリレー コンソール」と、
+# この CLI を使う Claude Code セッションは同じ受信箱(to=自分)を見ている。何もしなければ、
+# 送った相手からの返信は先に取得した側が攫っていき、発信元セッションではラリーを続けられない。
+# (2026-09-30 に A の GUI を停止し、受け手は待ち受けセッションへ移った。仕組みは同じ)
 #
 # そこで「このスレッドの返信は自分が受け取る」とサーバーに予約(lease)を立てる。
 # 予約の持ち主(holder)はAPIキーの持ち主ではなくクライアント識別子で、
-# GUIもCLIも同じキーで動く以上、これが無いと両者を区別できない。
+# 待ち受け・GUI・CLIが同じキーで動く以上、これが無いと区別できない。
 
 _WAIT_TIMEOUT_EXIT = 3   # 返信が来ないまま待ち時間切れ(異常終了1と区別する)
 _WAIT_LOST_EXIT = 4      # 予約を失った(期限切れ後に他が取得した等)
@@ -867,7 +876,8 @@ def _session_holder() -> Optional[str]:
     自分の再claimが「別主体」と見なされて 409 になり、リトライ安全が壊れる。
     逆に別のセッション同士で同じ値になると排他が効かない。優先順:
       1. RELAY_HOLDER … 明示指定(テストや特殊運用)
-      2. RELAY_AGENT=1 … 常駐GUIのエージェント。プロセスが変わっても同じ値にする
+      2. RELAY_AGENT=1 … 常駐GUIのエージェント(2026-09-30 に A で停止。残る端末向け)。
+         プロセスが変わっても同じ値にする
          (再起動のたびに前の claim が TTL まで残ってしまわないため)。同一PCで GUI を
          2つ動かすと区別できないが、それは single_instance.py が防いでいる前提
       3. CLAUDE_CODE_SESSION_ID … Claude Code の対話セッション。セッション内で不変
@@ -952,7 +962,7 @@ def cmd_reserve(args: argparse.Namespace) -> None:
 
 
 def cmd_release(args: argparse.Namespace) -> None:
-    """予約を解放して常駐GUIに戻す。予約が無くても成功する(冪等)。"""
+    """予約を解放して待ち受けに戻す。予約が無くても成功する(冪等)。"""
     body = _request_json(
         "DELETE",
         f"/threads/{args.thread}/lease",
@@ -960,7 +970,7 @@ def cmd_release(args: argparse.Namespace) -> None:
         act_as=getattr(args, "act_as", None),
     )
     if body and body.get("released"):
-        print(f"予約を解放しました: thread_id={args.thread}(常駐GUIが引き取れる状態に戻りました)")
+        print(f"予約を解放しました: thread_id={args.thread}(待ち受けが引き取れる状態に戻りました)")
     else:
         print(f"予約はありませんでした: thread_id={args.thread}")
 
@@ -1044,7 +1054,7 @@ def _handoff_file_text(
 
 
 def _handoff_create(args: argparse.Namespace) -> None:
-    """スレッドを新しいセッションへ引き継ぐ(常駐GUIの「セッションへ引き継ぐ」と同じ手順)。
+    """スレッドを新しいセッションへ引き継ぐ(廃止した常駐GUIの「セッションへ引き継ぐ」と同じ手順)。
 
     GUI を廃止して待ち受けセッションに移したため、CLI からも発行できるようにした
     (2026-09-30)。順番は GUI と同じで、**引き継ぎ書を先に書いてから**登録する。
@@ -1138,7 +1148,7 @@ def cmd_handoff(args: argparse.Namespace) -> None:
     """会話の引き継ぎの発行・着手・完了・差し戻し・一覧。
 
     takeover はサーバー側で lease holder を**原子的に**自分へ付け替える。
-    release→再取得の2段にしないのは、その隙間にGUIの巡回が滑り込むため。
+    release→再取得の2段にしないのは、その隙間に待ち受けやGUIの巡回が滑り込むため。
     """
     sub = args.handoff_cmd
     if sub == "create":
@@ -1197,7 +1207,7 @@ def cmd_handoff(args: argparse.Namespace) -> None:
             payload={"note": note},
         )
         label = "完了" if sub == "done" else "差し戻し"
-        print(f"引き継ぎ #{no} を{label}にしました(常駐GUIが引き取れる状態に戻りました)")
+        print(f"引き継ぎ #{no} を{label}にしました(待ち受けが引き取れる状態に戻りました)")
         return
     print("handoff のサブコマンド: create / takeover / done / return / list", file=sys.stderr)
     raise SystemExit(2)
@@ -1230,7 +1240,7 @@ def _lease_left_sec(
 def cmd_wait(args: argparse.Namespace) -> None:
     """このスレッドへの返信が来るまで待ち、来たら表示する。
 
-    取得は peek=true(副作用なし)で行う。status=unread で待つと、常駐GUIや
+    取得は peek=true(副作用なし)で行う。status=unread で待つと、待ち受けや常駐GUI、
     手動checkが一瞬でも先に触った瞬間 processing に進んで見えなくなるため
     (cgd Lv7 で Codex medium/high が独立に指摘)。
     """
@@ -1255,7 +1265,7 @@ def cmd_wait(args: argparse.Namespace) -> None:
         if _touch_lease(args.thread, holder, args.ttl, act_as) is None:
             print(
                 "予約を失いました(他のクライアントが取得済み)。"
-                "常駐GUIがこのスレッドを処理している可能性があります。",
+                "待ち受け(または常駐GUI)がこのスレッドを処理している可能性があります。",
                 file=sys.stderr,
             )
             sys.exit(_WAIT_LOST_EXIT)
@@ -1266,7 +1276,7 @@ def cmd_wait(args: argparse.Namespace) -> None:
         if messages:
             # 受け取った後も返信を書き終えるまで予約を保持する必要がある。
             # wait が返った瞬間にheartbeatが止まると、返信作成中にTTLが切れて
-            # 常駐GUIが同じスレッドに二重返信しうる(cgd Lv7 DS critic 指摘)。
+            # 待ち受け(や常駐GUI)が同じスレッドに二重返信しうる(cgd Lv7 DS critic 指摘)。
             # 延長できたかは必ず確認する — 失敗を黙って成功と表示すると、
             # 二重返信防止という中心要件が静かに破れる(Step C Codex指摘)
             held = _touch_lease(args.thread, holder, args.hold, act_as) is not None
@@ -1283,7 +1293,7 @@ def cmd_wait(args: argparse.Namespace) -> None:
             else:
                 print(
                     f"{len(messages)}件の返信を受け取りましたが、"
-                    "**予約の延長に失敗しました**。返信を書いている間に常駐GUIが"
+                    "**予約の延長に失敗しました**。返信を書いている間に待ち受け(または常駐GUI)が"
                     "同じスレッドを処理する可能性があります。すぐに返信するか、"
                     f"reserve --thread {args.thread} --holder {holder} で取り直してください。",
                     file=sys.stderr,
@@ -1302,7 +1312,7 @@ def cmd_wait(args: argparse.Namespace) -> None:
         if time.monotonic() >= deadline:
             if getattr(args, "keep", False):
                 # **手放さずに戻る**(2026-08-24)。委託した作業の返事は
-                # 数時間後に来る。そこで解放すると、その瞬間に常駐GUIが
+                # 数時間後に来る。そこで解放すると、その瞬間に待ち受けや常駐GUIが
                 # 拾ってしまい「勝手に応答された」になる。
                 # 予約自体には TTL があるので、放置しても必ずいつかは戻る。
                 left = _lease_left_sec(args.thread, holder, act_as)
@@ -1310,7 +1320,7 @@ def cmd_wait(args: argparse.Namespace) -> None:
                     f"返信がないまま{args.timeout}秒が経過しました。"
                     "予約は保持したままです"
                     + (f"(残り{_fmt_span(left)})" if left is not None else "")
-                    + "。放置すると期限切れで常駐GUIが引き取ります。",
+                    + "。放置すると期限切れで待ち受け(または常駐GUI)が引き取ります。",
                     file=sys.stderr,
                 )
                 print(
@@ -1320,7 +1330,7 @@ def cmd_wait(args: argparse.Namespace) -> None:
                 )
                 print(
                     f"  relay_client.py release --thread {args.thread} "
-                    f"--holder {holder}   # 常駐GUIへ返す",
+                    f"--holder {holder}   # 待ち受けへ返す",
                     file=sys.stderr,
                 )
                 sys.exit(_WAIT_TIMEOUT_EXIT)
@@ -1338,7 +1348,7 @@ def cmd_wait(args: argparse.Namespace) -> None:
             )
             print(
                 f"返信がないまま{args.timeout}秒が経過しました。"
-                "予約を解放したので、以降は常駐GUIが引き取ります。",
+                "予約を解放したので、以降は待ち受け(または常駐GUI)が引き取ります。",
                 file=sys.stderr,
             )
             sys.exit(_WAIT_TIMEOUT_EXIT)
@@ -1374,7 +1384,7 @@ def main() -> None:
         "--human-only",
         action="store_true",
         help="AIの自動応答を禁止し、相手の運用者が /m で扱うことを強制する。"
-        "常駐GUIのエージェントからは見えなくなるが、画面と件数には出る",
+        "常駐GUIのエージェントと待ち受けの見張りからは見えなくなるが、画面と件数には出る",
     )
     send_parser.add_argument(
         "--no-reply-needed",
@@ -1386,7 +1396,7 @@ def main() -> None:
         "--reserve",
         action="store_true",
         help="返信の受け取り手をこのセッションとして予約する。"
-        "付けないと、返信は常駐GUIが先に拾って処理する",
+        "付けないと、返信は待ち受け(/m watch。GUIが残る端末ではGUI)が先に拾って処理する",
     )
     send_parser.add_argument(
         "--holder",
@@ -1404,7 +1414,7 @@ def main() -> None:
         "--holder",
         default=None,
         help="自分が予約中のスレッドも見る場合に指定する。"
-        "省略すると予約中スレッドは表示されない(常駐GUIとの二重処理を防ぐため)",
+        "省略すると予約中スレッドは表示されない(待ち受け・常駐GUIとの二重処理を防ぐため)",
     )
     check_parser.add_argument(
         "--peek",
@@ -1424,7 +1434,7 @@ def main() -> None:
     answer_parser.set_defaults(func=cmd_answer)
 
     reserve_parser = subparsers.add_parser(
-        "reserve", help="スレッドを予約する(返信を常駐GUIでなく自分が受け取る)"
+        "reserve", help="スレッドを予約する(返信を待ち受けでなく自分が受け取る)"
     )
     reserve_parser.add_argument("--thread", required=True, help="予約するthread_id")
     reserve_parser.add_argument(
@@ -1435,7 +1445,7 @@ def main() -> None:
     reserve_parser.set_defaults(func=cmd_reserve)
 
     release_parser = subparsers.add_parser(
-        "release", help="予約を解放して常駐GUIに戻す(処理が終わったら必ず実行する)"
+        "release", help="予約を解放して待ち受けに戻す(処理が終わったら必ず実行する)"
     )
     release_parser.add_argument("--thread", required=True, help="解放するthread_id")
     release_parser.add_argument("--holder", required=True, help="予約時のクライアント識別子")
@@ -1459,7 +1469,7 @@ def main() -> None:
     wait_parser.add_argument(
         "--keep",
         action="store_true",
-        help="待ち切れなくても予約を解放しない。委託のように返事が数時間後に来る場合に使う(既定は解放して常駐GUIへ返す)",
+        help="待ち切れなくても予約を解放しない。委託のように返事が数時間後に来る場合に使う(既定は解放して待ち受けへ返す)",
     )
     wait_parser.add_argument(
         "--ttl", type=int, default=300, help="待ち受け中に維持する予約TTL秒(既定300)"
@@ -1496,10 +1506,10 @@ def main() -> None:
     ho_take = handoff_sub.add_parser("takeover", help="引き継ぎに着手する(lease付け替え)")
     ho_take.add_argument("number", type=int, help="引き継ぎ番号(3桁)")
     ho_take.add_argument("--holder", default=None, help="省略時は自動採番")
-    ho_done = handoff_sub.add_parser("done", help="完了として記録しGUIへ返す")
+    ho_done = handoff_sub.add_parser("done", help="完了として記録し待ち受けへ返す")
     ho_done.add_argument("number", type=int)
     ho_done.add_argument("--note", default="", help="完了メモ")
-    ho_ret = handoff_sub.add_parser("return", help="完了せずGUIへ差し戻す")
+    ho_ret = handoff_sub.add_parser("return", help="完了せず待ち受けへ差し戻す")
     ho_ret.add_argument("number", type=int)
     ho_ret.add_argument("--reason", default="", help="差し戻す理由")
     handoff_sub.add_parser("list", help="引き継ぎ一覧")
