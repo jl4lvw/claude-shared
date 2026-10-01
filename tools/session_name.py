@@ -52,6 +52,7 @@ TERMINALS: dict[str, str] = {
     "desktop-7osurhd": "★",  # A (AI 間リレーメッセージの端末 A)
     "ryzen7-5800x": "■",  # TK
     "pc-ff11": "●",  # TS
+    "desktop-slas6b0": "▲",  # TH (2026-10-01 運用者決定。PC 名は TH 端末の hostname 返信による)
 }
 SYMBOLS = "".join(TERMINALS.values())
 

@@ -37,7 +37,7 @@ def _handoff(dir_: Path, stamp: str, name: str | None) -> None:
 
 @pytest.mark.parametrize(
     ("host", "expected"),
-    [("DESKTOP-7OSURHD", "★"), ("desktop-7osurhd", "★"), ("RYZEN7-5800X", "■"), ("PC-FF11", "●"), ("OTHER-PC", None)],
+    [("DESKTOP-7OSURHD", "★"), ("desktop-7osurhd", "★"), ("RYZEN7-5800X", "■"), ("PC-FF11", "●"), ("DESKTOP-SLAS6B0", "▲"), ("OTHER-PC", None)],
 )
 def test_detect_symbol(host: str, expected: str | None) -> None:
     assert sn.detect_symbol(host) == expected
