@@ -4,11 +4,17 @@ description: 産経デジタル(3K)・シフトプラス(呉市ふるさと納�
 trigger: 出荷状態の確認・出荷完了通知(産経/シフトプラス/ZenPlusのいずれか、または「何か通知していないものはないか」の横断確認)を行うとき
 ---
 
-<!-- SKILL_VERSION: 2026-09-12_085915 -->
+<!-- SKILL_VERSION: 2026-10-02_223500 -->
 
 # shipping-notify — 出荷状態確認 → 出荷完了通知(3チャネル横断)
 
 作業フォルダ: `C:\ClaudeCode\052.卸売注文GoQ統合`（相対パスは全てここ基準）。
+
+> **産経の登録が自動になった場合(2026-10-02〜・本番モード)の注意**: 自動登録した注文の `sent/SANKEI-*.json` には
+> `auto.verify`(登録後のGoQ照合の結果)が入る。**報告の前に、未確認の食い違い(`reg-mismatch` の通知・
+> `auto.verify.ok == false` で `acknowledged` が無いもの)が無いか見る**(宛先・配送が違う注文を報告に乗せない)。
+> 産経の「取込→登録」が止まっていないかの確認は `python tools/auto_intake_sankei.py --status`。
+> 報告CSV・自動送信(16:30)の仕組み自体は変わらない。詳細は `052.卸売注文GoQ統合/docs/RUNBOOK_auto_intake.md`。
 
 このスキルは[[wholesale-order]]・[[furusato-shiftplus]]の**登録が終わった後**の工程
 (出荷状態の確認・出荷完了を各チャネルへ知らせる)だけを横断的に扱う。3チャネルとも
