@@ -270,7 +270,7 @@ python ".claude/skills/relay/scripts/relay_client.py" send --to <元の送信者
 
 1. **直接入力か**: 運用者が対話セッションで `/mw` または `/m watch` をスラッシュで直接打った場合だけ進む。`claude -p`・スケジュールタスク・処理役(サブエージェント)・他スキルからの呼び出し・自然言語の依頼(「未読確認して」等)では入らない。直接入力かどうか判別できなければ入らない(安全側)。
 2. **引数が完全一致か**(前後の空白は無視し、大文字小文字は区別しない): `/mw`(引数なし)と `/m watch` だけが待ち受け。`/mw stop` は W6。**それ以外の引数(`/mw 2828`・`/m wacth` など)は何も実行せず**「使い方: `/m`(1回だけ処理) / `/mw` または `/m watch`(待ち受け) / `/mw stop`(解除)」と 1 行返す。
-3. **この端末で動くか**: **Windows** で、`pwsh` か `powershell` が実行でき、`.claude\skills\message-check\scripts\relay_watch.ps1` と `.claude\hooks\relay_watch_guard.py` が在る(`relay_watch.ps1` は Windows 専用。Mac に pwsh を入れても対象外)。満たさなければ(Mac の RC/RCS など)arm せず「この端末は待ち受けに未対応です。`/m` で 1 回ずつ処理してください」と伝える。
+3. **この端末で動くか**: **Windows** で、`pwsh` か `powershell` が実行でき、`.claude\skills\message-check\scripts\relay_watch.ps1` と `.claude\hooks\relay_watch_guard.py` が在る(`relay_watch.ps1` は Windows 専用。Mac に pwsh を入れても対象外)。満たさなければ(Mac の RC など)arm せず「この端末は待ち受けに未対応です。`/m` で 1 回ずつ処理してください」と伝える。
 4. **作業の途中のセッションでないか**: このセッションに既に作業の会話があるなら、AskUserQuestion(クリック形式)で確認する。質問文: 「このセッションを待ち受け専用にします。危険な操作(削除・force push・外部送信など)が拒否されるようになり、通常の作業には向かなくなります(解除は `/mw stop`)。続けますか?」。選択肢は「続ける」「新しいセッションで開く」「やめる」。「新しいセッションで開く」「やめる」が選ばれたら、何も arm せずに終える。直前の会話が `/mw` だけの新しいセッションなら聞かない。
 5. **常駐GUIが止まっているか**: この端末に `RelayGui` タスクが在って有効(`Get-ScheduledTask -TaskName RelayGui` の State が Disabled 以外)なら、arm せず「先に RelayGui タスクを無効にして GUI を閉じてください(同じ着信を二重に処理します)」と伝える。タスクが無い端末では確認不要。
 
