@@ -166,7 +166,47 @@ def check_codex_version() -> Result:
     except (OSError, subprocess.SubprocessError) as exc:
         return (WARN, "codex CLI 版", f"取得できず: {type(exc).__name__}: {exc}")
     out = (proc.stdout or proc.stderr or "").strip().splitlines()
-    return (OK, "codex CLI 版", out[0] if out else "(版文字列が空)")
+    line = out[0] if out else "(版文字列が空)"
+    desktop = _desktop_codex_version()
+    cli_v, desk_v = _parse_version(line), _parse_version(desktop or "")
+    if cli_v and desk_v and cli_v < desk_v:
+        return (
+            WARN, "codex CLI 版",
+            f"{line} — Codex デスクトップ ({desktop}) より古い。デスクトップが新しいモデルを"
+            " config.toml に書くと CLI は 400 で失敗します。揃えるには:"
+            f" npm install -g --prefix C:/tools/codex-cli @openai/codex@{'.'.join(map(str, desk_v))}",
+        )
+    return (OK, "codex CLI 版", line + (f" (デスクトップ {desktop})" if desktop else ""))
+
+
+def _parse_version(text: str) -> tuple[int, ...] | None:
+    """'codex-cli 0.159.2' のような文字列から (0, 159, 2) を取り出す。無ければ None。"""
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", text)
+    return tuple(int(g) for g in m.groups()) if m else None
+
+
+def _desktop_codex_version() -> str | None:
+    """Codex デスクトップ同梱の codex.exe の版(複数あれば最新)。無ければ None。
+
+    2026-10-04、デスクトップ(0.159.2)が既定モデルを gpt-6.1-sol に切り替えて
+    config.toml を書き換え、CLI(0.154.0)は「ChatGPT アカウントでは非対応」の 400 で
+    止まった。サーバーが返すモデル一覧は CLI の版で変わるため、版ずれを先に知らせる。
+    """
+    base = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    best: tuple[tuple[int, ...], str] | None = None
+    for exe in (base / "OpenAI" / "Codex" / "bin").glob("*/codex.exe"):
+        try:
+            proc = subprocess.run(
+                [str(exe), "--version"], capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        text = (proc.stdout or "").strip()
+        ver = _parse_version(text)
+        if ver and (best is None or ver > best[0]):
+            best = (ver, text)
+    return best[1] if best else None
 
 
 def check_lv0_codex() -> Result:
@@ -277,7 +317,9 @@ def check_codex_model() -> list[Result]:
         out.append((
             NG, "codex モデル設定",
             f"{label} — このモデルはサーバー一覧にありません"
-            f" (利用可: {', '.join(sorted(known)[:6])}…)",
+            f" (利用可: {', '.join(sorted(known)[:6])}…)"
+            " — デスクトップ版 Codex が新モデルに切り替えたなら CLI が古い可能性"
+            " (「codex CLI 版」の行を確認)",
         ))
         return out
 
