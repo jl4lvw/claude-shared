@@ -1,7 +1,7 @@
 """077 メール自動送信: Claude Code から承認の仕組みを触れないようにする PreToolUse フック。
 
 止めるもの(事故防止。同じ PC 上の別プロセスまでは防げない):
-- 077.メール自動送信/data(台帳・依頼・秘密鍵・設定)への Write/Edit と、ログ以外の Read
+- 080.メール自動送信(旧 077)/data(台帳・依頼・秘密鍵・設定)への Write/Edit と、ログ以外の Read
 - data フォルダ・台帳・秘密鍵の名前を含む Bash/PowerShell コマンド
 - LINE WORKS の callback 受け口(/lineworks/callback)を叩くコマンド
 運用は `python cli.py ...` / `python run_watcher.py` 経由で行う(コマンドに data のパスが出ない)。
@@ -13,10 +13,12 @@ import json
 import re
 import sys
 
-PROJECT = "077.メール自動送信"
+# 2026-10-07 に 077 → 080 へ引っ越し(077.商品画像検索と番号が重なったため)。
+# 旧フォルダには旧い台帳・秘密鍵が残るので、削除されるまで両方を守る
+PROJECTS = ("080.メール自動送信", "077.メール自動送信")
 READ_OK = re.compile(r"/data/(logs|rejected)/")
 BASH_DENY = (
-    re.compile(re.escape(PROJECT) + r"[\\/]+data", re.IGNORECASE),
+    re.compile("(?:" + "|".join(re.escape(p) for p in PROJECTS) + r")[\\/]+data", re.IGNORECASE),
     re.compile(r"ledger\.sqlite3", re.IGNORECASE),
     re.compile(r"secret\.key", re.IGNORECASE),
     re.compile(r"lw_session\.json", re.IGNORECASE),
@@ -39,7 +41,7 @@ def decide(tool: str, tool_input: dict) -> dict | None:
     if tool in ("Write", "Edit", "MultiEdit", "NotebookEdit", "Read"):
         path = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
         norm = path.replace("\\", "/")
-        if PROJECT in norm and "/data/" in norm + "/":
+        if any(p in norm for p in PROJECTS) and "/data/" in norm + "/":
             if tool == "Read" and READ_OK.search(norm):
                 return None
             return _deny("077 の data(台帳・依頼・秘密鍵)は Claude から直接触れません。"
