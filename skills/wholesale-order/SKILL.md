@@ -4,7 +4,7 @@ description: 卸売・外部チャネル注文(産経デジタル・ふるさと
 trigger: 産経・ふるさと納税など卸売/外部チャネルの新規注文を処理するとき
 ---
 
-<!-- SKILL_VERSION: 2026-10-02_223500 -->
+<!-- SKILL_VERSION: 2026-10-08_090000 -->
 
 # wholesale-order — 卸売注文 → GoQ登録 → 出荷報告
 
@@ -65,6 +65,17 @@ cp "C:/Users/user/どこでもキャビネット/SEIFUKU_FUJI/<日付>/<ファ�
     `parsers/carrier_map.json`（配送会社・メール便条件）を自動適用する
   - 出力は「+ 件」「除外(他社) 件」「スキップ 件」の内訳が出る。**除外0件でも油断しない**
     （新しい商品コードが増えると除外リストに載っていない可能性がある。商品名を必ず目で見る）
+  - 🔴 **配送日・配送時間帯の指定（CSVの「配送日」「配送時間帯」）がある注文は特別扱い**（2026-10-08・
+    SANKEI-323978 が 10/17 14〜16時の指定なのに 10/7 に発送された事故）。パーサーが
+    `delivery_date`（YYYY-MM-DD）と `delivery_time`（例 `14時～16時`）を注文に持たせ、**ゲートは必ず保留**
+    にする（「配送日の指定があります」）。登録（`submit_orders.py --send`）は、登録が終わった直後に
+    `tools/goq_delivery.py` → `047.GoQ送り状再印刷/goq/set_order_fields.py` で GoQ の
+    **お届け日指定・お届け時間帯**を入れ、結果を `sent/*.json` の `result.delivery_set` に残す。
+    入れられなかったとき（`🔴 配送日の指定をGoQに設定できませんでした`）は、**出荷される前に手で入れるか
+    出荷を止める**（放置すると GoQ の自動処理が指定日より早く発送する）。出荷日は変えない（登録した日のまま・
+    ユーザー決定）。登録後の照合（`verify_registered`）も `delivery_set.ok` を見て、無ければ食い違いとして通知する。
+    後から直すとき: `set_order_fields.py <oid> --expect-delivery-date "" --delivery-date YYYY-MM-DD --delivery-time "14時～16時"`
+    （指定した欄以外が変わったら失敗扱い。変更前を `probe_out/` に退避する）
 - ZenPlus（メール受注・2026-08-25追加）: `python parsers/zenplus_order.py`
   - 発注元は`fw-shopmaster@seifukunofuji.com`の`5.Zenplus`フォルダ（Thunderbird mboxを直接パース）
   - 届け先は毎回ZenPlus倉庫（個人宅直送ではない）。**住所末尾の受入コード（例`(OFiM12)`）は
