@@ -4,7 +4,7 @@ description: 呉市ふるさと納税(シフトプラス株式会社)の1,000円
 trigger: シフトプラス/呉市ふるさと納税(sell_*.csv)の新規注文・出荷登録・出荷完了通知・B2クラウドの住所エラー(WS001002)・クリックポスト等の伝票番号の入力を扱うとき
 ---
 
-<!-- SKILL_VERSION: 2026-10-08_120000 -->
+<!-- SKILL_VERSION: 2026-10-08_150000 -->
 
 > **🔴 毎回、最初に守る6つ(2026-10-06/07・実際に起きたことから)**
 >
@@ -204,6 +204,19 @@ python tools/export_furusato_goq_csv.py --out reports/GoQCSV_ふるさと_YYYYMM
    (例: `FURUSATOCSV-34202260003669` → `FURUSATOCSV-34202260003669-2`)
 3. 元の`sent/*.json`は`status: "superseded_canceled_in_goq"`にして残す(履歴として)
 4. 新しい`-2`版を`orders/`に作り、通常の登録フロー(手順4)で再登録する
+
+## 5.5 メール経路の「まとめ受注」(FURUSATO-yyyymmdd・本店ダミー住所)を寄附者別に置き換える — 2026-10-08
+
+10/8より前にメールの経路で登録した分(例: FURUSATO-20260929=GoQ 113483・16品目17点)は、寄附者の氏名・住所が無い。
+**ロジホームの最新CSVを共有してもらい**(076「データ共有」→ `/img` で取り出して `intake/sell_*.csv` へ)、次の順で置き換える:
+
+1. ドライラン: `python tools/backfill_furusato_slips.py intake/sell_X.csv --mail-order sent/FURUSATO-yyyymmdd.json --since YYYY-MM-DD --until YYYY-MM-DD`
+   (あられ以外で『出荷依頼日』が範囲内の行が、まとめ受注の品番・件数と**完全一致**したときだけ進む。一致しなければ中止。
+   範囲は前回のメールの日付の翌日〜今回のメールの日付。同じ品番が別の日の寄附者にもあるので、範囲で切り分ける)
+2. 一覧をアーティファクトで出して承認 → `--apply`(orders/ に作る。GoQには書かない)
+3. `export_furusato_goq_csv.py` で1件先行・残りの2本のCSVを作り、`_run_csv_import.py` で取り込む。**取込の画面の出力は最初の画面の文字で終わることがある。成否は必ず `goq_lookup.fetch_goq_info([受注番号])` で確かめ、再実行しない**
+4. `finalize_furusato_registered.py --first-oid --last-oid --apply` で照合して sent/ へ
+5. 元のまとめ受注(GoQ側)は**取り消さない**(取消・保留はユーザーが決める)。CSV上これらの行は『配送中』のことがある(代行会社の送り状は発行済み)
 
 ## 6. シフトプラスへ出荷完了を通知する(専用CSVアップロード)
 
