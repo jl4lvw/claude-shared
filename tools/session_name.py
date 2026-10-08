@@ -17,6 +17,7 @@
 使い方:
   python .claude/tools/session_name.py symbol
   python .claude/tools/session_name.py next --folder 072 --topic 写真アルバム
+  python .claude/tools/session_name.py succ "■リレコンTK-02" --register   # ハンドオフ時 → ■リレコンTK-03
   python .claude/tools/session_name.py register "072★写真アルバム 4"
   python .claude/tools/session_name.py check "072★写真アルバム 4"
 
@@ -139,6 +140,38 @@ def next_serial(folder: str, symbol: str, names: list[str]) -> int:
     return best + 1
 
 
+_TRAILING_NUM_RE = re.compile(r"^(?P<head>.*?)(?P<num>\d+)$")
+
+
+def basic_problems(name: str) -> list[str]:
+    """書式以外の問題点 (空・制御文字・長さ)。運用者が付けた独自書式の名前の検証に使う。"""
+    return [p for p in problems(name) if not p.startswith("書式が")]
+
+
+def successor(current: str, names: list[str]) -> str:
+    """ハンドオフ先の名前: 現セッション名の末尾の番号を +1 する (書式・桁数はそのまま)。
+
+    2026-10-05 ユーザー指摘: `■リレコンTK-02` からのハンドオフは `■リレコンTK-03`。
+    話題を作り直して最大値+1 で振ると、セッションの系列が途切れる。
+    使用済みなら空くまで進める。末尾が数字でない・不正な名前は ValueError。
+    """
+    current = current.strip()
+    m = _TRAILING_NUM_RE.match(current)
+    if m is None:
+        raise ValueError(f"末尾が番号ではない: {current!r}")
+    head, width, n = m["head"], len(m["num"]), int(m["num"])
+    used = set(names)
+    while True:
+        n += 1
+        name = f"{head}{n:0{width}d}"
+        if name not in used:
+            break
+    bad = basic_problems(name)
+    if bad:
+        raise ValueError("; ".join(bad))
+    return name
+
+
 def build_name(folder: str, symbol: str, topic: str, serial: int) -> str:
     """部品から名前を組み立てる。不正な部品・長すぎる名前は ValueError。"""
     if folder and not re.fullmatch(r"\d{3}", folder):
@@ -188,6 +221,11 @@ def _locked(ledger: Path, timeout: float = 3.0, stale: float = 30.0) -> Iterator
         lock.unlink(missing_ok=True)
 
 
+def _append(ledger: Path, name: str) -> None:
+    with ledger.open("a", encoding="utf-8", newline="") as f:
+        f.write(f"{datetime.now().isoformat(timespec='seconds')}\t{name}\n")
+
+
 def register(name: str, handoff_dir: Path) -> bool:
     """名前を台帳に追記する。既に使用済みなら False (書かない)。不正なら ValueError。"""
     bad = problems(name)
@@ -198,9 +236,19 @@ def register(name: str, handoff_dir: Path) -> bool:
     with _locked(ledger):
         if name in used_names(handoff_dir):
             return False
-        with ledger.open("a", encoding="utf-8", newline="") as f:
-            f.write(f"{datetime.now().isoformat(timespec='seconds')}\t{name}\n")
+        _append(ledger, name)
     return True
+
+
+def register_successor(current: str, handoff_dir: Path) -> str:
+    """successor() で決めた名前を、同じロックの中で台帳へ追記して返す (並行 save で被らない)。"""
+    handoff_dir.mkdir(parents=True, exist_ok=True)
+    ledger = handoff_dir / LEDGER_NAME
+    with _locked(ledger):
+        # 現セッション名も使用済みに含める (台帳に無い独自名でも同名を返さない)
+        name = successor(current, used_names(handoff_dir) + [current.strip()])
+        _append(ledger, name)
+    return name
 
 
 def _cmd_symbol(_: argparse.Namespace) -> int:
@@ -236,6 +284,19 @@ def _cmd_register(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_succ(args: argparse.Namespace) -> int:
+    try:
+        if args.register:
+            name = register_successor(args.current, args.handoff_dir)
+        else:
+            name = successor(args.current, used_names(args.handoff_dir) + [args.current.strip()])
+    except ValueError as exc:
+        print(f"名前が不正: {exc}", file=sys.stderr)
+        return 2
+    print(name)
+    return 0
+
+
 def _cmd_check(args: argparse.Namespace) -> int:
     bad = problems(args.name)
     if bad:
@@ -255,6 +316,10 @@ def main(argv: list[str] | None = None) -> int:
     p_next.add_argument("--topic", required=True, help="サブプロジェクト名")
     p_next.add_argument("--symbol", default=None, help="端末記号を明示 (既定は PC 名から自動)")
     p_next.set_defaults(func=_cmd_next)
+    p_succ = sub.add_parser("succ", help="ハンドオフ先の名前 (現セッション名の末尾番号 +1)")
+    p_succ.add_argument("current", help="現セッション名 (例: ■リレコンTK-02)")
+    p_succ.add_argument("--register", action="store_true", help="決めた名前を台帳へ追記する")
+    p_succ.set_defaults(func=_cmd_succ)
     p_reg = sub.add_parser("register", help="名前を台帳へ追記する")
     p_reg.add_argument("name")
     p_reg.set_defaults(func=_cmd_register)

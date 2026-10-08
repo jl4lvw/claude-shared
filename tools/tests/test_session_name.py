@@ -194,3 +194,53 @@ def test_hook_survives_garbage_stdin(monkeypatch: pytest.MonkeyPatch, capsys: py
     monkeypatch.setattr(sys, "stdin", _Stdin("not json"))
     assert prompt.main() == 0
     assert capsys.readouterr().out == ""
+
+
+# ---------------------------------------------------------------- ハンドオフ先の名前 (succ)
+# 2026-10-05: `■リレコンTK-02` からのハンドオフが `■relay待ち受け 5` になった事故の再発防止。
+
+@pytest.mark.parametrize(
+    ("current", "expected"),
+    [
+        ("■リレコンTK-02", "■リレコンTK-03"),
+        ("■リレコンTK-09", "■リレコンTK-10"),
+        ("072★写真アルバム 4", "072★写真アルバム 5"),
+        ("■relay待ち受け 99", "■relay待ち受け 100"),
+        ("  ■リレコンTK-02  ", "■リレコンTK-03"),
+    ],
+)
+def test_successor_keeps_format(current: str, expected: str) -> None:
+    assert sn.successor(current, []) == expected
+
+
+def test_successor_skips_used() -> None:
+    assert sn.successor("■リレコンTK-02", ["■リレコンTK-03", "■リレコンTK-04"]) == "■リレコンTK-05"
+
+
+@pytest.mark.parametrize("current", ["■リレコン", "", "■リレコンTK-02x"])
+def test_successor_rejects_no_trailing_number(current: str) -> None:
+    with pytest.raises(ValueError):
+        sn.successor(current, [])
+
+
+def test_successor_rejects_too_long() -> None:
+    with pytest.raises(ValueError):
+        sn.successor("■" + "あ" * 38 + "9", [])  # 40 文字 → 41 文字になる
+
+
+def test_register_successor_appends_and_avoids_duplicates(tmp_path: Path) -> None:
+    assert sn.register_successor("■リレコンTK-02", tmp_path) == "■リレコンTK-03"
+    assert sn.register_successor("■リレコンTK-02", tmp_path) == "■リレコンTK-04"
+    assert sn.read_ledger(tmp_path) == ["■リレコンTK-03", "■リレコンTK-04"]
+
+
+def test_succ_counts_handoff_names(tmp_path: Path) -> None:
+    _handoff(tmp_path, "20261005_0900_001", "■リレコンTK-03")
+    assert sn.main(["--handoff-dir", str(tmp_path), "succ", "■リレコンTK-02"]) == 0
+    assert sn.read_ledger(tmp_path) == []  # --register なしでは書かない
+
+
+def test_succ_cli_exit_codes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert sn.main(["--handoff-dir", str(tmp_path), "succ", "■リレコンTK-02", "--register"]) == 0
+    assert capsys.readouterr().out.strip() == "■リレコンTK-03"
+    assert sn.main(["--handoff-dir", str(tmp_path), "succ", "番号なし"]) == 2

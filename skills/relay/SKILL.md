@@ -122,10 +122,8 @@ A端末では待ち受けセッション(`/m watch`。2026-09-30 に常駐GUI「
 自分宛の依頼が別名義の担当分野だったとき、**スレッドごと引き継がせる**。
 
 ```
-python relay_client.py forward 420 --to RC --note "Tシャツ業務はRC担当のため"
+python relay_client.py forward 420 --to RCS --note "Tシャツ業務はRCS担当のため"
 ```
-
-(2026-10-02: Tシャツ業務の専用名義 RCS は RC に統合されて停止した。RCS 宛ては relay がエラーで拒否する)
 
 起きること:
 
