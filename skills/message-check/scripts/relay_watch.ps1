@@ -539,6 +539,32 @@ while ((Get-Date) -lt $deadline) {
         Exit-Watch -Code 0
     }
 
+    # 人が対応する着信(human_only)でも起こす(2026-10-08)。summary の pending_count には
+    # 数えられないので、これが無いと寺下さん宛ての質問が来ても見張りは黙ったままになる
+    # (#3100 を見落とした)。処理済みID(handled)より新しい human_only だけを対象にし、
+    # 通知後の ack で handled が進めば二度と起こさない(ack は human_only を未処理扱いしない)
+    if ([int]$sum.human_only_count -gt 0) {
+        $humanRows = @(Get-PendingMeta | Where-Object { $_.human_only -and [int]$_.id -gt $handled })
+        if ($humanRows.Count -gt 0) {
+            $hmax = ($humanRows | ForEach-Object { [int]$_.id } | Measure-Object -Maximum).Maximum
+            Send-Presence -Pending $humanRows.Count | Out-Null
+            Write-WatchLog "人が対応する着信: $($humanRows.Count) 件 max_id=$hmax (handled=$handled) -> 終了して起こす"
+            ''
+            "=== 運用者本人が答える着信(human_only)が $($humanRows.Count) 件あります(最大ID #$hmax・処理済み #$handled まで) ==="
+            foreach ($row in $humanRows) {
+                $line = Format-PendingLine -Row $row
+                Write-WatchLog "  $line"
+                '  ' + $line
+            }
+            ''
+            "AI は答えません。処理役に全文を読み取りで取らせ(claim・返信・done はしない)、運用者に QUESTION で伝えてください。"
+            $hostExe = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh' } else { 'powershell' }
+            "運用者へ伝えたら次を実行してから、また見張りを起動してください(ID は必ず付ける):"
+            "  $hostExe -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Mode ack -AckId $hmax"
+            Exit-Watch -Code 0
+        }
+    }
+
     # 動いていることが分かるように10分ごとだけ記録する(30秒ごとに書くと読めなくなる)
     if (((Get-Date) - $idleLogAt).TotalMinutes -ge 10) {
         Write-WatchLog ("idle: pending={0} max_id={1} handled={2} (除外: 人{3}/予約{4}/引継{5}/相槌{6})" -f `
