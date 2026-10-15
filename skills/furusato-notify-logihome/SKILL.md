@@ -1,10 +1,10 @@
 ---
 name: furusato-notify-logihome
-description: 呉市ふるさと納税(ロジホーム=kure.lhcloud.jp)の「未出荷」一覧を取得し、GoQで伝票番号がある行を照合して、出荷完了通知CSVを作り、ロジホームの出荷データ取込の確認画面まで進める標準手順。未出荷の件数の推移も記録する。052.卸売注文GoQ統合を使う。確定ボタンは人が押す。
+description: 呉市ふるさと納税(ロジホーム=kure.lhcloud.jp)の「未出荷」一覧を取得し、GoQで伝票番号がある行を照合して、出荷完了通知CSVを作り、ロジホームの出荷データ取込の確認画面まで進め、通知後にGoQのステータスを「処理済」へ移す標準手順。未出荷の件数の推移も記録する。052.卸売注文GoQ統合を使う。確定ボタンは人が押す。
 trigger: ふるさと納税の出荷通知・未出荷の確認・ロジホームへの出荷完了の取り込み・「通知していないものはないか」を、ロジホームの画面を正にして行うとき
 ---
 
-<!-- SKILL_VERSION: 2026-10-15_210000 -->
+<!-- SKILL_VERSION: 2026-10-16_100000 -->
 
 # furusato-notify-logihome — ロジホームの未出荷を正にして出荷完了通知を送る
 
@@ -76,6 +76,27 @@ python tools/notify_plan_from_logihome.py --mark reports/シフトプラス出�
 
 **2026-10-15 の実績(流れの確認)**: 未出荷 106件(20:36) → 6件(21:40)(−100)。通知した82受注すべてが消えたのを確かめて印を付けた。
 sent/ のあられ(registered)140件は、全件に通知済みの印がある。残る6行は新しい寄附でGoQ未登録(あられ4行[うち2行 `_OLD`]・あられ以外2行)。
+
+### 6. GoQのステータスを「処理済」へ移す(出荷済みの案件・2026-10-16 追加)
+
+通知が済んだ(`shiftplus_reported_at` あり)・GoQに12桁の伝票番号がある受注は、GoQで「**作業中5**」のまま残る。これを「**処理済**」へ移す
+(GoQの選択肢の表記は**「処理済」**。「処理済み」ではない)。受注伝票のみ(`slip_only`)は、すでに「処理済」なので対象外。
+
+```bash
+python tools/goq_move_status.py plan --out reports/goq_move_status_plan_<日付>.json          # GoQを読むだけ(約10分)
+python tools/goq_move_status.py apply <plan.json>                                            # 何を書くかの表示だけ
+python tools/goq_move_status.py apply <plan.json> --limit 1 --apply                          # 1件だけ書く → GoQを読み直して確認
+python tools/goq_move_status.py apply <plan.json> --only-single --apply                      # 単品の受注(これまでと同じ動き)
+python tools/goq_move_status.py apply <plan.json> --allow-changed-prefix dealorderdatesel_deal --apply   # 同梱で複数品の受注
+```
+
+- **計画をアーティファクトで見せて承認を得てから** `--apply`(GoQへの本番書き込み)。**先に1件→読み直し→残り**
+- 1件ごとに `set_order_fields.py` が、今の状態・画面の受注番号を確かめてから書き、保存の前後で全入力欄を比べて、ステータス以外が変われば止める(変更前の値は `047.../probe_out/` に退避)
+- **同梱で複数品の受注は、「処理済」にすると商品行の「発注日」に当日が自動で入る**(GoQの動き。単品では起きない)。2026-10-16 はユーザーが了承して
+  `--allow-changed-prefix dealorderdatesel_deal` で許した。了承なしに許さない(ツールは止まる)
+- 受注番号が合わないときは、同梱で統合された受注の元の番号(`<番号>-1`,`-2`…)を順に試す
+- 終わったら、全件をGoQで読み直し、「処理済」になっていること・伝票番号と配送会社が変わっていないことを確かめる
+- 実績(2026-10-16): 82受注(単品71+同梱11)を移動。読み直しで処理済82・異常0
 
 ## 罠
 
