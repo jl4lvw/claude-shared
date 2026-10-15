@@ -96,6 +96,7 @@ description: スキル早見表(リファレンス)。「今どのスキルを�
 | `sgw-settlement` / `sgw-purchase` | 049 SGW精算・仕入請求管理 |
 | `import-cost` | 輸入・仕入原価の蓄積 |
 | `generate-merumaga` | 楽天市場メルマガ(自衛隊テーマ)の自動生成 |
+| `receipt` | 091 領収書発行(A4縦1枚PDF・角印つき・最終デザイン確定済み)。「領収書発行」で呼ぶ。GoQ受注番号から金額取得・日付+連番の台帳・再発行は枝番・発行予約は `091.領収書発行/reservations.md` |
 
 ---
 
