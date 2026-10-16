@@ -3,7 +3,7 @@ name: stock-alert
 description: mc で Eストアー「在庫切れのお知らせ」や GoQ「連携在庫マイナス」の通知が出たときに、その商品の在庫状態を商品画像・商品名・品番つきのアーティファクト(Reply needed)で表示し、寺下さんが現物を確認して決めた数を、承認後に goq-stock-set で反映する手順。「在庫切れ確認」「在庫切れの通知」「在庫復活」でも使う。
 ---
 
-<!-- SKILL_VERSION: 2026-10-15_190000 -->
+<!-- SKILL_VERSION: 2026-10-16_101500 -->
 
 # stock-alert — 在庫切れ通知 → 商品状態の表示 → 在庫復活
 
@@ -37,6 +37,24 @@ python C:/ClaudeCode/.claude/skills/stock-alert/stock_alert_artifact.py --code G
 `Artifact` ツールで `stock_alert.html` を公開する(`icon`: `list` など)。**見出しは「在庫切れ 要対応(Reply needed)」**。
 寺下さんの返信の形: `G0884 5個` / `G2222 見送り`。数が書かれていない・曖昧なものは聞き返す(推測で数を決めない)。
 
+### 2.5 現物確認の紙(A4 PDF)を出す(寺下さんが「印刷したい」「現物確認表」と言ったとき)
+
+2026-10-16 寺下さん決定の形(案A)。**この形を変えない**(変えるときは見本をアーティファクトで見せて承認を得る)。
+
+```bash
+C:/Users/user/AppData/Local/Programs/Python/Python312/python.exe C:/ClaudeCode/.claude/skills/stock-alert/stock_check_sheet.py --out-dir C:/tmp-ai/stockcheck --copy
+# 品番を指定: --code G2210 --code U0147 ...(無指定なら通知の要対応を拾う)
+```
+
+- 商品ごとに「写真・商品名・品番」+ バリエーション(サイズ)ごとの行。列は **サイズ・種類 / Eストア在庫 / 現物の数(手書き)** の3つだけ
+- **Eストア在庫が0のセルだけ薄い赤**。「受注あり」「通知」の印・楽天在庫列・見送り欄は出さない(寺下さん指示)
+- **1商品(バリエーション全体)はページをまたがない。** 入りきらなければ商品ごと次のページへ送る。高さはブラウザで実測して割り付ける(推測しない)
+- Eストアの見せかけの行(「以前のサイズデータ」「備考欄に記載」。在庫9995等)は載せない
+- 出力は PDF(A4・PDF内ページ数が想定と違えば exit 1)・印刷用HTML・アーティファクト用HTML。`--copy` で **Downloads と NAS(`\192.168.1.50\共有スペース\寺下\999.一時ファイル`)の両方**へコピーし、サイズ一致まで確認する
+- **印刷を頼まれたら、このPCの標準プリンターで印刷する**(2026-10-16 寺下さん指示。プリンター名は聞かない)。標準プリンターは `Get-CimInstance Win32_Printer | ? Default` で確かめて報告に書く。手順: PDF を PyMuPDF で 200dpi の PNG にし、`powershell -NoProfile -ExecutionPolicy Bypass -File C:/ClaudeCode/.claude/skills/stock-alert/print_pages.ps1 -Files "p1.png,p2.png"` で送る(`-Preview` を付けると印刷せずに処理だけ確認できる。ファイルはカンマ区切りの1つの文字列で渡す)。送信後に `Get-PrintJob` でジョブが出たことを確かめる。**頼まれていないのに印刷しない**
+- 在庫・写真は実行時に読み直した値。作成時刻が見出しに入る。PDF を開き直したときは時刻を見て古い紙を使わない
+- 寺下さんが紙に書いた数は、`品番 サイズ ○個` の形で返信してもらい、次の手順 3 へ進む(サイズ別の数は、サイズごとに確認表へ並べる)
+
 ### 3. 数が決まったら、変更の一覧を出して承認を得る
 
 `goq-stock-set` の手順に従う(商品名特定 → 確認表 → 実行。**確認表の承認前に変更しない**):
@@ -57,6 +75,7 @@ python C:/ClaudeCode/.claude/skills/stock-alert/stock_alert_artifact.py --code G
 
 ## 関連
 
+- `stock_check_sheet.py` — 現物確認表(A4 PDF)の生成(上の 2.5)
 - `900.ClaudeCode/mail-search/scripts/stock_notices.py` — 通知の集約・023の現在庫の引き直し(このスキルの材料)
 - `goq-stock-set` — GoQ在庫連携画面での在庫数の変更(承認後に実行)
 - `mail-triage` — 在庫通知を別スクリプトで見る方針の元(2026-09-08/09)

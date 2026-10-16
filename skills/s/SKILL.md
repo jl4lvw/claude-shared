@@ -91,6 +91,8 @@ description: スキル早見表(リファレンス)。「今どのスキルを�
 |---|---|
 | `bo` | BoxQR(在庫管理アプリ)の発注予定をAPIで取得し、7S・FBA在庫と並べてTシャツ等の発注を進める(017・書き込みは承認後) |
 | `goq-stock-set` | 023商品マスタDB経由でGoQ在庫連携画面の総在庫数を書き換え |
+| `mall-product-update` | 既存商品の掲載を023・楽天・Eストア・Yahoo!でそろえて変更(商品名・説明・写真の変更/サイズ・色の追加)。比較アーティファクト→承認→Codex確認→順に書込→読み戻し |
+| `line-notify` | LINEグループへ、状況を説明した画像(A4・1枚)の公開URLつきで通知(ボットFujiWorks名義・全文承認後に送信)。楽天メルマガ配信など |
 | `wholesale-order` | 052卸売注文(産経デジタル等)のGoQ登録 |
 | `fbm-sync` | 022 Amazon在庫PWAのFBA→FBM在庫同期 |
 | `sgw-settlement` / `sgw-purchase` | 049 SGW精算・仕入請求管理 |
