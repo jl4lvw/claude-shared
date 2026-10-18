@@ -42,6 +42,13 @@ python C:/ClaudeCode/.claude/skills/line-notify/make_status_image.py <spec.json>
 
 作ったら**画像を自分で開いて確認**する(見切れ・誤字・数字)。
 
+**在庫・数量などの一覧を載せるとき(2026-10-17 迷彩服上下で確定した形)**:
+- 数字の並びは文章にせず**表**にする。`sections` に `grid`(`header`・`widths`・`rows`・`stop_rows`)を使い、商品の写真を左に置く(`image`)。**写真は SKU 単位ではなく商品単位で1枚**。`stop_rows` の行は薄い赤(販売停止など)。例は `make_status_image.py` の `grid` 部分と、実例 `.mail_drafts/camo_stock_spec.json`
+- **「何から何に変更」は書かない。** 今どうなっているか(現状)だけを載せる(寺下さん指示)
+- 商品写真は自社サイトの商品画像(026 の `image_url`、例 `https://seifukunofuji.co.jp/pic-labo/u0147a.jpg`)をスクラッチ領域へ取って使う。ローカルに無い
+- 文面は短く。「〜時点の報告をもとに」のような理由の一文は入れない。日付は**見出しの1回だけ**、語は「**更新**」(「現在」だと元からそうだったように読める)。例: `【迷彩服上下】ネット在庫の状況(10/17更新)`
+- 文面を変えたら承認コードは作り直し(旧コードは使えない)。画像を作り直したら URL も作り直し、**古い公開ファイルは `public-share/` から削除**する
+
 ### 2. 画像を公開してURLを作る
 
 ```bash
@@ -110,6 +117,14 @@ python C:/ClaudeCode/.claude/skills/line-notify/line_notify.py send --group <グ
 グループID が残る(`090.../data/line_agent.db` の `line_tasks.group_id` / `line_messages.target`)。
 `line_notify.py register --name 名前 --group-id Cxxxx` で登録する。**グループの人たちに見える投稿になるので、試験投稿は事前にひとこと断る**。
 (`@FujiWorks 〜` の投稿は 090 に「受付 #N」の依頼として登録される点に注意。不要なら取り下げる)
+
+### 「あのトークに送りたい」と言われたら: 090 の受付記録で探す(2026-10-17)
+
+ボットが入っているのに一覧(`line_notify.py groups`)に出ないグループは、`090.LINE業務指示エージェント/data/line_agent.db` の
+`line_messages`(`target` がグループID・`text`・`received_at` はミリ秒)に**発言が残っている**。
+寺下さんが「この投稿があったグループ」と言うときは、その文言で `line_messages.text` を `LIKE` 検索し(**読み取り専用**で開く)、
+`target` を取り出して `register` する。**グループIDは画面・会話に出さない**(先頭5文字までなら可)。
+名前は寺下さんに聞く(例: 「制服のフジ（役員）」を 2026-10-17 に登録)。登録しただけではグループには何も見えない。
 
 ## やってはいけないこと
 

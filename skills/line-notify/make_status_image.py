@@ -81,6 +81,32 @@ def render(spec: dict, out: Path) -> None:
                     d.text((M + 205, y + 10 + i * 28), ln, font=font(23), fill=INK)
                 y += h + 12
             y += 18
+        if "grid" in sec:
+            g = sec["grid"]
+            hdr, rows, widths = g["header"], g["rows"], g["widths"]
+            stop = set(g.get("stop_rows", []))
+            rh, img_w = 46, 230
+            block = max(img_w if sec.get("image") else 0, rh * (len(rows) + 1))
+            need(block + 20)
+            gx = M
+            if sec.get("image"):
+                t = Image.open(sec["image"]).convert("RGB")
+                t.thumbnail((img_w, img_w))
+                im.paste(t, (M, y))
+                d.rectangle([M - 1, y - 1, M + t.width, y + t.height], outline=LINE, width=2)
+                gx = M + img_w + 24
+            xs = [gx]
+            for w in widths:
+                xs.append(xs[-1] + w)
+            d.rectangle([gx, y, xs[-1], y + rh], fill=(226, 232, 241), outline=LINE, width=2)
+            for j, h_ in enumerate(hdr):
+                d.text((xs[j] + 12, y + 9), h_, font=font(24, True), fill=INK)
+            for i, row in enumerate(rows):
+                ry = y + rh * (i + 1)
+                d.rectangle([gx, ry, xs[-1], ry + rh], fill=REDBG if i in stop else "white", outline=LINE, width=2)
+                for j, cell in enumerate(row):
+                    d.text((xs[j] + 12, ry + 9), str(cell), font=font(24, j == 0), fill=RED if i in stop and j == len(row) - 1 else INK)
+            y += block + 28
         if "before" in sec:
             need(160)
             f26 = font(26)
@@ -123,7 +149,7 @@ def render(spec: dict, out: Path) -> None:
                 nx = M + len(imgs) * (cw + 20) + 10
                 for i, ln in enumerate(sec["note"]):
                     d.text((nx, y + i * 34), ln, font=font(22, i == 0), fill=RED if i == 0 else INK)
-                y += cw + 30
+                y += cw + 60
             else:
                 y += cw + 60
         if "lines" in sec:

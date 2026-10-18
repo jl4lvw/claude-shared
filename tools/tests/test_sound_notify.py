@@ -207,11 +207,16 @@ def test_debounce_is_per_session_and_kind(tmp_path: Path, monkeypatch) -> None:
 def run_main(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(sn, "STAMP", tmp_path / "stamp.json")
     monkeypatch.setattr(sn, "EVENT_LOG", tmp_path / "events")
+    monkeypatch.setattr(sn.rules, "DECISIONS", tmp_path / "decisions.jsonl")
+    monkeypatch.setattr(sn, "spawn_sync", lambda *a, **k: None)   # 実際に同期プロセスを起動しない
+    monkeypatch.setattr(sn, "SYNC_STAMP", tmp_path / "sync.json")
+    monkeypatch.setattr(sn.rules, "RULES_LOCAL", tmp_path / "none_local.json")
+    monkeypatch.setattr(sn.rules, "RULES_CACHE", tmp_path / "none_cache.json")
     for name in ("CLAUDE_NOTIFY", "CLAUDE_SOUND_NOTIFY", "CLAUDE_PHONE_NOTIFY"):
         monkeypatch.delenv(name, raising=False)
     calls: dict[str, list] = {"play": [], "phone": [], "log": []}
-    monkeypatch.setattr(sn, "play", lambda *a: calls["play"].append(a))
-    monkeypatch.setattr(sn, "phone", lambda *a: calls["phone"].append(a))
+    monkeypatch.setattr(sn, "play", lambda *a, **k: calls["play"].append(a))
+    monkeypatch.setattr(sn, "phone", lambda *a, **k: calls["phone"].append(a))
     monkeypatch.setattr(sn, "phone_enabled", lambda: True)
     monkeypatch.setattr(sn, "log", lambda m: calls["log"].append(m))
 
@@ -232,7 +237,7 @@ def test_main_plays_and_notifies_phone(run_main) -> None:
 
 
 def test_main_phone_still_runs_when_sound_start_fails(run_main, monkeypatch) -> None:
-    def boom(*a):
+    def boom(*a, **k):
         raise FileNotFoundError("powershell")
 
     monkeypatch.setattr(sn, "play", boom)
@@ -242,7 +247,7 @@ def test_main_phone_still_runs_when_sound_start_fails(run_main, monkeypatch) -> 
 
 
 def test_main_sound_still_runs_when_phone_start_fails(run_main, monkeypatch) -> None:
-    def boom(*a):
+    def boom(*a, **k):
         raise OSError("x")
 
     monkeypatch.setattr(sn, "phone", boom)

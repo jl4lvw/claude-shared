@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -36,7 +35,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from notify_common import LOG, SID_RE, claim, log, phone_enabled, powershell_exe  # noqa: E402
+import notify_rules as rules  # noqa: E402
+from notify_common import LOCAL, LOG, SID_RE, claim, log, phone_enabled, powershell_exe  # noqa: E402
 
 DEBOUNCE_SEC = 15.0
 STAMP = Path(tempfile.gettempdir()) / "claude_sound_notify.stamp.json"
@@ -89,6 +89,9 @@ PHONE_KIND = {
 }
 
 PHONE_SCRIPT = Path(__file__).resolve().with_name("lw_phone_notify.py")
+SYNC_SCRIPT = Path(__file__).resolve().with_name("notify_sync.py")
+SYNC_STAMP = Path(tempfile.gettempdir()) / "claude_notify_sync.stamp.json"
+FETCH_INTERVAL_SEC = 300.0  # ルールの取得は端末ごとに 5 分に 1 回まで
 BOARD_DIR = Path(os.environ.get("CLAUDE_HQ_DIR", r"C:/ClaudeCode/.hq")) / "board"
 
 
@@ -101,42 +104,24 @@ def read_event() -> dict:
     return ev if isinstance(ev, dict) else {}
 
 
-# --- Stop: 質問・依頼で終わったか ---------------------------------------------------
-# 末尾の文だけを見る。本文中の「承認」や「?」では反応しない (hq_board の緩い判定は流用しない)
-_CLOSERS = r"[」』）)\]\"'*_`\s。．.!！]*"
-_JP_REQUEST_RE = re.compile(
-    r"(?:[?？]|ください|下さい|お願いします|お願いいたします|お願い致します|ですか|ますか|でしょうか|ませんか"
-    r"|いかがでしょうか|よろしいですか|ほしいです|欲しいです)" + _CLOSERS + r"$"
-)
-_EN_REQUEST_RE = re.compile(
-    r"\b(?:please|kindly|let me know|could you|can you|would you|which|what|how should)\b[^.!?\n]*[.!]?\s*$",
-    re.IGNORECASE,
-)
-_OPTIONS_AFTER_QUESTION_RE = re.compile(
-    r"[?？][^\n]*\n(?:[ \t]*(?:[-*・]|\d+[.．、)])[ \t]*\S[^\n]*\n?){2,}\s*$"
-)
+# --- Stop: 質問・依頼で終わったか (判定は notify_rules.evaluate。語句は画面/設定で編集する) ---------
+def stop_decision(ev: dict, cfg: dict | None = None) -> rules.Decision:
+    """Stop 時の最終応答が「ユーザーの対応待ち」か。本文はペイロード(last_assistant_message)だけから取る。
 
-
-def looks_like_request(text: str) -> bool:
-    tail = text.rstrip()[-400:]
-    if not tail:
-        return False
-    return bool(
-        _JP_REQUEST_RE.search(tail) or _EN_REQUEST_RE.search(tail) or _OPTIONS_AFTER_QUESTION_RE.search(tail)
-    )
-
-
-def ends_with_question(ev: dict) -> bool:
-    """Stop 時の最終応答が質問・依頼で終わっているか。
-
-    本文は Stop のペイロード(last_assistant_message)だけから取る。別のフック(hq_board)にも
-    transcript にも依存しない (TK で hq_board が無くても動き、古い質問を拾わない)。
-    他のフックが処理を続けさせている最中(stop_hook_active)は、人の対応待ちではないので鳴らさない。
+    他のフック(hq_board)にも transcript にも依存しない。他の Stop フックが処理を続けさせている最中
+    (stop_hook_active)は、人の対応待ちではないので鳴らさない。
     """
     if ev.get("stop_hook_active"):
-        return False
-    text = ev.get("last_assistant_message")
-    return isinstance(text, str) and looks_like_request(text)
+        return rules.Decision(False, "他のStopフック処理中")
+    return rules.evaluate(ev.get("last_assistant_message"), cfg)
+
+
+def looks_like_request(text: str, cfg: dict | None = None) -> bool:
+    return rules.evaluate(text, cfg).notify
+
+
+def ends_with_question(ev: dict, cfg: dict | None = None) -> bool:
+    return stop_decision(ev, cfg).notify
 
 
 def log_event(ev: dict) -> None:
@@ -157,7 +142,7 @@ def log_event(ev: dict) -> None:
         pass
 
 
-def classify(ev: dict) -> tuple[str, str] | None:
+def classify(ev: dict, cfg: dict | None = None) -> tuple[str, str] | None:
     """(効果音名, 文言) を返す。対象外なら None。
 
     AskUserQuestion は PreToolUse に加えて PermissionRequest / Notification(permission_prompt)
@@ -165,7 +150,7 @@ def classify(ev: dict) -> tuple[str, str] | None:
     """
     name = ev.get("hook_event_name", "")
     if name == "Stop":
-        return (CHIME_Q, REPLY) if ends_with_question(ev) else None
+        return (CHIME_Q, REPLY) if stop_decision(ev, cfg).notify else None
     if name == "PermissionRequest":
         if ev.get("tool_name") == "AskUserQuestion":
             return CHIME_Q, QUESTION
@@ -238,9 +223,29 @@ def phone(text: str, ev: dict) -> None:
     _spawn([sys.executable, "-X", "utf8", str(PHONE_SCRIPT), kind, session_title(ev), sid])
 
 
-def play(sound: str, text: str) -> None:
+def spawn_sync(upload: bool, fetch: bool) -> None:
+    """041 とのルール取得・判定の送信を、切り離したプロセスで行う (フックは待たない)。"""
+    if not (upload or fetch):
+        return
+    args = [sys.executable, "-X", "utf8", str(SYNC_SCRIPT)]
+    if fetch:
+        args.append("--fetch")
+    if upload:
+        args.append("--upload")
+    _spawn(args)
+
+
+def sync_if_needed(recorded_decision: bool) -> None:
+    """判定を記録したときは送信、ルールの取得は 5 分ごと。リレーの設定が無い端末では何もしない。"""
+    if not (LOCAL / ".env").exists():
+        return
+    fetch_due = claim(SYNC_STAMP, "fetch", FETCH_INTERVAL_SEC) is not None
+    spawn_sync(upload=recorded_decision, fetch=fetch_due)
+
+
+def play(sound: str, text: str, speech: bool = True) -> None:
     speak = ""
-    if os.environ.get("CLAUDE_SOUND_SPEAK", "1") != "0":
+    if speech and os.environ.get("CLAUDE_SOUND_SPEAK", "1") != "0":
         speak = PS_SPEAK.replace("__TEXT__", SPEECH_EN.get(text, "Attention"))
     cmd = PS_TEMPLATE.replace("__SOUND__", sound).replace("__SPEAK__", speak)
     _spawn([powershell_exe(), "-NoProfile", "-NonInteractive", "-Command", cmd])
@@ -252,25 +257,42 @@ def main() -> int:
     try:
         ev = read_event()
         log_event(ev)
-        hit = classify(ev)
+        cfg = rules.load_config()
+        sid = str(ev.get("session_id", ""))
+        recorded = False
+        if ev.get("hook_event_name") == "Stop":
+            # 本文に依存する判定は、通知しなかった理由も含めて記録する (画面①の取りこぼし確認の元データ)
+            decision = stop_decision(ev, cfg)
+            text_body = ev.get("last_assistant_message")
+            if isinstance(text_body, str) and text_body.strip():
+                rules.record_decision(sid, session_title(ev), text_body, decision)
+                recorded = True
+            hit = (CHIME_Q, REPLY) if decision.notify else None
+        else:
+            hit = classify(ev, cfg)
     except Exception as exc:
         log(f"sound_notify 判定失敗: {type(exc).__name__}: {str(exc)[:200]}")
         return 0
+    try:
+        sync_if_needed(recorded)
+    except Exception as exc:
+        log(f"同期の起動失敗: {type(exc).__name__}: {str(exc)[:200]}")
     if not hit:
         return 0
     chime, text = hit
-    sid = str(ev.get("session_id", ""))
+    kind = PHONE_KIND[text]
+    title = session_title(ev)
 
     # 音とスマホは独立した例外境界で実行する (片方の失敗でもう片方を止めない)
     if os.environ.get("CLAUDE_SOUND_NOTIFY") != "0":
         try:
-            if not debounced(sid, text):
-                play(chime, text)
+            if rules.channel_allowed(cfg, kind, "sound", sid, title) and not debounced(sid, text):
+                play(chime, text, speech=rules.channel_allowed(cfg, kind, "speech", sid, title))
         except Exception as exc:
             log(f"音の起動失敗: {type(exc).__name__}: {str(exc)[:200]}")
     if os.environ.get("CLAUDE_PHONE_NOTIFY") != "0":
         try:
-            if phone_enabled():
+            if phone_enabled() and rules.channel_allowed(cfg, kind, "phone", sid, title):
                 phone(text, ev)
         except Exception as exc:
             log(f"スマホ通知の起動失敗: {type(exc).__name__}: {str(exc)[:200]}")
