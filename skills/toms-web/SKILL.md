@@ -15,7 +15,7 @@ Claude in Chrome で TOMS の WEB 注文に取り込み、**注文内容確認�
 
 ## ★ 標準の手順: 端末 A のスクリプトに依頼する（2026-10-18 以降）
 
-TOMS の注文は、**端末 A の Playwright スクリプト `C:\ClaudeCode\900.ClaudeCode	oms_order\`（A の README.md 参照）が標準**。TK の Chrome 拡張での 1 画面ずつの操作（下の「手順」）は遅いので、**A が使えないときの予備**にする。確認画面まで約 1 分。
+TOMS の注文は、**端末 A の Playwright スクリプト `C:\ClaudeCode\900.ClaudeCode\toms_order\`（A の README.md 参照）が標準**。TK の Chrome 拡張での 1 画面ずつの操作（下の「手順」）は遅いので、**A が使えないときの予備**にする。確認画面まで約 1 分。
 
 **TK がやること（質問は最初にまとめて聞く。ルールは下の「質問は最初にまとめて聞く」のとおり）:**
 1. 納品先（セブンエス／ステッチハウス／サスガワークス／アドプロセス）・運送会社・出荷予定日・早割貯打を、最初に聞く（依頼文で決まっていれば聞かない）。
@@ -29,7 +29,7 @@ TOMS の注文は、**端末 A の Playwright スクリプト `C:\ClaudeCode\900
 3. A が enqueue → run。確認画面で、決定的な検査と DeepSeek の判定を行い、OK なら**運用者の LINE に「注文確定／中止」のボタン**が届く（最大 15 分待つ）。**確定を押すのは運用者**（A のスクリプトの確定関数が、押された後に 1 回だけ押す）。
    - 自動確定（`mode=auto_confirm`）は、A の設定で許可されるまで無効（今は無効）。
    - 上限: 500 枚・税込 200,000 円。同じ CSV+出荷予定日+納品先は 24 時間以内に確定しない。
-4. A の結果（`status`: confirmed／stopped／needs_human／failed／cart_not_empty）を待つ（relay の返信）。`confirmed` なら、確定・照合一致。注文詳細の全文は NAS `999.一時ファイル	oms-result_YYYYMMDD_HHMM.txt`。
+4. A の結果（`status`: confirmed／stopped／needs_human／failed／cart_not_empty）を待つ（relay の返信）。`confirmed` なら、確定・照合一致。注文詳細の全文は NAS `999.一時ファイル\toms-result_YYYYMMDD_HHMM.txt`。
 5. **納品先がセブンエスの無地T（ECM 依頼）なら、確定後に入荷登録の申請**（下の「入荷登録の申請」）。
 
 **TK の Claude は、どの場合も「注文確定」を押さない**（A のスクリプトの確定関数だけが、運用者の承認後に押す）。
