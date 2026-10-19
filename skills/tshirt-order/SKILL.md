@@ -178,6 +178,7 @@ JSON 形式:
 ```python
 import sys, importlib.util
 sys.stdout.reconfigure(encoding='utf-8')
+sys.path.insert(0, r'BASE')   # 必須: generate_order.py が toms_order_no を import する（無いと ModuleNotFoundError）
 spec = importlib.util.spec_from_file_location('go', r'BASE\generate_order.py')
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
@@ -212,8 +213,11 @@ pdf_path = mod.generate_pdf(order, supplier='モリフロッキー')  # or 'ア�
 発注日, 件名, 商品種別, 品名・カラー, サイズ内訳, 合計数量, 業者名,
 出荷元, 受注番号, 依頼書ファイル名,
 Tシャツ原価(税抜), Tシャツ原価(税込), プリント代(税抜), プリント代(税込), 合計原価(税込),
-共有フォルダ, メール送付日, 備考
+メール送付日, 共有フォルダ, 備考
 ```
+
+- **列順は実ファイルどおり「合計原価(税込), メール送付日, 共有フォルダ, 備考」**（18列。2026-10-19 実ファイルで確認）。列名で位置を引いて書く
+- 追記はメール送信前（承認後）に行い、メール送付日は空欄。**送信を check_sent.py で確認したら、その行のメール送付日を埋める**
 
 - 業者名: 選択した業者（モリフロッキー or アドプロセス）
 - Tシャツ原価: トムス注文金額を入力してもらう（税抜・税込）
@@ -354,6 +358,10 @@ BASE\mail_history\YYYYMMDD_件名_業者名.txt
 
 ### Step 7.7: Thunderbird で発注メールの下書きを自動起動（アドプロセスのみ・EML方式）
 
+> **2026-10-19 以降は `/mail-send` の手順に従う**（CLAUDE.md の決まり）: 送る内容（宛先・件名・添付・本文全文）を**アーティファクトで見せて承認を得てから**、
+> `C:\ClaudeCode\.claude\skills\mail-send\mail_draft.py --to … --cc … --subject … --body-file … --attach <PDF>` で EML を作って開く。
+> 下の `compose_via_eml()` は旧手順（同じ結果になるが、承認前に開かないこと）。
+
 `BASE\open_thunderbird.py` の `compose_via_eml()` を呼び出す。EMLファイルを書き出してThunderbirdで開く方式（Thunderbirdの既定署名と干渉しない）。
 
 ```python
@@ -420,6 +428,33 @@ BASE\current_order\
 ✅ 台帳記録: C:\ClaudeCode\017.Tシャツなどの注文\history.csv
 ✅ メール本文: C:\ClaudeCode\017.Tシャツなどの注文\mail_history\YYYYMMDD_件名_業者名.txt
 ```
+
+## アドプロセス発注の標準の流れ（2026-10-19 G2193 IPD2026 グレー150枚で確定）
+
+1. lookup と **Sheets の G番号の全行**（色別・数量・状態）を表で本文に貼って前回を見せる。左袖などのプリントの有無を確認（G2193 は左袖あり）
+2. 色ごとのサイズ別数量を聞き、**確認表→承認**（修正が来たら再確認）。同時に1回の AskUserQuestion で、素材・カラー／納期（送信日+10日以上）／**TOMS 出荷予定日**（土曜不可）を聞く。運送会社ヤマト・早割ありは既定
+3. TOMS CSV（`toms_csv/YYYYMMDD_<G番号><件名>_TOMS.csv`、cp932・CRLF、備考20字以内）と申請 JSON を作り、`current_order/` を入れ替えてフルパスを表示
+4. toms_order: `cli.py enqueue <申請.json> --csv <CSV>` → `cli.py run` を**バックグラウンド**で（確定は運用者の LINE 承認）。終わったら `cli.py show <ID>` と `data/results/toms-result_*.txt` で受注番号・出荷予定日・金額を取る
+   - **プリント色が本体色と違う案件（例: 本体ネイビー×グレープリント）では、DeepSeek 判定が「備考はグレーなのにカラーはネイビー」と誤って NG を出す**。本体色が CSV どおりなら問題ない。運用者にその旨を一言添える
+5. 位置の文言と指示書画像（流用するか）を確認。発注書を作る:
+   - 位置が長いときは `"左胸・背中・左袖" + chr(10) + "（グレー・前回と同じ）"` のように**改行**する（1行だと右の「納期」欄にはみ出す）
+   - 指示書の写真が別の色の版なら、サイズ表の行名を「グレープリント」、位置に「（グレー・…）」と書き、本文にも「添付図の写真はオレンジ版ですが、グレーでお願いします」と書く
+   - **generate_pdf は同名ファイルを上書きせず `_2.pdf` を作る**。作り直したら古い版を消して正式名に戻し、Downloads・NAS・current_order も上書きする
+6. メール本文は **`last_mail/アドプロセス.txt`（直近の実送信）の書式に合わせる**（`####`・「位置・色数：」・「受注番号」・AI 断り書きなし）。4段階チェック（DeepSeek は採否を判断）→ **メールと書き込む記録（history.csv・Sheets・product_db）を1つのアーティファクトで見せて承認**
+7. 承認後: history.csv 追記（`.bak`）→ Sheets 追記して読み戻し → `build_product_db.py` → mail_history 保存 → `mail_draft.py` で開く
+8. 「送った」→ `check_sent.py "<件名の一部>" --to adpro` で確認 → history.csv のメール送付日を記入、`last_mail/アドプロセス.txt` を今回の本文に更新（どちらも `.bak`）
+9. 社内報告を頼まれたら、別途 `/line-notify` で「制服のフジ情報共有」へ（画像は make_status_image の grid でサイズ表＋商品写真＋手配の内容表。**金額・受注番号は載せない**）
+   - **本文はこの形（2026-10-19 運用者が手直しして確定）**。先頭に入荷予定日、品名は「品名(G番号)」、カラーは「本体色・プリント色」、最後に画像 URL だけ。出荷経路の説明文・「詳しくは画像を…」は書かない:
+     ```
+     ◆10/29(木)　入荷予定
+
+     TシャツIPD2026(G2193) の手配が完了しました。
+     ネイビー・グレープリント 150枚
+     S15 / M35 / L35 / LL35 / 3L30
+
+     https://pub.sfuji.f5.si/g2193-xxxxxxxx.png
+     ```
+   - 入荷予定日はアドプロセスの納期（発注書の「納期」）。「◆」と日付の後の空白は全角。**本文ファイルには URL を書かない**（`line_notify.py` が `--url` の URL を末尾に改行つきで足す。本文ファイルの最後を改行で終えると、URL の前に空行が1つ入って上の形になる）
 
 ## current_order クリアルール（絶対）
 
@@ -538,7 +573,7 @@ Tシャツ1件の発注作業で「完了です」と報告する前に、以下
 1. 発注書PDF生成（`generate_order.py`）
 2. `history.csv` 追記
 3. Google Sheets追記（`sheets_append.py`、対象＝アドプロセス／奥田染色のみ）
-4. product_db.json 再生成（`C:/Users/user/build_product_db.py`）— 新規品番・新規テンプレート・fold_instructions更新時は必須
+4. product_db.json 再生成（`C:/ClaudeCode/017.Tシャツなどの注文/build_product_db.py`）— 新規品番・新規テンプレート・fold_instructions更新時は必須
 5. メール文面作成・送信前4段階チェック
 
 ## 注意事項
@@ -888,7 +923,7 @@ Mob：080-1925-1031
 ## 場所
 
 - DB本体: `BASE/product_db.json`
-- ビルドスクリプト: `C:/Users/user/build_product_db.py`（Sheets + ローカルファイルから再生成）
+- ビルドスクリプト: `C:/ClaudeCode/017.Tシャツなどの注文/build_product_db.py`（Sheets + ローカルファイルから再生成）
 - ルックアップ: `BASE/lookup_product.py`
 
 ## ユーザーが商品コードを入力したときの動作（必須）
@@ -966,7 +1001,7 @@ print(lp.format_report('G1822', info))
 
 ## DBの更新タイミング
 
-以下の作業の **直後** に `python C:/Users/user/build_product_db.py` を実行して再生成する：
+以下の作業の **直後** に `python C:/ClaudeCode/017.Tシャツなどの注文/build_product_db.py` を実行して再生成する：
 
 - 新規発注（Sheets追記後）
 - 新規テンプレート画像作成
@@ -1155,6 +1190,42 @@ BASE/orders/YYYYMMDD_刺繍依頼書_<案件名>_<業者>.pdf
 - 送信はユーザー手動（Claudeは下書きまで）。
 
 <!-- MAIL_DRAFT_GUIDE_END -->
+
+
+<!-- HIUP_CURRY -->
+
+# ハイアップ 江田島海自カレー注文フロー（写真つき注文書を LINE で送る）
+
+- 宛先: 合同会社ハイアップ（窓口 若狭倫一様）。メール・FAX は使わない。**LINE グループ「ハイアップ注文」**へボット FujiWorks から送る（10/19 登録）
+- 品目（4種・写真は `ハイアップ/images/`）: シーフード（幹部候補生学校・seafood.jpg）／キーマ（第1術科学校・keema.jpg）／オイスター（標的機整備隊・oyster.jpg）／ポーク（呉弾薬整備補給所・pork.jpg）
+- 江田島カレーは中元本店での取り扱いを 10/19 に終了 → ハイアップから仕入れる
+- 過去の注文: `ハイアップ/order_history/*.txt`（まずこれを読んで前回の数量・書き方を表で見せる）
+
+## 手順（2026-10-19 確定）
+
+1. `order_history/` を読み、前回の注文を**表で本文に貼って**から数量を聞く
+2. `make_photo_order_form.py` で注文書 PDF を作る（宛先「合同会社ハイアップ 御中」・納品先「制服のフジ本店」・単位「個」・単価なし）
+   - **数量が全部同じなら `highlight_first=False`**（1行目だけオレンジにしない）
+   - 納期を言われたら `delivery="2026年10月22日（木）まで"` のように入れる（言われなければ出さない）
+   - 出力 `orders/YYYYMMDD_注文書_ハイアップ_江田島海自カレー.pdf`。Downloads・NAS にコピーし、画像で中身を確認してから SendUserFile で見せる
+3. 送るときは**別途 `/line-notify` を呼ぶ**（スキル連鎖はしない）。画像は **PDF の1ページ目をそのまま 150dpi PNG** にして公開（`print_request_send.py finish <PDF> --png` で作れる）。送信先は「ハイアップ注文」
+   - 本文は**あいさつ・名乗りを入れない**（「お疲れさまです。制服のフジ 寺下です。」は不要と運用者指示）。例:
+     ```
+     江田島海自カレーの注文をお送りします。
+
+     シーフード 20個
+     キーマ 20個
+     オイスター 20個
+     ポーク 20個
+     合計 80個
+
+     納品先：制服のフジ本店
+     金曜日に江田島へ持っていくため、10/21（水）か10/22（木）に納品いただけると助かります。
+     注文書は画像のとおりです。よろしくお願いいたします。
+     ```
+4. 1対1トークで承認 → 送信 → `ハイアップ/order_history/YYYYMMDD_ハイアップ.txt` に記録（注文内容・納品先・納期・送付方法・承認コード・メッセージID・画像URL）。運用者が「届いた」と言ったら「届いたことの確認」を追記
+
+<!-- HIUP_CURRY_END -->
 
 
 <!-- OFFICESHIN_CURRY -->
@@ -1439,6 +1510,22 @@ data = {
 - `orders/YYYYMMDD_社内プリント依頼書_件名.pdf`
 - 確認用に Downloads にもコピーする（全成果物ルール）
 
+## 標準の流れ（2026-10-19 G2175 で確定）
+
+「G番号の○○を L 2・3L 1、社内手配・DTF で依頼書を作って」と言われたら:
+
+1. `lookup_product.py` と商品ページ（`seifukunofuji.co.jp/SHOP/<G番号>.html`）で商品名・素材・カラーを調べる
+2. **確認は1回にまとめる**（AskUserQuestion）: 素材・カラー（商品ページの表記を候補に）／プリント位置・色数（既製品は「前回と同じ（商品ページ参照）」が既定。写真から決めない）／納期。**空欄でよいと言われた項目は空欄**（G2175 では納期・備考を空欄にした）
+3. 参考画像を取る: `python print_request_send.py ref G2175`（→ `社内プリント/_ref/g2175_1.jpg`。`ref_image` に渡す）
+4. `make_print_request.generate(data)` で PDF を作り、画像にして中身を確認してから、運用者に見せる（SendUserFile）。直しは data を変えて作り直す（同じファイル名で上書き）
+5. OK が出たら印刷と LINE 用画像:
+   ```bash
+   python C:/ClaudeCode/017.Tシャツなどの注文/print_request_send.py finish "<PDF>" --print --png
+   ```
+   - Downloads・NAS 999.一時ファイル へコピー、**ステッチハウスのプリンター `[ステッチハウス]CP400d-トレイ1`** へ 1 部、PDF をそのまま PNG（150dpi）に
+   - 印刷は運用者が「印刷して」と言ったときだけ
+6. LINE「フジ＆ステッチ」へ知らせるときは、**別途 `/line-notify` を呼ぶ**（スキルから自動で呼ばない）。画像は手順5の PNG を**そのまま**公開して使う（`make_status_image.py` で別様式を作らない。運用者指示・フォーマット統一）。本文は短く（商品名・カラー・素材・サイズ別数量・合計・プリント方法・位置、依頼書は印刷済み）
+
 ## 呼び出し例
 
 ```python
@@ -1509,7 +1596,20 @@ FAXで発注する取引先向けのFAX注文書PDF生成＋送出（第1段階�
 BASE/make_fax_order.py
   - generate_fax(to, items, date_str=None, person=None) -> PDF
   - send_fax_pdf(pdf_path, printer=FAX_PRINTER) -> FAXプリンタへ印刷（Canon送信ダイアログが開く）
+BASE/fax_order_list.py <業者フォルダ名>   # 注文一覧（品目 × 過去の注文数）を Markdown の表で出す
 ```
+
+## Step 0: 注文一覧を出してから数量を聞く（2026-10-19 運用者指示）
+
+「〇〇に注文する」「一覧を作って」と言われたら、まず次を実行する（対象: 中元本店・武田製網・高田帽子店など `catalog.json` と `fax_history/` がある業者）。
+
+```bash
+python C:/ClaudeCode/017.Tシャツなどの注文/fax_order_list.py 中元本店
+```
+
+- 出力された表を **返答の本文にそのまま貼る**。そのうえで「番号と数量」を聞く。**表を貼らずに、質問のボックスやボタンだけで数量を聞かない**（Remote Control などボックスが表示されない画面では、表がまったく見えなくなる。10/19 に実際に起きた）
+- 取り扱いを終えた品目は `catalog.json` の items から外す（例: 中元本店の江田島カレー4種は 10/19 に終了）。過去の履歴にある品目で `catalog.json` に無いものは「（カタログ外）」と表示される
+- 業者名を聞き違えたら確認する（「中村本店」「中本本店」＝中元本店）
 
 ## PDF書式（サンプル Downloads/fax.pdf 準拠）
 
@@ -1534,6 +1634,14 @@ BASE/make_fax_order.py
 2. open_pdf() でビューワーに表示 → 人が内容を目視確認
 3. **ユーザーが明示的に「FAX送信して」と言ったときのみ** send_fax_pdf() を実行
    - SumatraPDF (-print-to) でFAXプリンタへ印刷 → Canon送信ダイアログで番号入力して送信
+
+4. 送信後、`fax_history/<YYYYMMDD>_<業者>.txt`（送信日・宛先・注文内容・発注書）を作り、複合機の送信履歴で確認して記録する:
+   ```bash
+   python C:/ClaudeCode/017.Tシャツなどの注文/fax_sent_check.py 中元本店 --record   # 今日の分。--date YYYY-MM-DD で過去日
+   ```
+   - 読み取り専用（画面を出さないブラウザで送信ジョブの履歴を読むだけ）。ログインは履歴閲覧用アカウント（keyring `mfp_c3930:joblog`。保存は運用者が `mfp_setup_credentials.py`）
+   - 宛先は番号（0p255854）でもアドレス帳の名前（# ﾅｶﾓﾄﾎﾝﾃﾝ）でも照合する。「Windows (SMB)/FAX転送」は受信の転送なので数えない
+   - 見つからない（exit 1）ときは「送れていない可能性」として運用者に伝える。`--list` で直近の FAX 送信を一覧できる
 
 - send_fax_pdf() を黙って呼ばない（standard = open_pdf のみ）。参照: memory feedback_fax_open_not_send
 - 印刷は SumatraPDF 使用（PDFハンドラの PrintTo verb は不可だった）
@@ -1564,7 +1672,8 @@ fx.send_fax_pdf(pdf)   # FAXプリンタへ → Canonダイアログで番号入
 BASE/check_sent.py
 
 ## 参照先（seifukunofuji.com の実ホスト）
-- Thunderbird送信済み: %APPDATA%/Thunderbird/Profiles/pkp5qr2g.default-release/ImapMail/**mail48.onamae.ne.jp/Sent-1**
+- Thunderbird送信済み: 端末A=%APPDATA%/Thunderbird/Profiles/099w3lj0.default-release/ImapMail/**mail48.onamae.ne.jp/Sent**（TK=pkp5qr2g…/Sent-1）。check_sent.py が存在する方を自動で選ぶ（10/19）
+- 使い方: `python check_sent.py "件名の一部" --to 宛先の一部`（例: `"レトルトカレー注文 2026.10.19" --to shineda`）
 - ※terashita@seifukunofuji.com は onamae(mail48) ホスティング。Mail/mail.seifukunofuji.com/Sent は旧POPで対象外
 
 ## 使い方

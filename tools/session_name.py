@@ -54,6 +54,7 @@ TERMINALS: dict[str, str] = {
     "ryzen7-5800x": "■",  # TK
     "pc-ff11": "●",  # TS
     "desktop-slas6b0": "▲",  # TH (2026-10-01 運用者決定。PC 名は TH 端末の hostname 返信による)
+    "desktop-45042md": "▼",  # TY (運用者のノートパソコン。2026-10-15 運用者決定。PC 名は TY のテスト送信 #3262 による)
 }
 SYMBOLS = "".join(TERMINALS.values())
 

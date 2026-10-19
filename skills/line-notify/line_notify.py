@@ -7,8 +7,9 @@ pub.sfuji.f5.si(自社の公開置き場・ログイン不要・一覧なし)に
   python line_notify.py groups                                  登録済みのグループ名を一覧
   python line_notify.py register --name 名前 --group-id Cxxxx   グループIDを登録(090/data/line_groups.json・Git対象外)
   python line_notify.py publish 画像.png [--prefix g0964]        画像を公開置き場へ置き、URLを表示(送信はしない)
-  python line_notify.py request-approval --group 名前 --text-file 本文.txt --url URL
+  python line_notify.py request-approval --group 名前 --text-file 本文.txt --url URL [--mention 表示名]
         → 寺下さんの1対1トークへ、下書き(全文・画像・「送信する」「中止」ボタン)を送り、確認コードを表示
+        --mention: 先頭に「@表示名 さん」のメンションを付ける(send にも同じ値を渡す。相手も承認の照合に入る)
   python line_notify.py wait-approval コード [--timeout-min 30]
         → LINE での返信を待つ。終了コード 0=承認 / 10=中止 / 11=修正の依頼(本文を表示) / 12=期限切れ / 13=時間切れ(まだ待ち)
   python line_notify.py send --group 名前 --text-file 本文.txt --url URL --approval コード            確認のみ
@@ -131,8 +132,30 @@ def build_text(a: argparse.Namespace) -> str:
     return text
 
 
-def sha_of(group: str, text: str) -> str:
-    return hashlib.sha256((group + "\n" + text).encode("utf-8")).hexdigest()[:8]
+def sha_of(group: str, text: str, mention_id: str = "") -> str:
+    """承認の照合用。メンションの相手も含める(承認後に相手を変えたら送れない)。メンションなしは従来と同じ値"""
+    key = group + "\n" + text + (f"\nmention:{mention_id}" if mention_id else "")
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:8]
+
+
+def resolve_mention(name: str) -> tuple[str, str]:
+    """090 の発言者名簿(roster.json)から表示名でユーザーIDを引く。完全一致で1人に決まるときだけ"""
+    if not name:
+        return "", ""
+    roster = json.loads((AGENT / "data" / "roster.json").read_text(encoding="utf-8"))
+    hits = [uid for uid, v in roster.items() if (v or {}).get("displayName") == name]
+    if len(hits) != 1:
+        raise SystemExit(f"メンションの相手「{name}」が名簿で{len(hits)}件です(表示名の完全一致で1件だけ必要)")
+    return hits[0], name
+
+
+def text_message(text: str, mention_id: str = "") -> dict:
+    """送るメッセージ。メンションありは textV2 で先頭に「@名前 さん」を付ける({ } は文字として扱う)"""
+    if not mention_id:
+        return {"type": "text", "text": text}
+    body = text.replace("{", "{{").replace("}", "}}")
+    return {"type": "textV2", "text": "{m} さん\n" + body,
+            "substitution": {"m": {"type": "mention", "mentionee": {"type": "user", "userId": mention_id}}}}
 
 
 def open_db():
@@ -147,7 +170,8 @@ def cmd_request_approval(a: argparse.Namespace) -> None:
     if a.group not in groups:
         raise SystemExit(f"グループ「{a.group}」は未登録です。登録済み: {list(groups)}")
     text = build_text(a)
-    sha = sha_of(a.group, text)
+    mention_id, mention_name = resolve_mention(a.mention)
+    sha = sha_of(a.group, text, mention_id)
     approvals, db = open_db()
     from api import settings  # noqa: E402
     users = sorted(settings.LINE_AGENT_AUTHORIZED_USER_IDS)
@@ -158,7 +182,7 @@ def cmd_request_approval(a: argparse.Namespace) -> None:
     with db.write_tx() as conn:
         approvals.create(conn, code=code, sha=sha, target_name=a.group, user_id=user, ttl_ms=TTL_HOURS * 3600 * 1000)
     draft = (f"【LINE送信前の確認】 コード {code}\n送信先: {a.group}\n(下の全文を、ボット名義でそのまま送ります)\n"
-             f"────────────\n{text}")
+             f"────────────\n{f'@{mention_name} さん(メンション)' + chr(10) if mention_name else ''}{text}")
     msgs: list[dict] = [{"type": "text", "text": draft[:4900]}]
     if a.url:
         local = PUBLIC / a.url.rsplit("/", 1)[-1]
@@ -210,8 +234,10 @@ def cmd_send(a: argparse.Namespace) -> None:
     if a.group not in groups:
         raise SystemExit(f"グループ「{a.group}」は未登録です。登録済み: {list(groups)}")
     text = build_text(a)
-    sha = sha_of(a.group, text)
-    print(f"送信先: {a.group}\n--- 送る全文 ---\n{text}\n--- 本文sha: {sha} ---")
+    mention_id, mention_name = resolve_mention(a.mention)
+    sha = sha_of(a.group, text, mention_id)
+    head = f"@{mention_name} さん(メンション)\n" if mention_name else ""
+    print(f"送信先: {a.group}\n--- 送る全文 ---\n{head}{text}\n--- 本文sha: {sha} ---")
     row = read_approval(a.approval)
     problems = []
     if row["status"] != "approved":
@@ -236,7 +262,7 @@ def cmd_send(a: argparse.Namespace) -> None:
         if cur.rowcount != 1:
             raise SystemExit("この承認はすでに使われたか、状態が変わりました")
     try:
-        ids = push_messages(groups[a.group], [{"type": "text", "text": text}])
+        ids = push_messages(groups[a.group], [text_message(text, mention_id)])
     except SystemExit:
         with db.write_tx() as conn:
             conn.execute("UPDATE line_approvals SET status='approved', used_at=NULL WHERE code=?", (a.approval,))
@@ -264,6 +290,7 @@ def main() -> None:
     q.add_argument("--group", required=True)
     q.add_argument("--text-file", required=True)
     q.add_argument("--url", default="")
+    q.add_argument("--mention", default="", help="メンションする相手の表示名(090 の roster.json と完全一致)")
     q.set_defaults(fn=cmd_request_approval)
     w = sub.add_parser("wait-approval")
     w.add_argument("code")
@@ -275,6 +302,7 @@ def main() -> None:
     s.add_argument("--text-file", required=True)
     s.add_argument("--url", default="")
     s.add_argument("--approval", required=True)
+    s.add_argument("--mention", default="", help="request-approval と同じ値を指定する")
     s.add_argument("--send", action="store_true")
     s.set_defaults(fn=cmd_send)
     a = ap.parse_args()
