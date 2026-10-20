@@ -1346,6 +1346,37 @@ xlsx, info = oo.generate_order_xlsx(
 
 <!-- SUPPLIER_PARTNUM_MAP_END -->
 
+<!-- CAB_ORDER_SECTION -->
+
+# CAB（C.A.B. Web）への素材注文（端末 A の cab_order・2026-10-20 以降）
+
+パーカー等（521xxx）の素材は **`C:\ClaudeCode\900.ClaudeCode\cab_order\`** で注文する（README.md・docs/cab_screens.md）。
+承認は見張り役（a_browser_watch）経由の LINE WORKS「実行」1 回で、照合がすべて合えば**注文確定まで進む**。
+Claude はログインも確定ボタンも押さない（申請を積んで結果を読むだけ）。初回実績: G1004 150 枚 → 受注No.72291189。
+
+1. 色・サイズ・数量を確認表で承認 → CAB CSV を作る（`cab_csv/YYYYMMDD_CAB発注_<G番号><件名>.csv`。cp932・CRLF・
+   ヘッダー `品番(5桁),カラーコード,サイズコード,数量`。例 521301 ブラック=02 / ミックスグレー=06、サイズ M=03 L=04 LL(XL)=05 3L(XXL)=06 4L(XXXL)=07）
+2. 申請 JSON（同じフォルダ）を作り enqueue。**フルパスと cd を必ず書く**:
+   ```json
+   {"source":"A","csv_path":"C:\\ClaudeCode\\017.Tシャツなどの注文\\cab_csv\\YYYYMMDD_CAB発注_....csv","destination":"アドプロセス","carrier":"sagawa","discount":"hayawari",
+    "ship_date":"earliest","remarks":"<案件名・全角20字以内>","expect":{"lines":10,"total_qty":150,"max_total_yen":330000}}
+   ```
+   ```bash
+   cd /d C:\ClaudeCode\900.ClaudeCode && python -m cab_order.cli enqueue "<申請.json のフルパス>"
+   ```
+   - 既定: 佐川・早割（2%）・最短出荷日・伝票備考は案件名。`max_total_yen` は下見の金額に余裕を持たせた税抜上限（必須）
+3. **積んだら運用者の返事を待たずに、裏で結果を見張る**（`a_browser_data/watch.log` に `cab id=N 実行終了` が出るまで
+   `run_in_background` で待つ）→ `python -m cab_order.cli show N` で結果を読む
+   - `confirmed`: 受注No.・出荷予定日・金額（税抜・割引）を取り、発注書（出荷欄に「受注番号：No.xxxxxxxx　出荷:M月D日」）へ進む
+   - 受注No. が取れなかった（`needs_human` / 完了画面で確定・受注No. なし）: `python -m cab_order.cli verify <申請番号>` で
+     「確認だけの申請」を積む（取引履歴を注文日・伝票備考で検索して読むだけ。注文はしない）
+   - `stopped`: 理由（problems）と保存した HTML（`a_browser_data/shots/*.html`）を読んで直し、テストしてから積み直す。
+     **カートに今回と完全に同じ中身が残っていれば、次の申請は取り込みを飛ばしてカートから進む**（違えば cart_not_empty で止まる。アカウントは社内共用）
+4. この後はアドプロセス発注の標準の流れ（発注書 PDF → メール → history.csv・Sheets・product_db → 下書き → 送信確認）。
+   **承認後の工程は最後まで止めずに続ける**
+
+<!-- CAB_ORDER_SECTION_END -->
+
 
 <!-- CHINA_PO_SECTION -->
 

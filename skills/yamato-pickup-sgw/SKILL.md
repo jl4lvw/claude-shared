@@ -1,6 +1,6 @@
 ---
 name: yamato-pickup-sgw
-description: ヤマトビジネスメンバーズ（bmypage.kuronekoyamato.co.jp）で、サスガワークス合同会社（山口県岩国市）の集荷依頼を出す。通常は端末 A の yamato_pickup（Playwright）へ申請を積み、運用者が LINE で「実行」を押すと、履歴で二重依頼を確認→入力→確認画面の照合→「確定」まで自動で進む。Claude は申請を積んで結果を読むだけ。「ヤマトの集荷依頼」「集荷を頼んで」「クロネコ集荷」「/yamato-pickup-sgw」で使う。
+description: ヤマトビジネスメンバーズ（bmypage.kuronekoyamato.co.jp）で、サスガワークス合同会社（山口県岩国市）の集荷依頼を出す。通常は端末 A の yamato_pickup（Playwright）へ申請を積み、運用者が LINE WORKS で「実行」を押すと、履歴で二重依頼を確認→入力→確認画面の照合→「確定」まで自動で進む。Claude は申請を積んで結果を読むだけ。「ヤマトの集荷依頼」「集荷を頼んで」「クロネコ集荷」「/yamato-pickup-sgw」で使う。
 ---
 
 # /yamato-pickup-sgw — ヤマト 集荷依頼（サスガワークス・岩国）
@@ -12,8 +12,8 @@ description: ヤマトビジネスメンバーズ（bmypage.kuronekoyamato.co.jp
 
 ## 🚨 絶対ルール
 
-1. **Claude は `run` を起動しない。** パスワードでログインする実行は、見張り役（a_browser_watch）が運用者の LINE「実行」の後に起動する。Claude がやるのは `enqueue` と `show` だけ。承認の表（line_approvals）に書き込まない。
-2. **確定の承認は LINE の「実行」1 回**（2026-10-20 運用者決定）。積む前に、申請の中身（日付・時間帯・荷物・ご要望）を表でユーザーに見せて確かめる。
+1. **Claude は `run` を起動しない。** パスワードでログインする実行は、見張り役（a_browser_watch）が運用者の LINE WORKS「実行」の後に起動する。Claude がやるのは `enqueue` と `show` だけ。承認の表（line_approvals）に書き込まない。
+2. **確定の承認は LINE WORKS の「実行」1 回**（2026-10-20 運用者決定）。積む前に、申請の中身（日付・時間帯・荷物・ご要望）を表でユーザーに見せて確かめる。
 3. 集荷希望日・時間帯・荷物の種類と個数は、ユーザーの指示にあるものだけを入れる。足りなければ推測せず質問する。合計 30 個まで・本日〜6 日後まで。
 4. 集荷先は画面の既定値（サスガワークス合同会社・岩国市）のまま。ツールは違っていたら止める。住所変更はしない。
 5. **同じ集荷希望日の追加**は、ユーザーが「別便で追加」と明示したときだけ `"allow_same_day": true` と `"extra_reason": "<理由>"` を付ける（運用者決定）。既存の依頼の個数を変えたい・大口は自動にしていない（ヤマトの画面で人が行うと伝える）。
@@ -30,8 +30,9 @@ description: ヤマトビジネスメンバーズ（bmypage.kuronekoyamato.co.jp
    ```
    - `time_slot`: `none`=指定なし / `am`=13時まで / `14-16` / `16-18` / `17-1830`
    - `items`: `takkyu` 宅急便・`cool`・`time_service`・`compact` 宅急便コンパクト・`nekopos` ネコポス/ゆうパケット・`yumail` ゆうメール(冊)・`other`
-3. `C:\ClaudeCode\900.ClaudeCode` で `python -m yamato_pickup.cli enqueue <json>` → `queued` と申請番号を伝え、「LINE（FujiWorks）に届く承認の『実行』を押してください」と頼む（返答の最後に `【対応待ち】`）。`rejected` なら理由をそのまま伝える。
-4. 押されたと聞いたら（または後で）`python -m yamato_pickup.cli show <id>` の `status`・`result.detail` を伝える:
+3. `C:\ClaudeCode\900.ClaudeCode` で `python -m yamato_pickup.cli enqueue <json>` → `queued` と申請番号を伝え、見張り役の記録（`a_browser_data\watch.log`）に「yamato id=N 承認を依頼」が出たことを確かめて、「LINE WORKS に届く承認の『実行』を押してください。押されしだい自動で続けます」と伝える。`rejected` なら理由をそのまま伝える。
+   **「押したら知らせて」と頼まない**（2026-10-20 ユーザー指示）。続けて Bash の `run_in_background` で待ち受けを始める（watch.log に `yamato id=N 実行終了` か `yamato id=N 終了` が出るまで 15 秒ごと・最大 2 時間 15 分）。終わりの通知が来たら手順 4 へ自動で進む。
+4. 待ち受けが終わったら `python -m yamato_pickup.cli show <id>` の `status`・`result.detail` を伝える:
    - `confirmed`: 日付・時間帯・荷物・（あれば）受付番号。`warnings`・`note` があれば必ず添える
    - `stopped` / `failed`: 確定していない。`detail`・`problems` を伝える
    - `needs_human`: 依頼が入ったか分からない。**再申請しない**（ルール 6）
