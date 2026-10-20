@@ -88,3 +88,11 @@ def test_japanese_turn_passes(tmp_path, monkeypatch):
 
 def test_broken_input_never_blocks(tmp_path):
     assert g.judge({"last_assistant_message": None, "transcript_path": str(tmp_path / "none.jsonl")}) is None
+
+
+def test_photo_only_message_is_the_start_of_the_turn(tmp_path):
+    """写真だけの発言も運用者の発言として、そこから後だけを見る(2026-10-20 前のターンの英語まで拾った取り違え)。"""
+    photo = {"type": "user", "message": {"content": [{"type": "image", "source": {"type": "base64", "data": ""}}]}}
+    meta = {"type": "user", "isMeta": True, "message": {"content": "Stop hook feedback: ..."}}
+    tp = write_transcript(tmp_path / "t.jsonl", [asst(ENGLISH[1]), meta, photo, asst("次の画面です。")])
+    assert g.turn_texts(tp) == ["次の画面です。"]

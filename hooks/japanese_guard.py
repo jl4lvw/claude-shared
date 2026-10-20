@@ -94,8 +94,8 @@ def turn_texts(transcript: Path, tail_bytes: int = TAIL_BYTES) -> list[str]:
             continue
         if e.get("type") == "user":
             blocks = _blocks(e)
-            if any(isinstance(b, dict) and b.get("type") == "text" and not e.get("isMeta") for b in blocks):
-                break  # 運用者の発言(ツールの結果だけの行は飛ばす)
+            if any(isinstance(b, dict) and b.get("type") in ("text", "image") and not e.get("isMeta") for b in blocks):
+                break  # 運用者の発言(写真だけの発言も含む。ツールの結果だけの行は飛ばす。2026-10-20: 写真を数えず前のターンまで拾った)
             continue
         if e.get("type") == "assistant":
             for b in reversed(_blocks(e)):
