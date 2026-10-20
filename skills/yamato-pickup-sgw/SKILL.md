@@ -21,7 +21,7 @@ description: ヤマトビジネスメンバーズ（bmypage.kuronekoyamato.co.jp
 6. **needs_human・確かめていない記録があるときは再申請しない。** 運用者に「履歴・再依頼」を見てもらい、A の窓で `resolve <id> yes|no` を実行してもらう（Claude は実行しない）。
 7. ID・パスワードは扱わない。keyring への登録は運用者が `python -m a_browser_common.setup_credentials yamato` で行う。
 
-## A. 通常: 申請を積む → LINE で承認 → 結果を読む
+## A. 通常: 申請を積む → LINE WORKS で承認 → 結果を読む
 
 1. 指示から申請を作り、表で見せて確かめる（当日なら「締切を過ぎると翌日扱いの恐れ」を添える）。
 2. `C:/tmp-ai/yamato_pickup_<日時>.json` に書く（UTF-8）:

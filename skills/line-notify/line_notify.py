@@ -17,6 +17,11 @@ pub.sfuji.f5.si(自社の公開置き場・ログイン不要・一覧なし)に
 
 **グループへの送信は、1対1トークで承認された全文だけ**。承認コードが「承認済み」で、送信先・本文(sha8)が承認時と
 一致し、未使用で、期限内のときだけ送れる。送ったら承認コードは使用済みになり、二度は使えない。
+
+2026-10-20 運用者決定: 下書きの承認(1対1トーク)は LINE WORKS の承認トークへ送る(グループへの投稿は LINE のまま)。
+本文は全文(長ければ分けて送る)・画像は URL の文字で出す。押されたボタン・文の返信(「OK コード」「中止 コード」
+「コード 直してほしいこと」)の判定は端末 A の見張り役(a_browser_watch)が行うので、見張り役が止まっていれば承認を求めない。
+LINE で承認する送り方も残してあり、900.ClaudeCode/a_browser_common/approval_channel.py で戻せる。
 """
 from __future__ import annotations
 
@@ -39,6 +44,9 @@ AGENT = ROOT / "090.LINE業務指示エージェント"
 GROUPS = AGENT / "data" / "line_groups.json"
 LOG = AGENT / "data" / "line_notify_log.jsonl"
 PUBLIC = ROOT / "900.ClaudeCode" / "public-share"
+if str(ROOT / "900.ClaudeCode") not in sys.path:  # 承認の出し先の切り替えと LINE WORKS の送り方(a_browser_common)
+    sys.path.insert(0, str(ROOT / "900.ClaudeCode"))
+from a_browser_common import approval_channel, lineworks  # noqa: E402
 PUBLIC_HOST = "pub.sfuji.f5.si"
 MAX_LEN = 4500
 TTL_HOURS = 24
@@ -172,6 +180,9 @@ def cmd_request_approval(a: argparse.Namespace) -> None:
     text = build_text(a)
     mention_id, mention_name = resolve_mention(a.mention)
     sha = sha_of(a.group, text, mention_id)
+    if approval_channel.use_lineworks():
+        request_approval_lw(a, text, sha, mention_name)
+        return
     approvals, db = open_db()
     from api import settings  # noqa: E402
     users = sorted(settings.LINE_AGENT_AUTHORIZED_USER_IDS)
@@ -195,6 +206,46 @@ def cmd_request_approval(a: argparse.Namespace) -> None:
                                   {"type": "postback", "label": "中止", "data": f"ap|reject|{code}|{sha}", "displayText": "中止"}]}})
     ids = push_messages(user, msgs)
     print(f"寺下さんの1対1トークへ下書きを送りました(メッセージID {len(ids)}件)")
+    print(f"確認コード: {code}  本文sha: {sha}  有効期限: {TTL_HOURS}時間")
+    print(f"次: python line_notify.py wait-approval {code}")
+
+
+def request_approval_lw(a: argparse.Namespace, text: str, sha: str, mention_name: str) -> None:
+    """LINE WORKS の承認トークへ、下書きの全文(長ければ分けて)と画像の URL、「送信する」「中止」ボタンを送る。
+    承認者は lw:<userId>。送れなかったら作った承認待ちを中止にしてから止める(押せない承認を残さない)。"""
+    try:
+        lineworks.require_watcher()
+        room = lineworks.load_room()
+    except lineworks.NotifyError as exc:
+        raise SystemExit(f"承認を求められません: {exc}")
+    approvals, db = open_db()
+    code = "".join(secrets.choice(CODE_CHARS) for _ in range(6))
+    with db.write_tx() as conn:  # 全文を送り終えるまでは「送信中」(承認できない。2026-10-20 レビュー)
+        approvals.create(conn, code=code, sha=sha, target_name=a.group, user_id=room.approver, ttl_ms=TTL_HOURS * 3600 * 1000)
+        conn.execute("UPDATE line_approvals SET status=? WHERE code=?", (lineworks.SENDING, code))
+    mention = f"@{mention_name} さん(メンション)\n" if mention_name else ""
+    draft = "\n".join([
+        f"【LINE送信前の確認】 コード {code}",
+        f"送信先: LINE のグループ「{a.group}」",
+        "(下の全文を、LINE のボット FujiWorks の名義でそのまま送ります)",
+        "────────────",
+        mention + text,
+        "────────────",
+    ])
+    if a.url:
+        draft += f"\n画像: {a.url}"
+    draft += f"\n有効期限 {TTL_HOURS} 時間。{lineworks.reply_hint(code)}"
+    try:
+        parts = lineworks.send_text(draft, room=room)
+        lineworks.send_buttons(f"LINE の「{a.group}」へ、この内容で送信しますか?(コード {code})",
+                               lineworks.approval_buttons(code, sha, "送信する"), room=room)
+    except Exception as exc:  # noqa: BLE001
+        with db.write_tx() as conn:
+            lineworks.void_unsent(conn, code)
+        raise SystemExit(f"LINE WORKS へ下書きを送れません: {exc}")
+    with db.write_tx() as conn:
+        lineworks.open_for_approval(conn, code)
+    print(f"寺下さんの LINE WORKS の承認トークへ下書きを送りました({parts + 1} 通)")
     print(f"確認コード: {code}  本文sha: {sha}  有効期限: {TTL_HOURS}時間")
     print(f"次: python line_notify.py wait-approval {code}")
 

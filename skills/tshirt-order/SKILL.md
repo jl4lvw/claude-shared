@@ -434,7 +434,7 @@ BASE\current_order\
 1. lookup と **Sheets の G番号の全行**（色別・数量・状態）を表で本文に貼って前回を見せる。左袖などのプリントの有無を確認（G2193 は左袖あり）
 2. 色ごとのサイズ別数量を聞き、**確認表→承認**（修正が来たら再確認）。同時に1回の AskUserQuestion で、素材・カラー／納期（送信日+10日以上）／**TOMS 出荷予定日**（土曜不可）を聞く。運送会社ヤマト・早割ありは既定
 3. TOMS CSV（`toms_csv/YYYYMMDD_<G番号><件名>_TOMS.csv`、cp932・CRLF、備考20字以内）と申請 JSON を作り、`current_order/` を入れ替えてフルパスを表示
-4. toms_order: `cli.py enqueue <申請.json> --csv <CSV>` → `cli.py run` を**バックグラウンド**で（確定は運用者の LINE 承認）。終わったら `cli.py show <ID>` と `data/results/toms-result_*.txt` で受注番号・出荷予定日・金額を取る
+4. toms_order: `cli.py enqueue <申請.json> --csv <CSV>` → `cli.py run` を**バックグラウンド**で（確定は運用者の LINE WORKS 承認。2026-10-20〜）。終わったら `cli.py show <ID>` と `data/results/toms-result_*.txt` で受注番号・出荷予定日・金額を取る
    - **プリント色が本体色と違う案件（例: 本体ネイビー×グレープリント）では、DeepSeek 判定が「備考はグレーなのにカラーはネイビー」と誤って NG を出す**。本体色が CSV どおりなら問題ない。運用者にその旨を一言添える
 5. 位置の文言と指示書画像（流用するか）を確認。発注書を作る:
    - 位置が長いときは `"左胸・背中・左袖" + chr(10) + "（グレー・前回と同じ）"` のように**改行**する（1行だと右の「納期」欄にはみ出す）
@@ -1044,7 +1044,7 @@ print(lp.format_report('G1822', info))
 1. 業者選択
 2. 商品コード / 件名 / URL / 品番 / カラー / サイズ別数量 を確認
 3. **→ ここで即 TOMS CSV を作成し `current_order/` に配置**（PDFやメールはまだ作らない）
-4. toms_order で TOMS に取り込む（上の「TOMS への取り込み」。確定は運用者の LINE 承認）→ 確認画面・受注番号・出荷予定日を取得
+4. toms_order で TOMS に取り込む（上の「TOMS への取り込み」。確定は運用者の LINE WORKS 承認）→ 確認画面・受注番号・出荷予定日を取得
 5. **→ ここで初めて** 位置・色数 / 加工 / 納期 を聞き、PDF・メール・Sheets・履歴を作成
 6. Thunderbird起動 / 完了サマリ
 7. DB再生成（`build_product_db.py`）
