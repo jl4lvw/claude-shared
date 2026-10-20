@@ -121,6 +121,15 @@ _HOOKS: tuple[tuple[str, str | None, str, int, str], ...] = (
         "relay 待ち受けセッション専用: 見張りを止めたまま終わろうとしたら1回差し戻す",
     ),
     (
+        # 「この会話に書き込む言葉はすべて日本語」(CLAUDE.md 1 行目)を機械で守る。文字のルールだけでは、
+        # 英語の資料・ツールの出力・要約のあとに英語で返答する事故が止まらなかった(2026-10-20 運用者決定)
+        "Stop",
+        None,
+        ".claude/hooks/japanese_guard.py",
+        5,
+        "返答・途中の文が英語なら 1 回差し戻して日本語で書き直させる",
+    ),
+    (
         "PostToolUse",
         "Bash",
         ".claude/hooks/ai_telemetry.py",
