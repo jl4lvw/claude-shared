@@ -44,13 +44,15 @@ API（022・X-API-Key）は `python C:/ClaudeCode/094.Chrome自動操作/amzinv_
 
 | 段階 | やること | コマンド | 次へ進む条件 |
 |---|---|---|---|
-| 0 | ジョブを読む | `show NNN` | 状態が `amazon_wait`（`checking`/`stock_ng` なら止めて報告） |
+| 0 | ジョブを読む。表示された **`job_id` を控え、以後のコマンドは予約番号ではなく job_id で呼ぶ**（予約番号は 24 時間で再利用されるため） | `show NNN` | 状態が `amazon_wait`（`checking`/`stock_ng` なら止めて報告） |
 | 2 | TSV を `amzinv_client.py fetch NNN` で取り、下の「手順」1〜6 を**送信の手前まで**。出荷日はジョブの `ship_date` | `amazon-ok NNN --fc QCB3 --fee 1019 --plan wf… --skus 13 --units 103`／エラーなら `amazon-ng NNN "理由"` | `amazon_ready` |
 | 3 | 7S へ出荷指示 | `cmr NNN --amazon-ship-date YYYY-MM-DD`（いま Amazon に入っている出荷日） | 409 `ship_date_shifted` が返ったら、**Amazon のステップ2の出荷日を返ってきた日に直して**（入力＋カレンダー）もう一度 `cmr`。`cmr_sent` になったら `cmr-status NNN` を 30〜60 秒おきに（最大 10 分）見て `cmr_done` を待つ。`cmr_ng` なら止めて報告（Amazon は送らない） |
-| 4 | 承認の表を出す（発送元・FC・箱・出荷日〔ずらしたら「10/20→10/21（14:30 超）」〕・SKU/個数・費用・7S 注文番号）。**チャットで「送信して」と言われたら**押す → 納品番号を読む | `sent NNN --fba FBA… --fc QCB3 --fee 1019` | `amazon_sent` |
+| 4 | 承認の表を出す（発送元・FC・箱・出荷日〔ずらしたら「10/20→10/21（14:30 超）」〕・SKU/個数・費用・7S 注文番号）。**チャットで「送信して」と言われたら**、押す直前に `sending` で確保 → 押す → 納品番号を読む。押さずにやめたら `sending-release`（押したか分からないときは解除せず画面で確かめる） | `sending JOBID --approval "送信して" --fee 1019` → `sent JOBID --fba FBA… --fc QCB3 --fee 1019` | `amazon_sending` → `amazon_sent`（`sending` は `cmr_done` のときだけ通る＝7S 完了の機械的な確認。確保中は取り消せない） |
 | 5 | ラベル: 印刷画面で「ヤマト標準ラベル・A4・PDF」を取得（ダウンロードは許可を取る）→ Google ドライブ共有フォルダ `https://drive.google.com/drive/folders/1_yIT0K1gOYRWnhxPXGxaLlBjxWvyuJ2q` 直下に **`<納品番号>.pdf`** で Claude in Chrome からアップロード（同名があれば上げずに止める）→ 一覧で名前と大きさを確かめる → LINE で 7S へ連絡（`/line-notify`。文面: 納品番号・7S 注文番号・箱数/サイズ・出荷日・フォルダのリンク。7S のグループが `line_notify.py groups` に無ければ止めて「FujiWorks を 7S のグループに招待・登録してください」と依頼） | `done NNN --drive FBA….pdf --line <メッセージID>` | `done` |
 
 - **取り消し**: Amazon を送らないと決めたら、チャットで承認を得て `cancel NNN`（7S に登録済みなら 042 経由でコマースロボの注文もキャンセル）。「更新不可」で取り消せなかったら、7S の注文番号を伝えて人が 7S に連絡する。Amazon 送信後は取り消せない（Amazon 側はヤマトなら 3 時間以内に人が判断）
+- `cmr` が 409 を返す主な理由: `ship_date_shifted`（14:30 超で出荷日をずらした。Amazon を直して再実行）／`ship_date_mismatch`（Amazon の出荷日とジョブが違う）／`stock_short`（送る直前の 7S 在庫不足。止めて報告）／`csv_downloaded`（PWA で手動用 CSV が取られた。二重登録防止のため API では送らない。手動でアップロード済みか人に確かめる）／`fba_*`（FBA 状態）
+- `cmr_ng` でも 7S に注文が入っている場合（未引当など）は `cmr-status` で再照会できる（在庫が戻れば `cmr_done` になる）。**再送はしない**
 - `cmr` を 2 回呼んでも 7S に二重には入らない（ジョブ ID が冪等キー）。`cmr_sent` のまま応答が来ない・タイムアウトでも**送り直さない**（`cmr-status` で確かめる）
 - ジョブの 7S CSV は `GET /amz-inbound-jobs/<job_id>/csv`（PWA の「⬇ 7S CSV (控え)」）。API が使えないときだけ人が手動アップロードに使う
 
