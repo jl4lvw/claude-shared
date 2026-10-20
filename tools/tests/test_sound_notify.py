@@ -119,7 +119,8 @@ def test_speak_template_survives_braces() -> None:
     assert "Permission needed" in out and "__TEXT__" not in out
 
 
-def test_play_builds_real_command(monkeypatch) -> None:
+def test_play_builds_real_command(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(sn, "SOUND_DIR", tmp_path)  # WAV 無し = 従来の TTS
     got: list[list[str]] = []
     monkeypatch.setattr(sn, "_spawn", lambda args: got.append(args))
     monkeypatch.delenv("CLAUDE_SOUND_SPEAK", raising=False)
@@ -128,6 +129,53 @@ def test_play_builds_real_command(monkeypatch) -> None:
     assert exe.lower().endswith(("powershell.exe", "pwsh.exe", "powershell", "pwsh"))
     assert "Windows Exclamation.wav" in cmd and "Permission needed" in cmd
     assert "__" not in cmd and "Test-Path" in cmd  # 置換漏れなし・wav が無い端末のフォールバックあり
+
+
+def test_play_uses_wav_when_present(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("CLAUDE_SOUND_VOICE", "a")
+    (tmp_path / "a_reply.wav").write_bytes(b"x")
+    monkeypatch.setattr(sn, "SOUND_DIR", tmp_path)
+    monkeypatch.delenv("CLAUDE_SOUND_SPEAK", raising=False)
+    got: list[list[str]] = []
+    monkeypatch.setattr(sn, "_spawn", lambda args: got.append(args))
+    sn.play(sn.CHIME_Q, sn.REPLY)
+    cmd = got[0][-1]
+    assert "reply.wav" in cmd and "SoundPlayer" in cmd and "Speak" not in cmd and "__" not in cmd
+    sn.play(sn.CHIME_Q, sn.QUESTION)  # question.wav は無い -> TTS
+    assert "Question waiting" in got[1][-1]
+
+
+def test_voice_prefix_from_pc_name_and_override(monkeypatch, tmp_path: Path) -> None:
+    for pre in ("a", "tk", "zz"):
+        (tmp_path / f"{pre}_idle.wav").write_bytes(b"x")
+    monkeypatch.setattr(sn, "SOUND_DIR", tmp_path)
+    monkeypatch.delenv("CLAUDE_SOUND_VOICE", raising=False)
+    monkeypatch.setattr(sn.platform, "node", lambda: "DESKTOP-7OSURHD")
+    assert sn.voice_wav(sn.IDLE).name == "a_idle.wav"
+    monkeypatch.setattr(sn.platform, "node", lambda: "RYZEN7-5800X")
+    assert sn.voice_wav(sn.IDLE).name == "tk_idle.wav"
+    monkeypatch.setattr(sn.platform, "node", lambda: "UNKNOWN-PC")
+    assert sn.voice_wav(sn.IDLE) is None
+    monkeypatch.setenv("CLAUDE_SOUND_VOICE", "zz")
+    assert sn.voice_wav(sn.IDLE).name == "zz_idle.wav"
+    monkeypatch.setenv("CLAUDE_SOUND_VOICE", "../x")  # 不正な接頭辞は無視して TTS
+    assert sn.voice_wav(sn.IDLE) is None
+
+
+def test_speak_off_silences_wav(monkeypatch, tmp_path: Path) -> None:
+    (tmp_path / "a_idle.wav").write_bytes(b"x")
+    monkeypatch.setattr(sn, "SOUND_DIR", tmp_path)
+    monkeypatch.setenv("CLAUDE_SOUND_VOICE", "a")
+    monkeypatch.setenv("CLAUDE_SOUND_SPEAK", "0")
+    got: list[list[str]] = []
+    monkeypatch.setattr(sn, "_spawn", lambda args: got.append(args))
+    sn.play(sn.CHIME_Q, sn.IDLE)
+    assert "a_idle.wav" not in got[0][-1] and "Speak" not in got[0][-1]
+
+
+def test_shipped_wavs_cover_all_kinds() -> None:
+    for text in sn.PHONE_KIND:
+        assert sn.voice_wav(text) is not None, text
 
 
 def test_play_without_speech(monkeypatch) -> None:

@@ -20,13 +20,16 @@
   CLAUDE_NOTIFY=0         すべて止める
   CLAUDE_SOUND_NOTIFY=0   PC の音だけ止める (スマホは送る)
   CLAUDE_PHONE_NOTIFY=0   スマホだけ止める
-  CLAUDE_SOUND_SPEAK=0    読み上げだけ止める (効果音は鳴る)
+  CLAUDE_SOUND_SPEAK=0    読み上げ(WAV・TTS とも)だけ止める (効果音は鳴る)
+  CLAUDE_SOUND_VOICE=tk   WAV の接頭辞を明示する (既定は PC 名から決める)
 スマホの有効/無効は relay_local/phone_notify.json (無い or enabled:false で無効)。
 """
 from __future__ import annotations
 
 import json
 import os
+import platform
+import re
 import subprocess
 import sys
 import tempfile
@@ -61,6 +64,19 @@ PS_TEMPLATE = (
     "if (Test-Path -LiteralPath $w) { (New-Object System.Media.SoundPlayer $w).PlaySync() } "
     "else { [System.Media.SystemSounds]::Exclamation.Play(); Start-Sleep -Milliseconds 800 }; "
     "__SPEAK__"
+)
+# 録音済みの読み上げ WAV (TK 作成・2026-10-19)。無ければ従来の TTS に戻る。
+# 接頭辞は CLAUDE_SOUND_VOICE、無ければ PC 名で決める (全端末で同じファイルを使うため)。決まらなければ TTS
+SOUND_DIR = Path(__file__).resolve().parents[1] / "sounds"
+TERMINAL_PREFIX = {
+    "desktop-7osurhd": "a",  # A
+    "ryzen7-5800x": "tk",  # TK
+    "pc-ff11": "ts",  # TS
+}
+_PREFIX_RE = re.compile(r"^[a-z]{1,8}$")
+PS_WAV = (
+    "try { (New-Object System.Media.SoundPlayer '__WAV__').PlaySync() } "
+    "catch { [Console]::Error.WriteLine('wav play failed: ' + $_.Exception.Message) }"
 )
 PS_SPEAK = (
     "Add-Type -AssemblyName System.Speech; "
@@ -243,10 +259,24 @@ def sync_if_needed(recorded_decision: bool) -> None:
     spawn_sync(upload=recorded_decision, fetch=fetch_due)
 
 
+def voice_wav(text: str) -> Path | None:
+    """この種類の読み上げ WAV。無ければ None (従来の TTS を使う)。"""
+    kind = PHONE_KIND.get(text)
+    prefix = os.environ.get("CLAUDE_SOUND_VOICE") or TERMINAL_PREFIX.get(platform.node().lower(), "")
+    if kind is None or not _PREFIX_RE.match(prefix):
+        return None
+    wav = SOUND_DIR / f"{prefix}_{kind}.wav"
+    return wav if wav.is_file() else None
+
+
 def play(sound: str, text: str, speech: bool = True) -> None:
     speak = ""
     if speech and os.environ.get("CLAUDE_SOUND_SPEAK", "1") != "0":
-        speak = PS_SPEAK.replace("__TEXT__", SPEECH_EN.get(text, "Attention"))
+        wav = voice_wav(text)
+        if wav is not None:
+            speak = PS_WAV.replace("__WAV__", str(wav).replace("'", "''"))
+        else:
+            speak = PS_SPEAK.replace("__TEXT__", SPEECH_EN.get(text, "Attention"))
     cmd = PS_TEMPLATE.replace("__SOUND__", sound).replace("__SPEAK__", speak)
     _spawn([powershell_exe(), "-NoProfile", "-NonInteractive", "-Command", cmd])
 
