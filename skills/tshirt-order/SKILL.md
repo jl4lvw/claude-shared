@@ -434,16 +434,17 @@ BASE\current_order\
 1. lookup と **Sheets の G番号の全行**（色別・数量・状態）を表で本文に貼って前回を見せる。左袖などのプリントの有無を確認（G2193 は左袖あり）
 2. 色ごとのサイズ別数量を聞き、**確認表→承認**（修正が来たら再確認）。同時に1回の AskUserQuestion で、素材・カラー／納期（送信日+10日以上）／**TOMS 出荷予定日**（土曜不可）を聞く。運送会社ヤマト・早割ありは既定
 3. TOMS CSV（`toms_csv/YYYYMMDD_<G番号><件名>_TOMS.csv`、cp932・CRLF、備考20字以内）と申請 JSON を作り、`current_order/` を入れ替えてフルパスを表示
-4. toms_order: `cli.py enqueue <申請.json> --csv <CSV>` → `cli.py run` を**バックグラウンド**で（確定は運用者の LINE WORKS 承認。2026-10-20〜）。終わったら `cli.py show <ID>` と `data/results/toms-result_*.txt` で受注番号・出荷予定日・金額を取る
+4. toms_order: 下の「TOMS への取り込み」の手順で enqueue だけ行い（run は見張り役）、watch.log の終了を裏で待って `python -m toms_order.cli show <ID>` で受注番号・出荷予定日・金額を取る
    - **プリント色が本体色と違う案件（例: 本体ネイビー×グレープリント）では、DeepSeek 判定が「備考はグレーなのにカラーはネイビー」と誤って NG を出す**。本体色が CSV どおりなら問題ない。運用者にその旨を一言添える
 5. 位置の文言と指示書画像（流用するか）を確認。発注書を作る:
    - 位置が長いときは `"左胸・背中・左袖" + chr(10) + "（グレー・前回と同じ）"` のように**改行**する（1行だと右の「納期」欄にはみ出す）
    - 指示書の写真が別の色の版なら、サイズ表の行名を「グレープリント」、位置に「（グレー・…）」と書き、本文にも「添付図の写真はオレンジ版ですが、グレーでお願いします」と書く
    - **generate_pdf は同名ファイルを上書きせず `_2.pdf` を作る**。作り直したら古い版を消して正式名に戻し、Downloads・NAS・current_order も上書きする
-6. メール本文は **`last_mail/アドプロセス.txt`（直近の実送信）の書式に合わせる**（`####`・「位置・色数：」・「受注番号」・AI 断り書きなし）。4段階チェック（DeepSeek は採否を判断）→ **メールと書き込む記録（history.csv・Sheets・product_db）を1つのアーティファクトで見せて承認**
+6. **（2026-10-20〜）素材の注文が確定したら止まらない。** 発注書とメールを作り、4段階チェックの後、**LINE WORKS で送信の承認を求め、承認されたら 080 の自動送信で送る**（`mail_draft.py --no-open --out` → 077-job-v1 の zip → `080.メール自動送信/cli.py submit` → `cli.py status` を裏で待つ）。アーティファクトの承認で止まらない。**承認依頼には添付（発注書 PDF）の画像も付く**（080 が自動で送る。2026-10-20〜）。
+   メール本文は **`last_mail/アドプロセス.txt`（直近の実送信）の書式に合わせる**（`####`・「位置・色数：」・「受注番号」・AI 断り書きなし）。4段階チェック（DeepSeek は採否を判断）→ **メールと書き込む記録（history.csv・Sheets・product_db）を1つのアーティファクトで見せて承認**
 7. 承認後: history.csv 追記（`.bak`）→ Sheets 追記して読み戻し → `build_product_db.py` → mail_history 保存 → `mail_draft.py` で開く
 8. 「送った」→ `check_sent.py "<件名の一部>" --to adpro` で確認 → history.csv のメール送付日を記入、`last_mail/アドプロセス.txt` を今回の本文に更新（どちらも `.bak`）
-9. **社内報告は必ず送る（頼まれなくても。2026-10-20 寺下さん指示）。** 送信確認（8）が済んだら、そのまま続けて `/line-notify` で「制服のフジ情報共有」宛ての報告を作り、
+9. **社内報告は必ず送る（頼まれなくても。2026-10-20 寺下さん指示）。ただし 19:00〜翌 9:00 は抑止期間（同日指示）：文面と画像を作って普段どおり `request-approval` すると、道具が承認を求めずにキューに積む（終了コード 20）。翌朝 9:00 にタスク `LineNotifyMorningFlush` が寺下さんへ許可を求め、承認されたら自動で送る。夜はそこで報告を終えてよい（「キューに積みました・明朝 9:00 に許可を求めます」と書く。【対応待ち】は付けない）。詳細は line-notify スキル「夜間は送らずにキューに溜める」。** 送信確認（8）が済んだら、そのまま続けて `/line-notify` で「制服のフジ情報共有」宛ての報告を作り、
    **送る前に必ず寺下さんの許可を求める**（`line_notify.py request-approval` で寺下さんの1対1トークへ下書きを送り、`wait-approval` を裏で待つ。
    チャットにも「LINE に許可の依頼を送りました」と書いて【対応待ち】で止まる）。許可が出たら `send --send` で送り、送ったことを報告して終わる。
    ここを飛ばして「完了」と報告しない（G1004 で報告を送らずに終えかけ、指摘された）。
@@ -483,19 +484,10 @@ TOMS 用 CSV を作ったら、**端末 A の `C:\ClaudeCode\900.ClaudeCode\toms
    ```json
    {"source": "A", "csv_path_or_content": "C:\\ClaudeCode\\017.Tシャツなどの注文\\toms_csv\\YYYYMMDD_件名_TOMS.csv",
     "destination": "アドプロセス", "carrier": "yamato", "ship_date": "YYYY-MM-DD", "early_bulk": true,
-    "mode": "review_only", "expect": {"lines": 4, "total_qty": 50, "subtotal_yen": 0}}
+    "expect": {"lines": 4, "total_qty": 50, "subtotal_yen": 0}}
    ```
    - `expect` は CSV から数えた行数・合計枚数・合計金額（税抜・割引前）。CSV は 6 列・ヘッダー 1 行・100 行以内・同じ SKU の重複行は不可。
-   - `mode` は `review_only`（既定）。自動確定は settings で許可されるまで無効。
-3. 実行する:
-   ```bash
-   cd C:\ClaudeCode\900.ClaudeCode\toms_order
-   python cli.py enqueue 申請.json --csv <TOMS CSV のフルパス>   # 検証してキューへ（ブラウザは使わない）
-   python cli.py run                                # 先頭 1 件を実行（ブラウザが開く。確認画面まで約 1 分）
-   python cli.py show ID                            # 結果
-   ```
-   - 確認画面で決定的な検査と DeepSeek の判定を行い、OK なら**運用者の LINE に「注文確定／中止」のボタン**が届く（最大 15 分待つ）。
-   - **Claude は「注文確定」を押さない**（toms_order の確定関数だけが、運用者の承認後に 1 回だけ押す）。
+3. TOMS 用 CSV ができたら、端末 A で `cd /d C:\ClaudeCode\900.ClaudeCode && python -m toms_order.cli enqueue 申請.json --csv <CSV のフルパス>` を実行する（**Claude はここまで。run は実行しない**）。見張り役が LINE WORKS で承認を求め、運用者が「実行」を 1 回押すと、照合と DeepSeek がすべて合えば「注文確定」を 1 回だけ押して確定まで進む（2 回目の承認は無い。2026-10-20〜）。**積んだら運用者の返事を待たずに**、終了を `a_browser_data\watch.log` の`toms id=N 実行終了` で裏で待ち、`python -m toms_order.cli show N` で結果（受注番号・出荷予定日・金額）を読む。needs_human なら再申請せず運用者に聞く（`resolve` は人の窓で）。申請 JSON（`mode` は不要）・status・上限などの詳細は toms_order/README.md。
 4. 結果（`show` の status）: `confirmed`（確定・照合一致）／`stopped`／`needs_human`／`failed`／`cart_not_empty`。
    - `confirmed` なら、受注番号・出荷予定日を取り、この先の工程（発注書 PDF・history.csv・Sheets・product_db・メール）へ進む。注文詳細の全文は `toms-result_YYYYMMDD_HHMM.txt`（data/results・Downloads・NAS 999.一時ファイル）。
    - `cart_not_empty` は TOMS のカートを空にしてから再申請。`failed`／`needs_human` は再申請せず、理由を報告して運用者に聞く。
@@ -580,7 +572,7 @@ Tシャツ1件の発注作業で「完了です」と報告する前に、以下
 4. product_db.json 再生成（`C:/ClaudeCode/017.Tシャツなどの注文/build_product_db.py`）— 新規品番・新規テンプレート・fold_instructions更新時は必須
 5. メール文面作成・送信前4段階チェック
 6. メールの送信確認（`check_sent.py`）→ history.csv のメール送付日・`last_mail` 更新
-7. **社内報告（「制服のフジ情報共有」へ LINE。送る前に寺下さんの許可を LINE で求める）**— 上の「アドプロセス発注の標準の流れ」9（2026-10-20 追加）
+7. **社内報告（「制服のフジ情報共有」へ LINE。送る前に寺下さんの許可を LINE WORKS で求める。19:00〜翌 9:00 は自動でキューに積まれ翌朝 9:00 に許可を求める）**— 上の「アドプロセス発注の標準の流れ」9（2026-10-20 追加）
 
 ## 注意事項
 

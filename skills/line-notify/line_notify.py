@@ -22,6 +22,15 @@ pub.sfuji.f5.si(自社の公開置き場・ログイン不要・一覧なし)に
 本文は全文(長ければ分けて送る)・画像は URL の文字で出す。押されたボタン・文の返信(「OK コード」「中止 コード」
 「コード 直してほしいこと」)の判定は端末 A の見張り役(a_browser_watch)が行うので、見張り役が止まっていれば承認を求めない。
 LINE で承認する送り方も残してあり、900.ClaudeCode/a_browser_common/approval_channel.py で戻せる。
+
+2026-10-20 運用者決定(夜間の抑止): 19:00〜翌 9:00 は LINE グループへ送らない(全グループ。quiet_hours.json)。
+  request-approval をこの間に呼ぶと、承認を求めずにキューに積んで終了コード 20 で終わる。
+  send は、19:00 より前に承認されたものは送る。19:00 以降に承認されたものは送らずに溜める(終了コード 20)。
+  溜めたものは毎朝 9:00 のタスク(LineNotifyMorningFlush → flush)が 1 件ずつ承認を求め、承認されたら送る。
+  python line_notify.py queue-list [--all]        溜まっている報告の一覧
+  python line_notify.py queue-cancel 番号          溜まっている報告を取り消す(送らない)
+  python line_notify.py flush                      朝のまとめ送り(普段はタスクが起動する)
+  python line_notify.py install-flush-task         毎朝 9:00 のタスクを登録 / uninstall-flush-task で外す
 """
 from __future__ import annotations
 
@@ -38,7 +47,8 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-sys.stdout.reconfigure(encoding="utf-8")
+if sys.stdout is not None:  # pythonw(朝のまとめ送りのタスク)では標準出力が無い
+    sys.stdout.reconfigure(encoding="utf-8")
 ROOT = Path(__file__).resolve().parents[3]
 AGENT = ROOT / "090.LINE業務指示エージェント"
 GROUPS = AGENT / "data" / "line_groups.json"
@@ -47,12 +57,36 @@ PUBLIC = ROOT / "900.ClaudeCode" / "public-share"
 if str(ROOT / "900.ClaudeCode") not in sys.path:  # 承認の出し先の切り替えと LINE WORKS の送り方(a_browser_common)
     sys.path.insert(0, str(ROOT / "900.ClaudeCode"))
 from a_browser_common import approval_channel, lineworks, phone_text  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import notify_queue  # noqa: E402
+QUEUE_DB = AGENT / "data" / "line_notify_queue.sqlite3"
+FLUSH_LOG = AGENT / "data" / "line_notify_flush.log"
+FLUSH_TASK = "LineNotifyMorningFlush"
 PUBLIC_HOST = "pub.sfuji.f5.si"
 MAX_LEN = 4500
 TTL_HOURS = 24
 PREVIEW_MAX = 1024 * 1024  # LINE の previewImageUrl は 1MB まで
 CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # 紛らわしい文字(0/O・1/I)を除く
-EXIT = {"approved": 0, "rejected": 10, "revise": 11, "expired": 12, "pending": 13, "used": 14}
+EXIT = {"approved": 0, "rejected": 10, "revise": 11, "expired": 12, "pending": 13, "used": 14, "queued": 20}
+
+
+def now_dt():
+    """いまの時刻(テストで差し替える)。"""
+    from datetime import datetime
+    return datetime.now()
+
+
+def hold(group: str, text: str, url: str, mention: str, sha: str, code: str | None = None) -> None:
+    """抑止期間中なので送らずにキューへ積み、終了コード 20 で終わる。"""
+    q = notify_queue.load_config()
+    item_id, new = notify_queue.Store(QUEUE_DB, now_dt).enqueue(group, text, url, mention, sha, code)
+    at = notify_queue.next_open(now_dt(), q)
+    print(f"抑止期間({q.start:%H:%M}〜{q.end:%H:%M})のため送りません。キューに{'積みました' if new else 'すでにあります'}(#{item_id})")
+    if code:
+        print(f"承認 {code} は {at:%m/%d %H:%M} のまとめ送りでそのまま使います(承認を求め直しません)")
+    else:
+        print(f"{at:%m/%d %H:%M} に、寺下さんへ許可を求めてから送ります(タスク {FLUSH_TASK})")
+    sys.exit(EXIT["queued"])
 
 
 def load_groups() -> dict[str, str]:
@@ -180,6 +214,8 @@ def cmd_request_approval(a: argparse.Namespace) -> None:
     text = build_text(a)
     mention_id, mention_name = resolve_mention(a.mention)
     sha = sha_of(a.group, text, mention_id)
+    if notify_queue.held(a.group, now_dt(), notify_queue.load_config()):
+        hold(a.group, text, a.url, a.mention, sha)
     if approval_channel.use_lineworks():
         request_approval_lw(a, text, sha, mention_name)
         return
@@ -211,8 +247,17 @@ def cmd_request_approval(a: argparse.Namespace) -> None:
 
 
 def request_approval_lw(a: argparse.Namespace, text: str, sha: str, mention_name: str) -> None:
+    code, parts = ask_lineworks(a.group, text, sha, mention_name, a.url)
+    print(f"寺下さんの LINE WORKS の承認トークへ下書きを送りました({parts + 1} 通)")
+    print(f"確認コード: {code}  本文sha: {sha}  有効期限: {TTL_HOURS}時間")
+    print(f"次: python line_notify.py wait-approval {code}")
+
+
+def ask_lineworks(group: str, text: str, sha: str, mention_name: str, url: str, note: str = "") -> tuple[str, int]:
     """LINE WORKS の承認トークへ、下書きの全文(長ければ分けて)と画像の URL、「送信する」「中止」ボタンを送る。
-    承認者は lw:<userId>。送れなかったら作った承認待ちを中止にしてから止める(押せない承認を残さない)。"""
+    承認者は lw:<userId>。送れなかったら作った承認待ちを中止にしてから止める(押せない承認を残さない)。
+    戻り値は (確認コード, 本文を分けて送った通数)。朝のまとめ送り(flush)からも使う。"""
+    a = argparse.Namespace(group=group, url=url)
     try:
         lineworks.require_watcher()
         room = lineworks.load_room()
@@ -225,7 +270,7 @@ def request_approval_lw(a: argparse.Namespace, text: str, sha: str, mention_name
         conn.execute("UPDATE line_approvals SET status=? WHERE code=?", (lineworks.SENDING, code))
     mention = f"@{mention_name} さん(メンション)\n" if mention_name else ""
     draft = "\n".join([
-        f"【LINE送信前の確認】 コード {code}",
+        f"【LINE送信前の確認】 コード {code}" + (f"({note})" if note else ""),
         f"送信先: LINE のグループ「{a.group}」",
         "(下の全文を、LINE のボット FujiWorks の名義でそのまま送ります)",
         "────────────",
@@ -246,12 +291,10 @@ def request_approval_lw(a: argparse.Namespace, text: str, sha: str, mention_name
     with db.write_tx() as conn:
         lineworks.open_for_approval(conn, code)
     try:  # 承認が放置されたときの電話の音声案内で読む文(グループ名などの日本語は読まない)
-        phone_text.write(code, "Post to a LINE group.")
+        phone_text.write(code, "LINEグループへの投稿です。")
     except Exception:  # noqa: BLE001
         pass
-    print(f"寺下さんの LINE WORKS の承認トークへ下書きを送りました({parts + 1} 通)")
-    print(f"確認コード: {code}  本文sha: {sha}  有効期限: {TTL_HOURS}時間")
-    print(f"次: python line_notify.py wait-approval {code}")
+    return code, parts
 
 
 def read_approval(code: str):
@@ -307,26 +350,165 @@ def cmd_send(a: argparse.Namespace) -> None:
         problems.append("この承認はすでに使いました")
     if problems:
         raise SystemExit("送れません: " + " / ".join(problems))
+    if approved_in_quiet(a.group, row):
+        if not a.send:
+            print("(承認は確認できましたが、19:00 以降の承認なので --send でもキューに溜めます。朝 9:00 に送ります)")
+            return
+        hold(a.group, text, a.url, a.mention, sha, code=a.approval)
     if not a.send:
         print("(承認は確認できました。まだ送信していません。--send を付けると送ります)")
         return
+    ids = deliver(groups[a.group], a.group, text, mention_id, sha, a.approval)
+    print("送信しました。LINEのメッセージID:", ids or "(返却なし)")
+
+
+def approved_in_quiet(group: str, row) -> bool:
+    """いま抑止期間中で、承認されたのも抑止期間に入ってから(19:00 以降)なら True。
+    19:00 より前に承認されたものは、送るのが 19:00 を過ぎても送る(2026-10-20 運用者決定)。"""
+    from datetime import datetime
+    q = notify_queue.load_config()
+    if not notify_queue.held(group, now_dt(), q):
+        return False
+    decided = row["decided_at"]
+    if not decided:
+        return True  # 承認の時刻が分からなければ、送らない側に倒す
+    return notify_queue.in_quiet(datetime.fromtimestamp(decided / 1000), q)
+
+
+def deliver(group_id: str, group: str, text: str, mention_id: str, sha: str, code: str) -> list[str]:
+    """承認コードを使用済みにしてから、グループへ送る(二重送信の防止)。送信に失敗したら承認済みに戻す。"""
     approvals, db = open_db()
-    with db.write_tx() as conn:  # 先に使用済みにする(二重送信の防止)。送信に失敗したら戻す
+    with db.write_tx() as conn:
         cur = conn.execute("UPDATE line_approvals SET status='used', used_at=? WHERE code=? AND status='approved' AND used_at IS NULL",
-                           (db.now_ms(), a.approval))
+                           (db.now_ms(), code))
         if cur.rowcount != 1:
             raise SystemExit("この承認はすでに使われたか、状態が変わりました")
     try:
-        ids = push_messages(groups[a.group], [text_message(text, mention_id)])
+        ids = push_messages(group_id, [text_message(text, mention_id)])
     except SystemExit:
         with db.write_tx() as conn:
-            conn.execute("UPDATE line_approvals SET status='approved', used_at=NULL WHERE code=?", (a.approval,))
+            conn.execute("UPDATE line_approvals SET status='approved', used_at=NULL WHERE code=?", (code,))
         raise
     LOG.parent.mkdir(parents=True, exist_ok=True)
     with LOG.open("a", encoding="utf-8") as f:
-        f.write(json.dumps({"at": time.strftime("%Y-%m-%d %H:%M:%S"), "group": a.group, "sha": sha,
-                            "approval": a.approval, "ids": ids}, ensure_ascii=False) + "\n")
-    print("送信しました。LINEのメッセージID:", ids or "(返却なし)")
+        f.write(json.dumps({"at": time.strftime("%Y-%m-%d %H:%M:%S"), "group": group, "sha": sha,
+                            "approval": code, "ids": ids}, ensure_ascii=False) + "\n")
+    return ids
+
+
+def queue_store():
+    return notify_queue.Store(QUEUE_DB, now_dt)
+
+
+def cmd_queue_list(a: argparse.Namespace) -> None:
+    rows = queue_store().items() if a.all else queue_store().items(*notify_queue.OPEN)
+    if not rows:
+        print("溜まっている報告はありません")
+    for r in rows:
+        head = r["text"].splitlines()[0][:40] if r["text"] else ""
+        print(f"#{r['id']}\t{r['status']}\t{r['group_name']}\t{r['created_at']}\t{r['code'] or '-'}\t{head}"
+              + (f"\t({r['note']})" if r["note"] else ""))
+
+
+def cmd_queue_cancel(a: argparse.Namespace) -> None:
+    store = queue_store()
+    row = next((r for r in store.items() if r["id"] == a.id), None)
+    if row is None or not store.cancel(a.id):
+        raise SystemExit(f"#{a.id} は取り消せません(無いか、すでに終わっています)")
+    if row["code"]:
+        void_approval(row["code"], "cancelled")
+    print(f"#{a.id} を取り消しました(送りません)")
+
+
+def void_approval(code: str, reason: str) -> None:
+    """返事の無い・不要になった承認を取り消す(後から押されても承認にならないように)。使用済みは変えない。"""
+    approvals, db = open_db()
+    with db.write_tx() as conn:
+        conn.execute("UPDATE line_approvals SET status='rejected', decision_text=? "
+                     "WHERE code=? AND status IN (?, 'pending', 'approved') AND used_at IS NULL",
+                     (reason, code, lineworks.SENDING))
+
+
+def flush_hooks() -> notify_queue.Hooks:
+    groups = load_groups()
+
+    def ask(item: dict) -> str:
+        if item["group_name"] not in groups:
+            raise SystemExit(f"グループ「{item['group_name']}」は未登録です")
+        code, _ = ask_lineworks(item["group_name"], item["text"], item["sha"], item["mention"], item["url"],
+                                note=f"夜間に溜めた報告・{item['created_at'][5:16].replace('T', ' ')} 受付")
+        return code
+
+    def read(code: str) -> dict | None:
+        approvals, db = open_db()
+        with db.read_conn() as conn:
+            row = approvals.get(conn, code)
+        return dict(row) if row is not None else None
+
+    def send(item: dict, code: str) -> list[str]:
+        mention_id, _ = resolve_mention(item["mention"])
+        if sha_of(item["group_name"], item["text"], mention_id) != item["sha"]:
+            raise SystemExit("メンションの相手が積んだときと変わっています")
+        return deliver(groups[item["group_name"]], item["group_name"], item["text"], mention_id, item["sha"], code)
+
+    def tell(text: str) -> None:
+        lineworks.send_text(text)
+
+    return notify_queue.Hooks(ask=ask, read=read, deliver=send, void=lambda c: void_approval(c, "carried_over"),
+                              tell=tell, now=now_dt, sleep=time.sleep, now_ms=lambda: int(time.time() * 1000))
+
+
+def flush_log(text: str) -> None:
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {text}"
+    print(line, flush=True)
+    FLUSH_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with FLUSH_LOG.open("a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
+def cmd_flush(_a: argparse.Namespace) -> None:
+    if not approval_channel.use_lineworks():
+        raise SystemExit("朝のまとめ送りは LINE WORKS の承認だけに対応しています(approval_channel を確認)")
+    import msvcrt
+    FLUSH_LOG.parent.mkdir(parents=True, exist_ok=True)
+    lock = (AGENT / "data" / "line_notify_flush.lock").open("a+")
+    try:  # 同時に 2 つ動かさない(タスクと手動の起動が重なったとき)
+        msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        flush_log("別のまとめ送りが動いているので終わります")
+        return
+    notify_queue.Flusher(queue_store(), flush_hooks(), notify_queue.load_config(), log=flush_log).run()
+
+
+def flush_task_command() -> tuple[str, str]:
+    exe = Path(sys.executable)
+    w = exe.with_name("pythonw.exe")  # 窓を出さない
+    return str(w if w.exists() else exe), f'"{Path(__file__).resolve()}" flush'
+
+
+def cmd_install_flush_task(_a: argparse.Namespace) -> None:
+    """毎朝 9:00(設定の終わりの時刻)に flush を起動するタスク。PC が落ちていたら起動後すぐ・重なったら新しい方を起動しない。"""
+    exe, args = flush_task_command()
+    at = notify_queue.load_config().end
+    ps = ("$a = New-ScheduledTaskAction -Execute '{exe}' -Argument '{args}' -WorkingDirectory '{wd}';"
+          "$t = New-ScheduledTaskTrigger -Daily -At '{at:%H:%M}';"
+          "$s = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew "
+          "-ExecutionTimeLimit (New-TimeSpan -Hours 11) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries;"
+          "Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $t -Settings $s -Force | Out-Null;"
+          "(Get-ScheduledTask -TaskName '{name}').State").format(
+        exe=exe.replace("'", "''"), args=args.replace("'", "''"), wd=str(Path(__file__).resolve().parent).replace("'", "''"),
+        at=at, name=FLUSH_TASK)
+    cp = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, encoding="utf-8",
+                        errors="replace")
+    if cp.returncode != 0:
+        raise SystemExit(f"タスクを登録できません: {cp.stderr.strip()[:500]}")
+    print(f"タスク {FLUSH_TASK} を登録しました(毎日 {at:%H:%M}・状態 {cp.stdout.strip()})")
+    print(f"起動: {exe} {args}")
+
+
+def cmd_uninstall_flush_task(_a: argparse.Namespace) -> None:
+    cp = subprocess.run(["schtasks", "/Delete", "/F", "/TN", FLUSH_TASK], capture_output=True)
+    print("外しました" if cp.returncode == 0 else f"外せません: {(cp.stdout + cp.stderr).decode('cp932', 'replace').strip()}")
 
 
 def main() -> None:
@@ -360,6 +542,15 @@ def main() -> None:
     s.add_argument("--mention", default="", help="request-approval と同じ値を指定する")
     s.add_argument("--send", action="store_true")
     s.set_defaults(fn=cmd_send)
+    ql = sub.add_parser("queue-list")
+    ql.add_argument("--all", action="store_true", help="送り終えた・取り消したものも出す")
+    ql.set_defaults(fn=cmd_queue_list)
+    qc = sub.add_parser("queue-cancel")
+    qc.add_argument("id", type=int)
+    qc.set_defaults(fn=cmd_queue_cancel)
+    sub.add_parser("flush").set_defaults(fn=cmd_flush)
+    sub.add_parser("install-flush-task").set_defaults(fn=cmd_install_flush_task)
+    sub.add_parser("uninstall-flush-task").set_defaults(fn=cmd_uninstall_flush_task)
     a = ap.parse_args()
     a.fn(a)
 

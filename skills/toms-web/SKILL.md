@@ -26,13 +26,11 @@ TOMS の注文は、**端末 A の Playwright スクリプト `C:\ClaudeCode\900
    ```
    - CSV は 6 列・ヘッダー 1 行・100 行以内・同じ品番/カラー/サイズの重複行は不可（CP932 可）。
    - `expect` は、CSV から数えた行数・合計枚数・合計金額（税抜・割引前）。
-3. A が enqueue → run。確認画面で、決定的な検査と DeepSeek の判定を行い、OK なら**運用者の LINE に「注文確定／中止」のボタン**が届く（最大 15 分待つ）。**確定を押すのは運用者**（A のスクリプトの確定関数が、押された後に 1 回だけ押す）。
-   - 自動確定（`mode=auto_confirm`）は、A の設定で許可されるまで無効（今は無効）。
-   - 上限: 500 枚・税込 200,000 円。同じ CSV+出荷予定日+納品先は 24 時間以内に確定しない。
-4. A の結果（`status`: confirmed／stopped／needs_human／failed／cart_not_empty）を待つ（relay の返信）。`confirmed` なら、確定・照合一致。注文詳細の全文は NAS `999.一時ファイル\toms-result_YYYYMMDD_HHMM.txt`。
+3. TOMS 用 CSV ができたら、端末 A で `cd /d C:\ClaudeCode\900.ClaudeCode && python -m toms_order.cli enqueue 申請.json --csv <CSV のフルパス>` を実行する（**Claude はここまで。run は実行しない**）。見張り役が LINE WORKS で承認を求め、運用者が「実行」を 1 回押すと、照合と DeepSeek がすべて合えば「注文確定」を 1 回だけ押して確定まで進む（2 回目の承認は無い。2026-10-20〜）。**積んだら運用者の返事を待たずに**、終了を `a_browser_data\watch.log` の`toms id=N 実行終了` で裏で待ち、`python -m toms_order.cli show N` で結果（受注番号・出荷予定日・金額）を読む。needs_human なら再申請せず運用者に聞く（`resolve` は人の窓で）。申請 JSON（`mode` は不要）・status・上限などの詳細は toms_order/README.md。
+4. 結果が `confirmed` なら確定・照合一致。注文詳細の全文は NAS `999.一時ファイル\toms-result_YYYYMMDD_HHMM.txt`。
 5. **納品先がセブンエスの無地T（ECM 依頼）なら、確定後に入荷登録の申請**（下の「入荷登録の申請」）。
 
-**TK の Claude は、どの場合も「注文確定」を押さない**（A のスクリプトの確定関数だけが、運用者の承認後に押す）。
+**Claude は「注文確定」を押さない**（A のスクリプトの確定関数だけが、運用者の LINE WORKS 承認 1 回の後、照合が合えば押す）。
 **失敗したとき**: `cart_not_empty` は TOMS のカートを空にしてから再申請（取り込みはカートを全消去する）。`failed`／`needs_human` は再申請せず、理由を報告してユーザーに聞く。前回の途中状態が残ったカートは、納品先の欄が出ず failed になる。
 
 ## 🚨 絶対ルール
