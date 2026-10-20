@@ -83,6 +83,7 @@ PS_SPEAK = (
     "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
     "try { $s.SelectVoice('Microsoft Zira Desktop') } "
     "catch { [Console]::Error.WriteLine('voice fallback: Zira not installed') }; "
+    "$s.Rate = -1; "  # 約10%遅く (SAPI は1段階≒10%。2026-10-20 ユーザー指定)
     "$s.Speak('__TEXT__')"
 )
 

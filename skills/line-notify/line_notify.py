@@ -46,7 +46,7 @@ LOG = AGENT / "data" / "line_notify_log.jsonl"
 PUBLIC = ROOT / "900.ClaudeCode" / "public-share"
 if str(ROOT / "900.ClaudeCode") not in sys.path:  # 承認の出し先の切り替えと LINE WORKS の送り方(a_browser_common)
     sys.path.insert(0, str(ROOT / "900.ClaudeCode"))
-from a_browser_common import approval_channel, lineworks  # noqa: E402
+from a_browser_common import approval_channel, lineworks, phone_text  # noqa: E402
 PUBLIC_HOST = "pub.sfuji.f5.si"
 MAX_LEN = 4500
 TTL_HOURS = 24
@@ -245,6 +245,10 @@ def request_approval_lw(a: argparse.Namespace, text: str, sha: str, mention_name
         raise SystemExit(f"LINE WORKS へ下書きを送れません: {exc}")
     with db.write_tx() as conn:
         lineworks.open_for_approval(conn, code)
+    try:  # 承認が放置されたときの電話の音声案内で読む文(グループ名などの日本語は読まない)
+        phone_text.write(code, "Post to a LINE group.")
+    except Exception:  # noqa: BLE001
+        pass
     print(f"寺下さんの LINE WORKS の承認トークへ下書きを送りました({parts + 1} 通)")
     print(f"確認コード: {code}  本文sha: {sha}  有効期限: {TTL_HOURS}時間")
     print(f"次: python line_notify.py wait-approval {code}")
