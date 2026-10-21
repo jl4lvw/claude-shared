@@ -129,6 +129,9 @@ DEFAULT_USD_TO_JPY: float = 150.0
 # - US Virginia: https://dashscope-us.aliyuncs.com/compatible-mode/v1
 # - China Beijing: https://dashscope.aliyuncs.com/compatible-mode/v1
 DEFAULT_BASE_URL: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+# 既定のモデル(2026-10-21 運用者決定)。端末 A の設定先(米国 Virginia)には qwen3-coder-plus が無く 404 になったため
+# (INC-20261021-092715bab9cf)、新しい汎用の上位に替えた。料金表に無いので費用は qwen3-coder-plus の単価で概算(警告が出る)
+DEFAULT_MODEL: str = "qwen3.7-plus"
 
 
 def _resolve_usd_to_jpy() -> float:
@@ -367,7 +370,7 @@ def call_qwen(
     Args:
         prompt: ユーザープロンプト.
         role: 'advisor'（設計相談・別案出し・既定）または 'coder'（コード生成）.
-        model: モデル名. 省略時は qwen3-coder-plus.
+        model: モデル名. 省略時は DEFAULT_MODEL(qwen3.7-plus).
         max_tokens: 最大出力トークン数.
         temperature: サンプリング温度.
         track: True なら usage を集計して stderr に出力する.
@@ -386,7 +389,7 @@ def call_qwen(
         sys.exit(EXIT_INVALID_INPUT)
 
     if model is None:
-        model = "qwen3-coder-plus"
+        model = DEFAULT_MODEL
 
     base_url = os.environ.get("QWEN_BASE_URL", DEFAULT_BASE_URL)
     client = OpenAI(api_key=api_key, base_url=base_url)

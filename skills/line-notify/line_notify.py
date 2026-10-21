@@ -56,7 +56,7 @@ LOG = AGENT / "data" / "line_notify_log.jsonl"
 PUBLIC = ROOT / "900.ClaudeCode" / "public-share"
 if str(ROOT / "900.ClaudeCode") not in sys.path:  # 承認の出し先の切り替えと LINE WORKS の送り方(a_browser_common)
     sys.path.insert(0, str(ROOT / "900.ClaudeCode"))
-from a_browser_common import approval_channel, lineworks, phone_text  # noqa: E402
+from a_browser_common import approval_channel, approval_text, lineworks, phone_text  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import notify_queue  # noqa: E402
 QUEUE_DB = AGENT / "data" / "line_notify_queue.sqlite3"
@@ -280,6 +280,11 @@ def ask_lineworks(group: str, text: str, sha: str, mention_name: str, url: str, 
     if a.url:
         draft += f"\n画像: {a.url}"
     draft += f"\n有効期限 {TTL_HOURS} 時間。{lineworks.reply_hint(code)}"
+    try:  # 承認の画面(PWA)で読む全文(2026-10-21 運用者決定: 長い文は LINE WORKS では読まれないため)
+        approval_text.write(code, sha, f"LINE「{a.group}」への投稿",
+                            f"送信先: LINE のグループ「{a.group}」\n\n{mention}{text}" + (f"\n\n画像: {a.url}" if a.url else ""))
+    except Exception:  # noqa: BLE001  残せなくても承認は止めない(画面では承認できないだけ)
+        pass
     try:
         parts = lineworks.send_text(draft, room=room)
         lineworks.send_buttons(f"LINE の「{a.group}」へ、この内容で送信しますか?(コード {code})",

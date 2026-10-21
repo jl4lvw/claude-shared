@@ -55,6 +55,7 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(mod, "LOG", tmp_path / "log.jsonl")
     monkeypatch.setattr(mod, "now_dt", lambda: clock["now"])
     monkeypatch.setattr(mod.phone_text, "TEXT_DIR", tmp_path / "phone_texts")
+    monkeypatch.setattr(mod.approval_text, "TEXT_DIR", tmp_path / "approval_texts")  # 承認の全文も本物の置き場に書かない
     monkeypatch.setattr(mod, "open_db", lambda: (approvals, FakeDb))
     monkeypatch.setattr(mod, "load_groups", lambda: {GROUP: "C" + "0" * 32, "例外": "C" + "1" * 32})
     monkeypatch.setattr(mod.lineworks, "require_watcher", lambda *a, **k: None)
