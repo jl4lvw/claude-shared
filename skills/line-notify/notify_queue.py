@@ -102,6 +102,9 @@ class Store:
         path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._conn()) as c, c:
             c.executescript(SCHEMA)
+            cols = {r["name"] for r in c.execute("PRAGMA table_info(items)")}
+            if "purpose" not in cols:  # 依頼元の説明の目的(2026-10-21 追加。前から積んであるものは空)
+                c.execute("ALTER TABLE items ADD COLUMN purpose TEXT NOT NULL DEFAULT ''")
 
     def _conn(self) -> sqlite3.Connection:
         c = sqlite3.connect(self.path, timeout=30)
@@ -112,7 +115,7 @@ class Store:
         return self.now().isoformat(timespec="seconds")
 
     def enqueue(self, group: str, text: str, url: str, mention: str, sha: str,
-                code: str | None = None) -> tuple[int, bool]:
+                code: str | None = None, purpose: str = "") -> tuple[int, bool]:
         """積む。同じ送り先・本文(sha)が待ちにあれば積まずにその番号を返す(二重送信の防止)。
         code: 夜に承認済みになったものを溜めるときの承認コード(朝に承認を求め直さずに送る)。"""
         with closing(self._conn()) as c, c:
@@ -123,10 +126,10 @@ class Store:
                     c.execute("UPDATE items SET status='asking', code=?, updated_at=? WHERE id=?",
                               (code, self._ts(), row["id"]))
                 return int(row["id"]), False
-            cur = c.execute("INSERT INTO items(group_name,text,url,mention,sha,status,code,created_at,updated_at)"
-                            " VALUES (?,?,?,?,?,?,?,?,?)",
+            cur = c.execute("INSERT INTO items(group_name,text,url,mention,sha,status,code,created_at,updated_at,purpose)"
+                            " VALUES (?,?,?,?,?,?,?,?,?,?)",
                             (group, text, url, mention, sha, "asking" if code else "queued", code,
-                             self._ts(), self._ts()))
+                             self._ts(), self._ts(), purpose or ""))
             return int(cur.lastrowid), True
 
     def items(self, *statuses: str) -> list[dict[str, Any]]:

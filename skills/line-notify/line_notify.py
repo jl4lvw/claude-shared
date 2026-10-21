@@ -56,7 +56,7 @@ LOG = AGENT / "data" / "line_notify_log.jsonl"
 PUBLIC = ROOT / "900.ClaudeCode" / "public-share"
 if str(ROOT / "900.ClaudeCode") not in sys.path:  # 承認の出し先の切り替えと LINE WORKS の送り方(a_browser_common)
     sys.path.insert(0, str(ROOT / "900.ClaudeCode"))
-from a_browser_common import approval_channel, approval_text, lineworks, phone_text  # noqa: E402
+from a_browser_common import approval_channel, approval_purpose, approval_text, lineworks, phone_text  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import notify_queue  # noqa: E402
 QUEUE_DB = AGENT / "data" / "line_notify_queue.sqlite3"
@@ -76,10 +76,10 @@ def now_dt():
     return datetime.now()
 
 
-def hold(group: str, text: str, url: str, mention: str, sha: str, code: str | None = None) -> None:
+def hold(group: str, text: str, url: str, mention: str, sha: str, code: str | None = None, purpose: str = "") -> None:
     """抑止期間中なので送らずにキューへ積み、終了コード 20 で終わる。"""
     q = notify_queue.load_config()
-    item_id, new = notify_queue.Store(QUEUE_DB, now_dt).enqueue(group, text, url, mention, sha, code)
+    item_id, new = notify_queue.Store(QUEUE_DB, now_dt).enqueue(group, text, url, mention, sha, code, purpose=purpose)
     at = notify_queue.next_open(now_dt(), q)
     print(f"抑止期間({q.start:%H:%M}〜{q.end:%H:%M})のため送りません。キューに{'積みました' if new else 'すでにあります'}(#{item_id})")
     if code:
@@ -211,11 +211,15 @@ def cmd_request_approval(a: argparse.Namespace) -> None:
     groups = load_groups()
     if a.group not in groups:
         raise SystemExit(f"グループ「{a.group}」は未登録です。登録済み: {list(groups)}")
+    try:  # 何のための投稿か(依頼元の説明)。無い依頼は出せない(2026-10-21 運用者決定)
+        a.purpose = approval_purpose.check(a.purpose)
+    except ValueError as exc:
+        raise SystemExit(f"承認を求められません: {exc}")
     text = build_text(a)
     mention_id, mention_name = resolve_mention(a.mention)
     sha = sha_of(a.group, text, mention_id)
     if notify_queue.held(a.group, now_dt(), notify_queue.load_config()):
-        hold(a.group, text, a.url, a.mention, sha)
+        hold(a.group, text, a.url, a.mention, sha, purpose=a.purpose)
     if approval_channel.use_lineworks():
         request_approval_lw(a, text, sha, mention_name)
         return
@@ -228,7 +232,8 @@ def cmd_request_approval(a: argparse.Namespace) -> None:
     code = "".join(secrets.choice(CODE_CHARS) for _ in range(4))
     with db.write_tx() as conn:
         approvals.create(conn, code=code, sha=sha, target_name=a.group, user_id=user, ttl_ms=TTL_HOURS * 3600 * 1000)
-    draft = (f"【LINE送信前の確認】 コード {code}\n送信先: {a.group}\n(下の全文を、ボット名義でそのまま送ります)\n"
+    draft = (f"【LINE送信前の確認】 コード {code}\n送信先: {a.group}\n{approval_purpose.line(a.purpose)}\n"
+             f"(下の全文を、ボット名義でそのまま送ります)\n"
              f"────────────\n{f'@{mention_name} さん(メンション)' + chr(10) if mention_name else ''}{text}")
     msgs: list[dict] = [{"type": "text", "text": draft[:4900]}]
     if a.url:
@@ -247,13 +252,14 @@ def cmd_request_approval(a: argparse.Namespace) -> None:
 
 
 def request_approval_lw(a: argparse.Namespace, text: str, sha: str, mention_name: str) -> None:
-    code, parts = ask_lineworks(a.group, text, sha, mention_name, a.url)
+    code, parts = ask_lineworks(a.group, text, sha, mention_name, a.url, purpose=a.purpose)
     print(f"寺下さんの LINE WORKS の承認トークへ下書きを送りました({parts + 1} 通)")
     print(f"確認コード: {code}  本文sha: {sha}  有効期限: {TTL_HOURS}時間")
     print(f"次: python line_notify.py wait-approval {code}")
 
 
-def ask_lineworks(group: str, text: str, sha: str, mention_name: str, url: str, note: str = "") -> tuple[str, int]:
+def ask_lineworks(group: str, text: str, sha: str, mention_name: str, url: str, note: str = "",
+                  purpose: str = "") -> tuple[str, int]:
     """LINE WORKS の承認トークへ、下書きの全文(長ければ分けて)と画像の URL、「送信する」「中止」ボタンを送る。
     承認者は lw:<userId>。送れなかったら作った承認待ちを中止にしてから止める(押せない承認を残さない)。
     戻り値は (確認コード, 本文を分けて送った通数)。朝のまとめ送り(flush)からも使う。"""
@@ -272,6 +278,7 @@ def ask_lineworks(group: str, text: str, sha: str, mention_name: str, url: str, 
     draft = "\n".join([
         f"【LINE送信前の確認】 コード {code}" + (f"({note})" if note else ""),
         f"送信先: LINE のグループ「{a.group}」",
+        approval_purpose.line(purpose),  # 何のための投稿か(依頼元の説明。2026-10-21)
         "(下の全文を、LINE のボット FujiWorks の名義でそのまま送ります)",
         "────────────",
         mention + text,
@@ -282,7 +289,8 @@ def ask_lineworks(group: str, text: str, sha: str, mention_name: str, url: str, 
     draft += f"\n有効期限 {TTL_HOURS} 時間。{lineworks.reply_hint(code)}"
     try:  # 承認の画面(PWA)で読む全文(2026-10-21 運用者決定: 長い文は LINE WORKS では読まれないため)
         approval_text.write(code, sha, f"LINE「{a.group}」への投稿",
-                            f"送信先: LINE のグループ「{a.group}」\n\n{mention}{text}" + (f"\n\n画像: {a.url}" if a.url else ""))
+                            f"{approval_purpose.line(purpose)}\n送信先: LINE のグループ「{a.group}」\n\n{mention}{text}"
+                            + (f"\n\n画像: {a.url}" if a.url else ""), purpose=approval_purpose.normalize(purpose))
     except Exception:  # noqa: BLE001  残せなくても承認は止めない(画面では承認できないだけ)
         pass
     try:
@@ -295,8 +303,8 @@ def ask_lineworks(group: str, text: str, sha: str, mention_name: str, url: str, 
         raise SystemExit(f"LINE WORKS へ下書きを送れません: {exc}")
     with db.write_tx() as conn:
         lineworks.open_for_approval(conn, code)
-    try:  # 承認が放置されたときの電話の音声案内で読む文(グループ名などの日本語は読まない)
-        phone_text.write(code, "LINEグループへの投稿です。")
+    try:  # 承認が放置されたときの電話の音声案内で読む文(グループ名は読まない。目的は人名・住所・連絡先らしい形が無ければ読む)
+        phone_text.write(code, "LINEグループへの投稿です。" + approval_purpose.phone_sentence(purpose))
     except Exception:  # noqa: BLE001
         pass
     return code, parts
@@ -441,7 +449,8 @@ def flush_hooks() -> notify_queue.Hooks:
         if item["group_name"] not in groups:
             raise SystemExit(f"グループ「{item['group_name']}」は未登録です")
         code, _ = ask_lineworks(item["group_name"], item["text"], item["sha"], item["mention"], item["url"],
-                                note=f"夜間に溜めた報告・{item['created_at'][5:16].replace('T', ' ')} 受付")
+                                note=f"夜間に溜めた報告・{item['created_at'][5:16].replace('T', ' ')} 受付",
+                                purpose=item.get("purpose") or "")
         return code
 
     def read(code: str) -> dict | None:
@@ -533,6 +542,8 @@ def main() -> None:
     q.add_argument("--text-file", required=True)
     q.add_argument("--url", default="")
     q.add_argument("--mention", default="", help="メンションする相手の表示名(090 の roster.json と完全一致)")
+    q.add_argument("--purpose", required=True,
+                   help="何のための投稿か(1〜2 行・6〜120 字。承認の画面・LINE WORKS・電話で示す。人名・住所・連絡先は書かない)")
     q.set_defaults(fn=cmd_request_approval)
     w = sub.add_parser("wait-approval")
     w.add_argument("code")

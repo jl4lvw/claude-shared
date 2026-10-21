@@ -67,7 +67,7 @@ def env(monkeypatch, tmp_path):
         monkeypatch.delenv(name, raising=False)
     body = tmp_path / "body.txt"
     body.write_text("◆10/29(木) 入荷予定\nG1004(パーカー) 150枚", encoding="utf-8")
-    args = argparse.Namespace(group=GROUP, text_file=str(body), url="", mention="")
+    args = argparse.Namespace(group=GROUP, text_file=str(body), url="", mention="", purpose="試験の投稿です。夜間の扱いを確かめるため")
     return clock, conn, sent, pushed, args
 
 
@@ -155,6 +155,7 @@ def test_morning_flush_asks_then_sends_on_approval(env) -> None:
     hooks.sleep = sleep
     mod.notify_queue.Flusher(mod.queue_store(), hooks, mod.notify_queue.load_config(), log=lambda t: None).run()
     assert "buttons" in sent and any("夜間に溜めた報告" in s for s in sent if s != "buttons")
+    assert any("目的(依頼元の説明): 試験の投稿です。夜間の扱いを確かめるため" in s for s in sent if s != "buttons")  # 朝まで引き継ぐ
     assert len(pushed) == 1
     assert mod.queue_store().items()[0]["status"] == "sent"
 
@@ -168,3 +169,26 @@ def test_queue_cancel_voids_approval(env, capsys) -> None:
     mod.cmd_queue_cancel(argparse.Namespace(id=1))
     assert conn.execute("SELECT status FROM line_approvals").fetchone()[0] == "rejected"
     assert mod.queue_store().items()[0]["status"] == "cancelled"
+
+
+def test_request_approval_without_purpose_is_refused(env) -> None:
+    """何のための投稿かが無い依頼は出せない(2026-10-21 運用者決定)。"""
+    clock, conn, sent, pushed, args = env
+    clock["now"] = datetime(2026, 10, 21, 10, 0)
+    for bad in ("", "短い", "あ" * 121):
+        args.purpose = bad
+        with pytest.raises(SystemExit) as e:
+            mod.cmd_request_approval(args)
+        assert "目的" in str(e.value.code)
+    assert sent == [] and conn.execute("SELECT COUNT(*) FROM line_approvals").fetchone()[0] == 0
+
+
+def test_purpose_is_shown_and_read_on_the_phone(env) -> None:
+    clock, conn, sent, pushed, args = env
+    clock["now"] = datetime(2026, 10, 21, 10, 0)
+    mod.cmd_request_approval(args)
+    code = conn.execute("SELECT code FROM line_approvals").fetchone()[0]
+    assert any("目的(依頼元の説明): 試験の投稿です。" in s for s in sent if s != "buttons")
+    t = mod.approval_text.read(code)
+    assert t["purpose"] == "試験の投稿です。夜間の扱いを確かめるため" and t["body"].startswith("目的(依頼元の説明): ")
+    assert mod.phone_text.read(code) == "LINEグループへの投稿です。依頼元の説明では、目的は、試験の投稿です。夜間の扱いを確かめるため、です。"
