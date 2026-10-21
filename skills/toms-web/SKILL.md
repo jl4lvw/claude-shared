@@ -22,8 +22,10 @@ TOMS の注文は、**端末 A の Playwright スクリプト `C:\ClaudeCode\900
 2. **申請 JSON と発注 CSV を、relay の添付で A へ送る**（`--to A`）。
    ```
    {"source":"TK","csv_path_or_content":"<CSV のファイル名>","destination":"セブンエス","carrier":"yamato",
-    "ship_date":"2026-10-19","early_bulk":true,"mode":"review_only","expect":{"lines":4,"total_qty":200,"subtotal_yen":58000}}
+    "ship_date":"2026-10-19","early_bulk":true,"mode":"review_only","expect":{"lines":4,"total_qty":200,"subtotal_yen":58000},
+    "purpose":"セブンエスで刺繍する無地 T シャツ(00085)の在庫を ECM の依頼どおり補充するため"}
    ```
+   - **purpose(目的)は必須。何のための操作か(誰に何を知らせる・何を補充する等)を 6〜120 字で書く。承認の画面・LINE WORKS・電話の音声案内で運用者に示す。電話の文は外部の音声サービス(Microsoft)へ送るので、人名・住所・電話番号・メールアドレス・お客様名は書かない**（2026-10-21 運用者決定。無い・短い・長いと A の enqueue が断る）
    - CSV は 6 列・ヘッダー 1 行・100 行以内・同じ品番/カラー/サイズの重複行は不可（CP932 可）。
    - `expect` は、CSV から数えた行数・合計枚数・合計金額（税抜・割引前）。
 3. TOMS 用 CSV ができたら、端末 A で `cd /d C:\ClaudeCode\900.ClaudeCode && python -m toms_order.cli enqueue 申請.json --csv <CSV のフルパス>` を実行する（**Claude はここまで。run は実行しない**）。見張り役が LINE WORKS で承認を求め、運用者が「実行」を 1 回押すと、照合と DeepSeek がすべて合えば「注文確定」を 1 回だけ押して確定まで進む（2 回目の承認は無い。2026-10-20〜）。**積んだら運用者の返事を待たずに**、終了を `a_browser_data\watch.log` の`toms id=N 実行終了` で裏で待ち、`python -m toms_order.cli show N` で結果（受注番号・出荷予定日・金額）を読む。needs_human なら再申請せず運用者に聞く（`resolve` は人の窓で）。申請 JSON（`mode` は不要）・status・上限などの詳細は toms_order/README.md。

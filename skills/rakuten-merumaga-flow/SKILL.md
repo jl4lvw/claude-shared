@@ -59,8 +59,10 @@ python ".claude/skills/rakuten-merumaga/scripts/check_mail_links.py" "<タグ.tx
 
 ### ③ 原稿作り + ④ 申請 JSON の作成
 ```
-python ".claude/skills/rakuten-merumaga-flow/scripts/build_draft_request.py" --tag "<タグ.txt>" --subject "<HTML メールの件名>" --template-name "<テンプレート名>" --out "000.tmp/draft_request_<日時>.json"
+python ".claude/skills/rakuten-merumaga-flow/scripts/build_draft_request.py" --tag "<タグ.txt>" --subject "<HTML メールの件名>" --template-name "<テンプレート名>" --purpose "<目的>" --out "000.tmp/draft_request_<日時>.json"
 ```
+- 目的の例: `--purpose "10/22 配信の楽天メルマガ(秋の新作 T シャツ)を RMS の下書きに登録し、配信の準備をするため"`
+- **purpose(目的)は必須。何のための操作か(誰に何を知らせる・何を補充する等)を 6〜120 字で書く。承認の画面・LINE WORKS・電話の音声案内で運用者に示す。電話の文は外部の音声サービス(Microsoft)へ送るので、人名・住所・電話番号・メールアドレス・お客様名は書かない**（2026-10-21 運用者決定。申請 JSON の `"purpose"` に入る。無い・短い・長いと終了コード 2 で保存しない。A の enqueue でも同じ検査をする）
 - HTML 原稿＝貼り付け用タグそのもの。**テキスト版（`html.text_body`）と携帯用テキスト（`mobile_text.body`）は、同じ変換**（`html_to_mobile_text.py`）で作る（HTML メールは RMS で「テキスト部分の本文」が必須のため）。
 - 検査（違反は終了コード 2・保存しない）: HTML 100 KB 以下／件名 255 バイト以下（半角換算）／携帯用テキスト **5,000 文字以内**（改行を 2 文字と数えた値）。
 - 携帯用テキストが超過したら、止めて報告（超過量・URL が占める分・商品点数）。削り方は、ユーザーに相談する。

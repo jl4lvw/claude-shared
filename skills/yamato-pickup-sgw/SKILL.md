@@ -26,8 +26,10 @@ description: ヤマトビジネスメンバーズ（bmypage.kuronekoyamato.co.jp
 1. 指示から申請を作り、表で見せて確かめる（当日なら「締切を過ぎると翌日扱いの恐れ」を添える）。
 2. `C:/tmp-ai/yamato_pickup_<日時>.json` に書く（UTF-8）:
    ```json
-   {"source":"A","pickup_date":"2026-10-21","time_slot":"none","items":{"takkyu":3},"comment":""}
+   {"source":"A","pickup_date":"2026-10-21","time_slot":"none","items":{"takkyu":3},"comment":"",
+    "purpose":"サスガワークスから楽天・Yahoo の注文分(宅急便 3 個)を出荷するため"}
    ```
+   - **purpose(目的)は必須。何のための操作か(誰に何を知らせる・何を補充する等)を 6〜120 字で書く。承認の画面・LINE WORKS・電話の音声案内で運用者に示す。電話の文は外部の音声サービス(Microsoft)へ送るので、人名・住所・電話番号・メールアドレス・お客様名は書かない**（2026-10-21 運用者決定。無い・短い・長いと `rejected`）
    - `time_slot`: `none`=指定なし / `am`=13時まで / `14-16` / `16-18` / `17-1830`
    - `items`: `takkyu` 宅急便・`cool`・`time_service`・`compact` 宅急便コンパクト・`nekopos` ネコポス/ゆうパケット・`yumail` ゆうメール(冊)・`other`
 3. `C:\ClaudeCode\900.ClaudeCode` で `python -m yamato_pickup.cli enqueue <json>` → `queued` と申請番号を伝え、見張り役の記録（`a_browser_data\watch.log`）に「yamato id=N 承認を依頼」が出たことを確かめて、「LINE WORKS に届く承認の『実行』を押してください。押されしだい自動で続けます」と伝える。`rejected` なら理由をそのまま伝える。
