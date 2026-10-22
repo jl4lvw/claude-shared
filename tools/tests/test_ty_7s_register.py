@@ -29,3 +29,11 @@ def test_match_checks():
     assert t.check_match([{"sku": "a", "fnsku": "X1", "registered": True, "item_code": "G1"}]) != []
     dup = ok + [{"sku": "b", "fnsku": "X1", "registered": False}]
     assert t.check_match(dup) != []
+
+
+def test_match_unknown_status_blocks_registration():
+    """2026-10-22: 通信失敗(unknown)を「7S 未登録」と取り違えて登録に進まない。"""
+    unknown = [{"sku": "a", "fnsku": "X1", "registered": False, "status": "unknown"}]
+    assert t.check_match(unknown) != []
+    absent = [{"sku": "a", "fnsku": "X1", "registered": False, "status": "absent"}]
+    assert t.check_match(absent) == []

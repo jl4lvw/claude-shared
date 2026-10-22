@@ -97,6 +97,12 @@ def check_match(results: list[dict]) -> list[str]:
     fnskus = [r["fnsku"] for r in results if r.get("fnsku")]
     if len(set(fnskus)) != len(fnskus):
         problems.append("FNSKU に重複があります")
+    # 2026-10-22: 通信失敗を「7S 未登録」と取り違えない。022 は既定では確認不能なら
+    # HTTP 503 を返す(→ match() で refuse)が、status 付きで unknown が来た場合も登録しない。
+    problems += [
+        f"7S 登録の有無を確認できません(通信): {r.get('sku')}"
+        for r in results if r.get("status") not in (None, "registered", "absent")
+    ]
     problems += [f"7S に登録済み: {r['sku']}({r.get('item_code')})" for r in results if r.get("registered")]
     return problems
 

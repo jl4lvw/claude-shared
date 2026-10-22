@@ -286,7 +286,8 @@ def ask_lineworks(group: str, text: str, sha: str, mention_name: str, url: str, 
     ])
     if a.url:
         draft += f"\n画像: {a.url}"
-    draft += f"\n有効期限 {TTL_HOURS} 時間。{lineworks.reply_hint(code)}"
+    # 承認は承認の画面でだけ(2026-10-22 運用者決定)。本文の末尾に、その承認を直接開くリンクを書く
+    draft += f"\n有効期限 {TTL_HOURS} 時間。{lineworks.reply_hint(code)}\n承認の画面: {lineworks.approval_link(code)}"
     try:  # 承認の画面(PWA)で読む全文(2026-10-21 運用者決定: 長い文は LINE WORKS では読まれないため)
         approval_text.write(code, sha, f"LINE「{a.group}」への投稿",
                             f"{approval_purpose.line(purpose)}\n送信先: LINE のグループ「{a.group}」\n\n{mention}{text}"
@@ -295,8 +296,8 @@ def ask_lineworks(group: str, text: str, sha: str, mention_name: str, url: str, 
         pass
     try:
         parts = lineworks.send_text(draft, room=room)
-        lineworks.send_buttons(f"LINE の「{a.group}」へ、この内容で送信しますか?(コード {code})",
-                               lineworks.approval_buttons(code, sha, "送信する"), room=room)
+        lineworks.send_buttons(f"LINE の「{a.group}」への投稿を中止するときは押してください(コード {code})",
+                               lineworks.reject_buttons(code, sha), room=room)
     except Exception as exc:  # noqa: BLE001
         with db.write_tx() as conn:
             lineworks.void_unsent(conn, code)
