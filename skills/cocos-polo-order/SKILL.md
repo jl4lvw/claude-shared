@@ -1,12 +1,19 @@
 ---
 name: cocos-polo-order
-description: コーコス信岡（co-cos.net）でポロシャツ（AS-1657 半袖 / AS-1658 長袖）の素材を注文し、社内の刺繍依頼書を作るまでの標準手順。専用ツール 900.ClaudeCode/cocos_order で「多品種発注入力」を自動入力→dryrun（確定の手前・照合）→アーティファクトで承認→確定→台帳 history.csv 記録→刺繍依頼書 PDF。「ポロシャツを注文」「コーコスで注文」「ポロシャツ刺繍」「/cocos-polo-order」で使う。刺繍は必ずセット。
+description: コーコス信岡（co-cos.net）でポロシャツ（AS-1657 半袖 / AS-1658 長袖）の素材を注文し、社内の刺繍依頼書を作るまでの標準手順。専用ツール 900.ClaudeCode/cocos_order が「多品種発注入力」を自動入力→確定手前の確認→申請を積む→運用者が承認の画面(PWA)で承認→見張り役が実行して確定→台帳 history.csv・刺繍依頼書 PDF まで。「ポロシャツを注文」「コーコスで注文」「ポロシャツ刺繍」「/cocos-polo-order」で使う。刺繍は必ずセット。
 ---
 
 # コーコス ポロシャツ注文 → 刺繍依頼
 
-ツール: `C:\ClaudeCode\900.ClaudeCode\cocos_order`（TOMS の toms_order と同じ作り。Playwright 専用プロファイル）。
+ツール: `C:\ClaudeCode\900.ClaudeCode\cocos_order`（TOMS・CAB と同じ作り。見張り役 `a_browser_watch` の対象 `cocos`。Playwright 専用プロファイル）。
 注文画面の構造と決定事項は 2026-10-22 の調査・運用者決定による。**新しいデザインのときは運用者の指示で `settings.json` の defaults と本書を改修する**。
+
+## 承認は承認の画面(PWA)でだけ（2026-10-22 運用者決定・最重要）
+
+- **チャットで承認を求めない・チャットの返事では承認として扱わない。** アーティファクトで「承認してください」と書くのも禁止。
+- 承認は、Claude が `enqueue` で申請を積むと、見張り役が LINE WORKS へ知らせとリンク(`approve.sfuji.f5.si`)を送り、運用者が**承認の画面**で承認する。
+- Claude は承認の表（090 の line_approvals）に書き込まない・`run` を自分で起動しない（承認コードなしでは動かない）。
+- Claude の仕事は「申請を積む」「承認を待つ（`a_browser_data\watch.log` を見る）」「結果を読む（`show`）」まで。
 
 ## 固定の決まり（運用者決定 2026-10-22）
 
@@ -23,54 +30,60 @@ description: コーコス信岡（co-cos.net）でポロシャツ（AS-1657 半�
 ## 手順
 
 ### 1. 最初にまとめて聞く（小出しにしない）
-次を 1 回で聞く: **色 × サイズ × 数量**（品番も）/ **件名**（例「ポロシャツ半袖 戦艦大和刺繍」）/ **刺繍の納期**（例「10月30日」）。
+次を 1 回で聞く（`AskUserQuestion` のクリック形式）: **品番・色 × サイズ × 数量** / **件名**（例「ポロシャツ半袖 戦艦大和刺繍」）/ **刺繍の納期**（例「11月6日」）。
 デザインが新しいときだけ、摘要・備考の文言も聞く（既定は「左胸・大和刺繍」）。
 
-### 2. 注文 JSON を作る（scratchpad に）
+### 2. 注文 JSON を作る（`cocos_order\data\orders\` に）
 ```json
-{"lines": [{"item": "1657", "color": "13", "size": "L", "qty": 20}],
- "subject": "ポロシャツ半袖 戦艦大和刺繍", "delivery": "10月30日"}
+{"lines": [{"item": "1657", "color": "1", "size": "L", "qty": 24}],
+ "subject": "ポロシャツ半袖 戦艦大和刺繍", "delivery": "11月6日",
+ "purpose": "コーコスでポロシャツ48枚を注文し、ステッチハウスへ直送する(戦艦大和の左胸刺繍用)"}
 ```
-`memo` / `note` / `customer_order_no` は省略すると settings.json の defaults。上限は settings.json の limits（300枚・税込50万円・送料1,000円。**運用者の仮置き**）。
+- `purpose`（目的）は**必須**（6〜120字・承認の画面に「依頼元の説明」として出る。人名・住所・連絡先は書かない）。
+- `memo` / `note` / `customer_order_no` は省略すると settings.json の defaults。上限は settings.json の limits（300枚・税込50万円・送料1,000円。**運用者の仮置き**）。
 
-### 3. dryrun（確定の手前まで。確定ボタンは押さない）
+### 3. 申請を積む（確定手前の確認つき）
 ```
-cd C:\ClaudeCode\900.ClaudeCode\cocos_order && python cli.py dryrun <注文.json> --headless
+cd C:\ClaudeCode\900.ClaudeCode && python -m cocos_order.cli enqueue cocos_order\data\orders\<注文>.json --headless
 ```
-`status: ready` かつ `problems: []` を確かめる。止まったら理由（即納数不足・金額不一致・直送先など）をそのまま報告し、確定に進まない。
-スクリーンショットは `data/shots/`（最終画面で、直送先・運送便・備考・送料を目で確認できる）。
+ブラウザで確定の手前まで入力し、画面の実数（即納数・金額・送料）を照合して、**問題がなければ**申請を積む（`status: queued`・申請番号 id）。問題があれば `rejected`（理由が出る）。**確定ボタンは押さない。**
+スクリーンショットは `data\shots\`（最終画面で直送先・運送便・備考・送料を目で確認できる）。
 
-### 4. アーティファクトで承認を得る（承認前に confirm しない）
-dryrun の結果から、次を表にして出す: 明細（色/サイズ/数量/単価）・金額計・**送料**・即納数と回答（翌営出荷など）・直送先（ステッチハウス）・摘要/備考・刺繍の件名/納期。
-運用者の明示的な承認があるまで confirm を実行しない。
+### 4. 承認を待つ（チャットで求めない）
+運用者に「承認の画面で承認してください（LINE WORKS の知らせのリンクから）」と 1 行だけ伝える。承認の文面は見張り役が作る（明細・金額・送料・直送先・摘要/備考・刺繍の件名/納期）。
+`a_browser_data\watch.log` を裏で待ち、「実行終了」を読んでから `show` で結果を見る（運用者の「どうなった」を待たない）。
 
-### 5. confirm（承認後にだけ）
+### 5. 結果を読む
 ```
-cd C:\ClaudeCode\900.ClaudeCode\cocos_order && python cli.py confirm <注文.json> --headless
+cd C:\ClaudeCode\900.ClaudeCode && python -m cocos_order.cli show <申請番号>
 ```
-ツール側の門: 同じ注文の dryrun が 60 分以内に問題なしで終わっている / 24 時間以内に同じ注文を確定していない（結果不明でも再確定しない）/ 停止スイッチなし / 確定直前にもう一度照合。
-status: `confirmed`（受注番号あり）/ `confirmed_no_number`（確定したが番号を読めない。`completion_text` と `shot_after` を見て人が番号を確かめる）/ `unknown`（確定したか不明。**絶対に再実行しない**。注文履歴問合せで人が確かめる）/ `duplicate` `not_ready` `stopped`。
+| status | 意味 |
+|---|---|
+| `confirmed` | 確定した。`order_no`（読めないときは `warnings` に出る）・`embroidery_pdf`・`history_row` を確認して報告 |
+| `stopped` | 確定していない（金額が承認と変わった・照合が合わない・停止スイッチなど）。理由を報告して積み直す |
+| `needs_human` | 確定したか不明。**絶対に再申請しない**。ご注文履歴で人が確かめる |
+| `not_approved` / `rejected` / `failed` | 承認されなかった／形が不正／失敗。理由を報告 |
 
-### 6. 確定後
-```
-cd C:\ClaudeCode\900.ClaudeCode\cocos_order && python cli.py record <注文.json> --order-no <受注番号> --note "<原価メモ>"
-```
-刺繍依頼書 PDF を `017.Tシャツなどの注文\orders\` と `current_order\` に作り、`history.csv` に 1 行追記する（受注番号・依頼書ファイル名つき）。
+確定後は自動で、刺繍依頼書 PDF を `017.Tシャツなどの注文\orders\` と `current_order\` に作り、`history.csv` に 1 行追記する（作成に失敗しても確定の結果は変えず `warnings` に出る）。
 PDF の印刷は頼まれたときだけ（標準プリンターで A4 1 部）。
 
+## ツール側の門
+承認コードなしでは確定しない（`a_browser_common.approval_gate`）/ 承認のあと申請の中身が変わっていたら動かない / 実行時にもう一度入力して照合し、**金額計・送料が承認時と同じ**ときだけ確定 / 24 時間以内に同じ注文を確定した記録（台帳）があれば止める（結果不明でも再確定しない）/ 停止スイッチ（`data\STOP`・`a_browser_data\STOP`）/ 確認ダイアログは「発注の確定」を押す瞬間だけ受け入れる。
+
 ## 止まったとき
-- ログイン不可: ID・パスワードは keyring（`python setup_credentials.py`。運用者が入力）。画面の変更なら `python cli.py check` で確認。
-- 停止スイッチ: `python cli.py stop` / `resume`（`data/STOP`。`a_browser_data/STOP` でも止まる）。
-- 台帳（確定を試みた記録）: `python cli.py ledger`。
+- ログイン不可: ID・パスワードは keyring（`python setup_credentials.py`。運用者が入力）。`python -m cocos_order.cli check --headless` で確認。
+- 停止スイッチ: `python -m cocos_order.cli stop` / `resume`。
+- 台帳（確定を試みた記録）: `python -m cocos_order.cli ledger`。
+- 見張り役に `cocos` が見えないとき: `targets.py` の更新後に見張り役（タスク `A_BrowserWatch`）の再起動が要る。
 
 ## 既知の未確認（初回の本番注文で確かめる）
-- 完了画面の受注番号の表示位置・書き方（読めないときは `confirmed_no_number`）
-- 運送便は最終画面のスクリーンショットで確認（福山通運・着店542が初期値。dryrun の carrier 欄は空になることがある）
-- 単価 830 円（半袖ブラック）が税込か税抜か（台帳の原価欄は空欄にし、備考にメモ）
-- 1 枚だけの注文は送料 600 円が付く（20 枚は 0 円）。送料の無料条件は未確認
+- （確認済み 2026-10-22）受注番号は完了画面の「【弊社受注№】 819184」。読めなかったときは `warnings` に出る
+- 運送便は最終画面のスクリーンショットで確認（福山通運・着店542が初期値）
+- 単価 830 円（半袖）が税込か税抜か（台帳の原価欄は空欄）
+- 1 枚だけの注文は送料 600 円が付く（20 枚・48 枚は 0 円）。送料の無料条件は未確認
 
 ## 禁止・注意
-- 運用者の承認なしに confirm を実行しない。dryrun の `ready` は承認ではない。
+- **チャットでの承認の依頼・受け取りをしない**（承認の画面だけ）。
 - ログイン情報を会話・ログ・台帳に書かない。
 - 画面の文字を読めない行があれば自動で確定せず止まる（失敗側に倒す）。勝手に回避しない。
 - `.claude` を変えたら `/g-ul`（共有への反映）まで行う。
