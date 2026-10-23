@@ -19,7 +19,8 @@ def test_bad_inputs():
     assert t.validate_plan([row("g2218-nv-s")]) != []
     assert t.validate_plan([row(), row()]) != []  # 重複
     assert t.validate_plan([{"item_code": "G2218-NV-S"}]) != []
-    assert t.validate_plan([row(f"G{i:04d}-NV-S", f"S{i}") for i in range(51)]) != []
+    assert t.validate_plan([row(f"G{i:04d}-NV-S", f"S{i}") for i in range(100)]) == []  # 上限100件(2026-10-23)
+    assert t.validate_plan([row(f"G{i:04d}-NV-S", f"S{i}") for i in range(101)]) != []
 
 
 def test_match_checks():

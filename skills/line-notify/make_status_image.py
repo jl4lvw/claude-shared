@@ -159,8 +159,13 @@ def render(spec: dict, out: Path) -> None:
                     d.text((M, y), sub, font=font(24), fill=INK)
                     y += 36
             y += 14
+    # 下の余白は削る(2026-10-23 運用者決定: A4 である必要は無く、余白があれば詰めてよい)。幅は変えず、縦だけ内容に合わせる。
+    # 全面 A4 にしたいときは spec に "trim": false
+    bottom = H if spec.get("trim") is False else min(H, y + (100 if spec.get("footer") else 40))
     if spec.get("footer"):
-        d.text((M, H - 60), spec["footer"], font=font(20), fill=MUT)
+        d.text((M, bottom - 60), spec["footer"], font=font(20), fill=MUT)
+    if bottom < H:
+        im = im.crop((0, 0, W, bottom))
     im.save(out, dpi=(150, 150))
 
 

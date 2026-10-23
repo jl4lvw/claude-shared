@@ -182,6 +182,29 @@ def rakuten_fingerprint(remote: dict) -> str:
     return rakuten_sync.canonical_hash(remote)
 
 
+def rakuten_field_hashes(remote: dict) -> dict:
+    """項目ごとの短い指紋。下見の時点のものを plan に残し、あとで「どの項目が変わったか」を示すために使う(2026-10-23)。"""
+    sys.path.insert(0, str(PM_ROOT))
+    from server.services import rakuten_sync
+    return {k: hashlib.sha256(json.dumps(remote.get(k), sort_keys=True, ensure_ascii=False,
+                                         separators=(",", ":")).encode("utf-8")).hexdigest()[:8]
+            for k in rakuten_sync.HASHED_FIELDS}
+
+
+FIELD_LABELS = {"title": "商品名", "tagline": "キャッチコピー", "price": "価格", "inventories": "在庫",
+                "images": "画像", "productDescription": "商品説明", "variants": "バリエーション"}
+
+
+def changed_rakuten_fields(plan: dict, remote: dict) -> str:
+    """下見の後に楽天側で変わった項目の名前(「商品説明・画像」など)。記録が無い古い plan は「不明」。"""
+    old = plan.get("rakuten_field_hashes")
+    if not isinstance(old, dict):
+        return "どの項目かは記録がありません"
+    now = rakuten_field_hashes(remote)
+    names = [FIELD_LABELS.get(k, k) for k, v in now.items() if old.get(k) != v]
+    return "・".join(names) if names else "項目の指紋は同じ"
+
+
 def _to_int(x: Any) -> int | None:
     try:
         return int(float(str(x).replace(",", "")))
@@ -205,6 +228,42 @@ def parse_variants(remote: dict) -> list[dict]:
 
 
 THIN_PATHS = {"【ネコポス可】"}  # これだけでは商品カテゴリにも組織フォルダにも出ない
+
+# 楽天の紐づけから Yahoo! の紐づけを決める部品(099 カテゴリー統一・2026-10-23)
+CAT_SYNC_DIR = Path(r"C:\ClaudeCode\099.ECサイトカテゴリー統一プロジェクト")
+
+
+def rakuten_shipping_groups(remote: dict) -> set[str]:
+    """楽天の配送方法グループ('1'=メール便)。023 rakuten_sync と同じ読み方。"""
+    variants = remote.get("variants") or {}
+    items = variants.values() if isinstance(variants, dict) else variants
+    return {str((v.get("shipping") or {}).get("shippingMethodGroup")) for v in items
+            if isinstance((v.get("shipping") or {}).get("shippingMethodGroup"), (str, int))}
+
+
+def yahoo_paths_from_rakuten(mn: str, remote: dict) -> dict:
+    """楽天に登録済みの紐づけを対応表で Yahoo! のパスに直す(読み取りのみ)。
+
+    099 の cat_sync.derive に任せる: Yahoo! に作らないカテゴリーは外す / 名前を変えたものは変えた後 /
+    【ネコポス可】はメール便のときだけ / 送料無料は付けずに要確認 / Yahoo! にまだ無いものは外して記録 /
+    実体(1行目)は商品分類・組織の下で一番深いもの。決められなければ status が ok 以外になる。
+    """
+    groups = rakuten_shipping_groups(remote)
+    if len(groups) > 1:
+        return {"status": "needs_check", "detail": f"バリエーションで配送方法グループが違います: {sorted(groups)}"}
+    args = [sys.executable, "-m", "cat_sync.derive", "paths", mn]
+    if groups:
+        args += ["--shipping-group", next(iter(groups))]
+    try:
+        done = subprocess.run(args, cwd=CAT_SYNC_DIR, capture_output=True, timeout=600,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except subprocess.TimeoutExpired:
+        return {"status": "failed", "detail": "楽天・Yahoo! の読み取りが時間内に終わりませんでした"}
+    lines = done.stdout.decode("utf-8", errors="replace").strip().splitlines()
+    try:
+        return json.loads(lines[-1])
+    except (ValueError, IndexError):
+        return {"status": "failed", "detail": done.stderr.decode("utf-8", errors="replace")[-300:]}
 
 
 def path_lines(path: str | None) -> list[str]:
@@ -263,6 +322,14 @@ def yahoo_copy_candidates(title: str, is_variation: bool, exclude: str = "", lim
     return out[:limit]
 
 
+def store_path_options() -> list[str]:
+    """既存商品で使われている紐付くパスの一覧(選べるパスの例。存在確認には使わない・2026-10-23)。"""
+    out: set[str] = set()
+    for r in q_all("SELECT path FROM yahoo_snapshot_products WHERE path IS NOT NULL"):
+        out.update(path_lines(r["path"]))
+    return sorted(out)
+
+
 def pin_copy_source_paths(plan: dict) -> None:
     """承認時にコピー元のパスを plan へ固定する(承認ハッシュの対象になる).
 
@@ -277,6 +344,19 @@ def pin_copy_source_paths(plan: dict) -> None:
     if row is None:
         raise SystemExit(f"NG: コピー元 {y['copy_code']} が023の yahoo_snapshot_products にありません"
                          "(Yahoo!に実在するなら get_item で取得して取り込む。SKILL.md 参照)")
+    if y.get("paths"):
+        # パスを直接指定した場合: コピー元からは product_category だけを使う(2026-10-22)
+        # 実在は Yahoo! の今の木で確かめる(2026-10-23。スナップショットには後から作ったカテゴリーや
+        # 商品の無いカテゴリーが無いため)。023 の register-new も同じ確かめ方をする
+        want = sorted({p.strip() for p in y["paths"]})
+        try:
+            res = run_json_tool(["-m", "server.services.yahoo_store_tree", "check", *want])
+        except StepFail as e:
+            raise SystemExit(f"NG: Yahoo! のカテゴリー一覧を読めませんでした。少し待ってからやり直してください: {e}")
+        if res.get("missing"):
+            raise SystemExit(f"NG: Yahoo! のストアに無いパスです: {res['missing']}")
+        y["expected_paths"] = want
+        return
     lines = path_lines(row["path"])
     if set(lines) <= THIN_PATHS and not y.get("allow_thin_path"):
         raise SystemExit(f"NG: コピー元 {y['copy_code']} のパスが {lines} だけで、ワッペン等のカテゴリにも"
@@ -330,6 +410,15 @@ def preflight(g: str) -> dict:
     pending_rows = y_pending.get("pending_rows", 0)
     if pending_rows:
         flags.append(f"Yahoo!に他の未反映が {pending_rows} 件あります。店頭反映するとこれらも一緒に公開されます(反映は人が行う設定を推奨)")
+    y_from_rakuten = yahoo_paths_from_rakuten(mn, remote)
+    if y_from_rakuten.get("status") == "ok":
+        for p in y_from_rakuten.get("missing") or []:
+            flags.append(f"Yahoo! にまだ無いカテゴリーなので外して登録します(カテゴリー統一の段階で付け替え): {p}")
+        for p in y_from_rakuten.get("needs_check") or []:
+            flags.append(f"Yahoo! の紐づけの要確認: {p}")
+    else:
+        flags.append("楽天から Yahoo! の紐づけを決められませんでした("
+                     f"{y_from_rakuten.get('detail') or y_from_rakuten.get('needs_check')})。コピー元の紐づけで登録します")
     name_examples = estore_name_examples(title)
     flags.append("Eストア表示名は登録時点で短く決める(未設定のまま登録すると、後で管理画面から手動で"
                 "直すことになり023の記録と食い違う実例があった: G2225 2026-09-25)。楽天の長い商品名を"
@@ -342,6 +431,7 @@ def preflight(g: str) -> dict:
         "estore_price_main": excl_tax(min(prices)) if prices else None,
         "estore_product_name": None,
         "rakuten_fingerprint": rakuten_fingerprint(remote),
+        "rakuten_field_hashes": rakuten_field_hashes(remote),
         "lead_time_days": 5,
         "estore": {"register": True, "publish": True},
         "yahoo": {"register": True, "copy_code": None, "publish": True,
@@ -352,15 +442,24 @@ def preflight(g: str) -> dict:
         "not_included": ["Amazon (amz-register)", "LCL", "7S(コマースロボ)"],
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
+    if y_from_rakuten.get("status") == "ok":  # 紐づけは楽天から決める。コピー元は product_category だけに使う
+        draft["yahoo"]["paths"] = y_from_rakuten["paths_api"]  # 023 の書き方(":" 区切り・1行目が実体)
+        draft["yahoo"]["paths_source"] = "rakuten"
     return {
         "draft_plan": draft,
         "already_in_023": existing,
+        # 楽天の紐づけから決めた Yahoo! の紐づけ(paths=登録する・missing=Yahoo! に無いので外した・
+        # dropped=外した理由つき・needs_check=要確認)。2026-10-23 カテゴリー統一
+        "yahoo_paths_from_rakuten": y_from_rakuten,
         "yahoo_copy_candidates": yahoo_copy_candidates(title, is_var, exclude=mn),
+        # 紐付くパスを直接指定するときに選べるパス(ストアに実在するもの。2026-10-22)
+        "yahoo_path_options": store_path_options(),
         "estore_name_examples": name_examples,
         "flags": flags,
         "questions": ["Eストア表示名(短く。参考例=estore_name_examples。楽天の長い商品名は使わない)",
                       "Eストア価格(既定: 楽天税込価格÷1.1)と納期日数(既定: 5日)",
-                      "Yahoo!のコピー元商品(=紐付くパス。候補ごとにパス全文を見せる。【ネコポス可】だけの候補は推奨しない)",
+                      "Yahoo!のコピー元商品(yahoo_paths_from_rakuten が ok なら紐づけは楽天から決めた paths を使い、"
+                      "コピー元は product_category だけに使う。ok でなければ従来どおり紐付くパスで選ぶ)",
                       "公開の可否(Eストア/Yahoo!)。Yahoo!の店頭反映はストア全体の未反映分をまとめて公開する"],
     }
 
@@ -430,6 +529,13 @@ def validate_plan(p: dict) -> None:
                              "参考: 既存の兄弟SKUは実測19〜52文字です。短くしてください")
         if name == (p.get("title") or ""):
             raise SystemExit("NG: estore_product_name が楽天の商品名(title)と同じです。短縮してください")
+    if y.get("paths") is not None:
+        ps = y["paths"]
+        if (not isinstance(ps, list) or not ps or len(ps) > 20
+                or not all(isinstance(x, str) and x.strip() for x in ps)):
+            raise SystemExit(f"NG: yahoo.paths は1〜20件の文字列の配列で指定してください: {ps!r}")
+        if set(x.strip() for x in ps) <= THIN_PATHS:
+            raise SystemExit("NG: yahoo.paths が【ネコポス可】だけです。商品カテゴリのパスを入れてください")
     if y["register"] and not y.get("copy_code"):
         raise SystemExit("NG: Yahoo! を登録するには copy_code が必要です")
     if y.get("copy_code") and str(y["copy_code"]).lower() == p["manage_number"]:
@@ -486,16 +592,24 @@ class Ctx:
 
 
 def step_import(c: Ctx) -> tuple[str, str]:
+    # 楽天側の指紋チェックは「これから取り込むとき」だけ止める理由になる(古い内容を取り込む恐れがあるため)。
+    # 023 に取込済みなら取込はしないので、止めない(GoQ だけ後から進める再開が、翌日以降も止まらないように。
+    # 2026-10-23 cgd Lv3: 取込済みでも指紋で止めていたため、DEFERRED の再開が G2244/G2245 で止まった)
+    drift = ""
     if c.plan.get("rakuten_fingerprint"):
         remote = rakuten_remote(c.mn)
         if remote is None:
             raise StepFail("楽天RMSに商品が見つかりません(承認後に削除された可能性)")
         if rakuten_fingerprint(remote) != c.plan["rakuten_fingerprint"]:
-            raise NeedsUser("楽天RMS側の内容が下見(preflight)の時点から変わっています。"
-                            "価格・画像・バリエーション構成が古いまま登録される恐れがあるため中断しました。"
-                            "preflight をやり直して plan を作り直し、承認し直してください")
+            if not c.row(c.main):
+                raise NeedsUser("楽天RMS側の内容が下見(preflight)の時点から変わっています"
+                                f"(変わった項目: {changed_rakuten_fields(c.plan, remote)})。"
+                                "価格・画像・バリエーション構成が古いまま登録される恐れがあるため中断しました。"
+                                "preflight をやり直して plan を作り直し、承認し直してください")
+            drift = (f"(楽天側は下見の後に変わっています: {changed_rakuten_fields(c.plan, remote)}。"
+                     "取込はしていないので、この変更は 023 に反映されていません)")
     if c.row(c.main):
-        detail = f"023 に {c.main} あり"
+        detail = f"023 に {c.main} あり" + drift
         status = "SKIP"
     else:
         code, body = http("POST", "/api/rakuten/import",
@@ -643,8 +757,10 @@ def step_yahoo_register(c: Ctx) -> tuple[str, str]:
     info = run_json_tool(["tools/yahoo_publish_tool.py", "item", c.mn])  # 読み取り失敗は例外(fail-closed)
     if info.get("found"):
         return "SKIP", f"Yahoo! に登録済み(内容は verify で確認) display={info.get('display')}"
-    code, body = http("POST", f"/api/yahoo/api-sync/{c.main}/register-new",
-                      {"copy_code": y["copy_code"], "publish": bool(y["publish"])})
+    req = {"copy_code": y["copy_code"], "publish": bool(y["publish"])}
+    if y.get("paths"):
+        req["paths"] = y["paths"]  # 紐付くパスの直接指定(コピー元のパスは使わない)
+    code, body = http("POST", f"/api/yahoo/api-sync/{c.main}/register-new", req)
     if code != 200:
         raise StepFail(f"Yahoo登録 HTTP {code}: {str(body)[:300]}")
     body = _dict_body(body)
@@ -736,23 +852,85 @@ def _goq_all_ok(c: Ctx) -> tuple[bool, dict]:
 
 
 GOQ_JUDGE_WAIT = 300  # 秒
+GOQ_RECHECK_AFTER = 45  # 判定が NG・古いままのとき、この秒数たったら GoQ の連携表を取り直させる
+GOQ_RECHECK_MAX = 3  # 連携表の取り直しは、1回の待ちで最大この回数(GoQ を占有するジョブなので連打しない)
 
 
-def _wait_goq_judgement(c: Ctx, wait: int = GOQ_JUDGE_WAIT, every: int = 15) -> tuple[bool, dict]:
-    """連携判定が出るまで待つ.
+def _judgement_fresh(body: dict, since_ms: float | None) -> bool:
+    """判定が「連携の更新(resync)より後に作られたもの」か。since_ms が無ければ鮮度は問わない。"""
+    if since_ms is None:
+        return True
+    at = body.get("checked_at")
+    return isinstance(at, (int, float)) and not isinstance(at, bool) and at >= since_ms
+
+
+def _request_status_sync() -> bool:
+    """023 に「GoQ の連携表CSV出力→取込」だけを1回依頼し、終わるまで待つ(GoQ では読み取りだけ)。成否を返す。
+
+    判定は、キューが空になった「その時点」の GoQ の連携表から作られる。GoQ 側の登録は遅れて反映されることがあり、
+    その遅れの前に作られた NG の判定は、待つだけでは新しくならない(2026-10-23 G2245)。そこで取り直しを促す。
+    """
+    try:
+        code, q = http("POST", "/api/queue/goq-status-sync", {})
+        if code != 200 or not isinstance(q, dict) or "id" not in q:
+            return False
+        return _wait_queue(q["id"], timeout_s=480).get("status") == "ok"
+    except StepFail:
+        return False
+
+
+def _wait_goq_judgement(c: Ctx, wait: int = GOQ_JUDGE_WAIT, every: int = 15,
+                        since_ms: float | None = None) -> tuple[bool, dict]:
+    """連携判定が「全OK」になるまで待つ。戻り値は (全OKか, 最後に見た判定)。
 
     判定(goq_sync_status)は goq_resync ジョブ自体では作られず、キューが空になった後に
-    サーバーが「連携表CSV出力→023取込」を1回まとめて行ったときに作られる(job_queue._worker_loop)。
-    旧版は 20 秒だけ待っており、G2230 では約30秒後の取込にたまたま間に合ったが、G2231 では
-    約84秒かかって FAIL した(2026-09-28)。判定行ができるまで最大 wait 秒待つ。
-    判定行ができて NG なら(取込は済んでいるので)待たずに返す。
+    サーバーが「連携表CSV出力→023取込」を1回まとめて行ったときに作られ、そのたびに全置換される(job_queue._worker_loop)。
+    - 旧版は 20 秒だけ待ち(G2231 は約84秒かかって FAIL)、その後「判定行があれば NG でも待たずに返す」にしたが、
+      NG の判定行が GoQ の反映の遅れ(「基本コードが存在しません」)で作られたものだと、待ちが働かず FAIL した
+      (2026-10-23 G2245。約90秒後には全OKになっていた)。
+    - いまは、判定が全OK かつ(since_ms があれば)それより新しいときだけ成功とする。NG・古い判定は期限まで待ち、
+      GOQ_RECHECK_AFTER 秒ごとに連携表の取り直し(goq_status_sync)を最大 GOQ_RECHECK_MAX 回促す。
+    - 期限までに全OK にならなければ (False, 最後の判定) を返す。呼び出し側が FAIL ではなく PENDING として扱う。
     """
-    deadline = time.time() + wait
+    start = time.time()
+    deadline = start + wait
+    rechecks = 0
+    last_recheck = start
     while True:
         ok, body = _goq_all_ok(c)
-        if ok or "ok" in body or time.time() >= deadline:
-            return ok, body
+        if ok and _judgement_fresh(body, since_ms):
+            return True, body
+        now = time.time()
+        if now >= deadline:
+            return False, body
+        if rechecks < GOQ_RECHECK_MAX and now - last_recheck >= GOQ_RECHECK_AFTER:
+            rechecks += 1
+            _request_status_sync()  # 結果ではなく、そのあとの判定を読み直して決める
+            last_recheck = time.time()
+            continue
         time.sleep(every)
+
+
+# GoQ にアクセスできないとき(メンテナンス中・つながらない・自動ログインできない)の目印。
+# このときは在庫連携を行わず、登録だけ先に進める(2026-10-22 運用者決定)。状態は DEFERRED で残し、
+# plan は「完了」にしない(GoQ が使えるようになってから同じ plan で run すると、GoQ の手順だけ進む)
+GOQ_UNREACHABLE = ("メンテナンス中", "自動ログインに失敗", "接続", "タイムアウト", "Timeout", "timed out", "Connection")
+DEFERRED = "DEFERRED"
+# 連携の更新(resync)は済んだが、期限までに全モールの連携が確認できなかった(GoQ の反映の遅れ)。FAIL ではなく、
+# 確認待ちとして plan を未完了で残す。次の run は resync を打ち直さず、確認から再開する(2026-10-23 cgd Lv3)
+PENDING = "PENDING"
+RESYNC_JOB_REUSE_SEC = 6 * 3600  # 前回の resync ジョブの完了をこの時間内なら再利用(打ち直さない)
+
+
+def _goq_deferred(c: Ctx) -> bool:
+    """GoQ の在庫連携が行われていない/確認できていない(在庫の設定へ進んではいけない状態)."""
+    return (c.state.get("goq_resync") or {}).get("status") in (DEFERRED, PENDING)
+
+
+def _pending_text(body: dict) -> str:
+    return ("GoQの連携更新は済みましたが、期限までに全モールの連携を確認できませんでした(GoQ側の反映の遅れの可能性)。"
+            "在庫の設定は行いません。しばらくしてから同じ plan で run すると、連携更新はやり直さず確認から再開します。"
+            f"最後に見た判定: {json.dumps(body, ensure_ascii=False)[:200]}")
 
 
 def step_goq_resync(c: Ctx) -> tuple[str, str]:
@@ -761,6 +939,15 @@ def step_goq_resync(c: Ctx) -> tuple[str, str]:
     ok, body = _goq_all_ok(c)
     if ok:
         return "SKIP", "GoQ 連携判定はすでに全モール OK"
+    # 前回、resync は済んで確認待ち(PENDING)になっていたなら、打ち直さずに確認から再開する(二重の連携更新を避ける)
+    prev = c.state.get("_goq_resync_job") or {}
+    reuse = (c.state.get("goq_resync") or {}).get("status") == PENDING \
+        and time.time() * 1000 - float(prev.get("finished_ms") or 0) < RESYNC_JOB_REUSE_SEC * 1000
+    if reuse:
+        ok, body = _wait_goq_judgement(c, since_ms=prev["finished_ms"])
+        if ok:
+            return "OK", f"GoQ連携判定 {body.get('detail')}(前回の連携更新の確認)"
+        return PENDING, _pending_text(body)
     last = ""
     for _ in (1, 2):  # 自動ログインの一時失敗に 1 回だけ再実行 (連続失敗はロックを招くので 2 回まで)
         code, q = http("POST", "/api/queue/goq-resync", {"item_code": c.g})
@@ -768,14 +955,20 @@ def step_goq_resync(c: Ctx) -> tuple[str, str]:
             raise StepFail(f"enqueue HTTP {code}: {str(q)[:200]}")
         job = _wait_queue(q["id"])
         if job["status"] == "ok":
-            ok, body = _wait_goq_judgement(c)
+            finished_ms = time.time() * 1000
+            c.state["_goq_resync_job"] = {"id": q["id"], "finished_ms": finished_ms}
+            c.save()
+            ok, body = _wait_goq_judgement(c, since_ms=finished_ms)
             if ok:
                 return "OK", f"GoQ連携判定 {body.get('detail')}"
-            raise StepFail(f"resync は ok だが連携判定が全OKでない: {body}")
+            return PENDING, _pending_text(body)
         last = job.get("error_msg") or ""
         if "自動ログインに失敗" not in last:
             break
         time.sleep(60)
+    if any(k in last for k in GOQ_UNREACHABLE):
+        return DEFERRED, ("GoQにアクセスできないため、在庫連携は行いませんでした(登録は続けます)。"
+                          f"GoQが使えるようになったら、同じ plan で run すると在庫連携から進みます。理由: {last[:150]}")
     raise StepFail(f"GoQ在庫連携 失敗: {last[:200]}")
 
 
@@ -857,12 +1050,36 @@ def _plan_goq_jobs(c: Ctx, rows: list[dict]) -> list[tuple[str, int]]:
     return jobs
 
 
+def _goq_current_quantity(c: Ctx) -> int | None:
+    """GoQ の現在庫(単品)。読めなければ None(その場合は従来どおり設定へ進む)。023 の読み取り専用の下見を使う。"""
+    try:
+        code, body = http("GET", f"/api/line-agent/stock/preview?sku={c.main}", timeout=120)
+    except StepFail:
+        return None
+    if code != 200 or not isinstance(body, dict):
+        return None
+    qty = (((body.get("snapshot") or {}).get("goq") or {}).get("quantity"))
+    return qty if isinstance(qty, int) and not isinstance(qty, bool) else None
+
+
 def step_goq_stock(c: Ctx) -> tuple[str, str]:
     if not c.plan["goq"]["resync"]:
         return "SKIP", "plan で対象外(goq.resync=false のため在庫書込みも行わない)"
+    if _goq_deferred(c):
+        status = (c.state.get("goq_resync") or {}).get("status")
+        return status, ("GoQの在庫連携を行っていない/確認できていないため、GoQの在庫数の設定も行いませんでした"
+                        if status == DEFERRED else
+                        "GoQの連携の確認待ちのため、GoQの在庫数の設定は行いませんでした")
     progress: dict = c.state.setdefault("goq_stock_progress", {})
     rows = _goq_rows(c)
     jobs = _plan_goq_jobs(c, rows)
+    if not c.plan["is_variation"] and len(jobs) == 1 and not progress:
+        # 再開で在庫を0へ戻さない: 人がすでに在庫を入れていたら(0以外)上書きしない。バリエーションは行ごとの
+        # 現在庫を読む手段が無いため、この保護の対象外(従来どおり)
+        cur = _goq_current_quantity(c)
+        qty = jobs[0][1]
+        if isinstance(cur, int) and cur != int(qty):
+            return "SKIP", f"GoQの現在庫がすでに {cur} のため、{qty} には書き換えません(再開で在庫を戻さないため)"
     done = []
     for row_id, qty in jobs:
         if progress.get(row_id) == qty:
@@ -923,7 +1140,11 @@ def step_verify(c: Ctx) -> tuple[str, str]:
             issues.append(f"Yahoo!店頭が確認できない(HTTP {code})")
         else:
             facts.append("Yahoo!店頭OK" + ("(在庫切れ表示)" if re.search("在庫なし|売り切れ|在庫切れ", html) else ""))
-    if p["goq"]["resync"]:
+    if p["goq"]["resync"] and _goq_deferred(c):
+        facts.append("GoQ: 在庫連携は未実施(GoQにアクセスできなかった)"
+                     if (c.state.get("goq_resync") or {}).get("status") == DEFERRED
+                     else "GoQ: 連携更新は済み・全モールの連携は確認待ち(PENDING)")
+    elif p["goq"]["resync"]:
         ok, body = _goq_all_ok(c)
         if not ok:
             issues.append(f"GoQ連携判定NG: {body}")

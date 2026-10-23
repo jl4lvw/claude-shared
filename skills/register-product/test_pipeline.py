@@ -407,12 +407,201 @@ def test_wait_goq_judgement_waits_until_row_exists(monkeypatch):
     assert ok and body["ok"] is True
 
 
-def test_wait_goq_judgement_returns_ng_without_waiting(monkeypatch):
+class _Clock:
+    """試験用の時計。sleep すると進む(本物の時間は使わない)。"""
+
+    def __init__(self) -> None:
+        self.now = 1_000_000.0
+
+    def time(self) -> float:
+        return self.now
+
+    def sleep(self, sec: float) -> None:
+        self.now += sec
+
+
+def _clock(monkeypatch) -> _Clock:
+    clk = _Clock()
+    monkeypatch.setattr(pl.time, "time", clk.time)
+    monkeypatch.setattr(pl.time, "sleep", clk.sleep)
+    return clk
+
+
+NG = (False, {"sku": "G2245", "ok": False, "detail": {"reason": "GoQ に基本コードが存在しません"}, "checked_at": 5})
+
+
+def _ok(at: float) -> tuple[bool, dict]:
+    return True, {"ok": True, "detail": {"rakuten": True, "yahoo": True, "estore": True}, "checked_at": at}
+
+
+def test_wait_goq_judgement_ng_is_waited_for_and_rechecked_then_gives_up(monkeypatch):
+    """NG の判定行が在っても待つ(GoQ の反映の遅れ)。連携表の取り直しを最大回数だけ促し、期限で (False, 判定) を返す。"""
+    clk = _clock(monkeypatch)
+    syncs = []
+    monkeypatch.setattr(pl, "_goq_all_ok", lambda c: NG)
+    monkeypatch.setattr(pl, "_request_status_sync", lambda: syncs.append(clk.now) or True)
+    ok, body = pl._wait_goq_judgement(_C(_single()), wait=300, every=15)
+    assert not ok and body["ok"] is False
+    assert len(syncs) == pl.GOQ_RECHECK_MAX  # 連打しない
+    assert clk.now - 1_000_000 >= 300  # 期限まで待った
+
+
+def test_wait_goq_judgement_ng_then_ok_after_status_sync(monkeypatch):
+    """G2245(2026-10-23): 最初は NG、連携表の取り直しのあとに全OK になった。"""
+    clk = _clock(monkeypatch)
+    state = {"synced": False}
+    monkeypatch.setattr(pl, "_goq_all_ok", lambda c: _ok(9) if state["synced"] else NG)
+    monkeypatch.setattr(pl, "_request_status_sync", lambda: state.update(synced=True) or True)
+    ok, body = pl._wait_goq_judgement(_C(_single()), wait=300, every=15)
+    assert ok and body["ok"] is True
+    assert clk.now - 1_000_000 < 120  # 期限までは待たない
+
+
+def test_wait_goq_judgement_ignores_stale_ok(monkeypatch):
+    """resync より前の判定(checked_at が古い)は、全OK でも採用しない。"""
+    _clock(monkeypatch)
+    monkeypatch.setattr(pl, "_goq_all_ok", lambda c: _ok(100))
+    monkeypatch.setattr(pl, "_request_status_sync", lambda: True)
+    ok, _ = pl._wait_goq_judgement(_C(_single()), wait=60, every=15, since_ms=200)
+    assert not ok
+    ok, _ = pl._wait_goq_judgement(_C(_single()), wait=60, every=15, since_ms=50)
+    assert ok
+
+
+def test_judgement_fresh_requires_numeric_checked_at():
+    assert pl._judgement_fresh({}, None)
+    assert not pl._judgement_fresh({}, 1)
+    assert not pl._judgement_fresh({"checked_at": True}, 0)
+    assert pl._judgement_fresh({"checked_at": 5}, 5)
+
+
+def test_request_status_sync_uses_existing_023_job(monkeypatch):
     calls = []
-    monkeypatch.setattr(pl, "_goq_all_ok", lambda c: calls.append(1) or (False, {"ok": False, "detail": {"yahoo": False}}))
-    monkeypatch.setattr(pl.time, "sleep", lambda s: (_ for _ in ()).throw(AssertionError("待ってはいけない")))
-    ok, _ = pl._wait_goq_judgement(_C(_single()), wait=10_000, every=1)
-    assert not ok and len(calls) == 1
+
+    def fake_http(method, path, body=None, headers=None, timeout=300):
+        calls.append((method, path))
+        return 200, {"queued": True, "id": 7}
+
+    monkeypatch.setattr(pl, "http", fake_http)
+    monkeypatch.setattr(pl, "_wait_queue", lambda job_id, timeout_s=420: {"status": "ok"})
+    assert pl._request_status_sync() is True
+    assert calls == [("POST", "/api/queue/goq-status-sync")]
+    monkeypatch.setattr(pl, "_wait_queue", lambda job_id, timeout_s=420: {"status": "error"})
+    assert pl._request_status_sync() is False
+    monkeypatch.setattr(pl, "http", lambda *a, **k: (500, {}))
+    assert pl._request_status_sync() is False
+
+
+def test_goq_resync_timeout_becomes_pending_and_blocks_stock(monkeypatch, tmp_path):
+    clk = _clock(monkeypatch)
+    plan = {"g": "G2245", "manage_number": "g2245", "sku_main": "G2245", "goq": {"resync": True}}
+    c = pl.Ctx(plan, tmp_path / "p.state.json")
+    enq = []
+    monkeypatch.setattr(pl, "_goq_all_ok", lambda c: NG)
+    monkeypatch.setattr(pl, "http", lambda m, path, *a, **k: enq.append(path) or (200, {"id": 1}))
+    monkeypatch.setattr(pl, "_wait_queue", lambda _id, timeout_s=420: {"status": "ok"})
+    monkeypatch.setattr(pl, "_request_status_sync", lambda: True)
+    status, detail = pl.step_goq_resync(c)
+    assert status == pl.PENDING and "確認できませんでした" in detail and "在庫の設定は行いません" in detail
+    assert enq == ["/api/queue/goq-resync"]
+    c.state["goq_resync"] = {"status": status}
+    # 在庫の設定へは進まない(GoQ も触らない)
+    monkeypatch.setattr(pl, "_goq_rows", lambda c: (_ for _ in ()).throw(AssertionError("GoQ を触った")))
+    assert pl.step_goq_stock(c)[0] == pl.PENDING
+    # 次の run: 連携更新は打ち直さず、確認から再開する(今度は全OK)
+    seq = iter([NG, _ok(clk.now * 1000 + 5)])
+    monkeypatch.setattr(pl, "_goq_all_ok", lambda c: next(seq))
+    status, detail = pl.step_goq_resync(c)
+    assert status == "OK" and "前回の連携更新の確認" in detail
+    assert enq == ["/api/queue/goq-resync"]  # 打ち直していない
+
+
+def test_pending_old_job_is_not_reused(monkeypatch, tmp_path):
+    """前回の連携更新から時間がたちすぎていたら(6時間超)、確認待ちでも連携更新からやり直す。"""
+    clk = _clock(monkeypatch)
+    plan = {"g": "G2245", "manage_number": "g2245", "sku_main": "G2245", "goq": {"resync": True}}
+    c = pl.Ctx(plan, tmp_path / "p.state.json")
+    c.state["goq_resync"] = {"status": pl.PENDING}
+    c.state["_goq_resync_job"] = {"id": 1, "finished_ms": clk.now * 1000 - 7 * 3600 * 1000}
+    enq = []
+    monkeypatch.setattr(pl, "http", lambda m, path, *a, **k: enq.append(path) or (200, {"id": 2}))
+    monkeypatch.setattr(pl, "_wait_queue", lambda _id, timeout_s=420: {"status": "ok"})
+    seq = iter([NG, _ok(clk.now * 1000 + 5)])
+    monkeypatch.setattr(pl, "_goq_all_ok", lambda c: next(seq))
+    assert pl.step_goq_resync(c)[0] == "OK"
+    assert enq == ["/api/queue/goq-resync"]
+
+
+def _drift_ctx(monkeypatch, tmp_path, *, has_row: bool):
+    plan = {"g": "G2244", "manage_number": "g2244", "sku_main": "G2244", "is_variation": False,
+            "rakuten_fingerprint": "v2:old",
+            "rakuten_field_hashes": {"title": "aaaa", "price": "bbbb", "inventories": "cccc", "images": "dddd",
+                                      "productDescription": "eeee", "variants": "ffff", "tagline": "gggg"}}
+    c = pl.Ctx(plan, tmp_path / "p.state.json")
+    monkeypatch.setattr(pl, "rakuten_remote", lambda mn: {"title": "T"})
+    monkeypatch.setattr(pl, "rakuten_fingerprint", lambda r: "v2:new")
+    monkeypatch.setattr(pl, "rakuten_field_hashes", lambda r: dict(plan["rakuten_field_hashes"], productDescription="zzzz", images="yyyy"))
+    monkeypatch.setattr(pl.Ctx, "row", lambda self, sku: {"sku": sku} if has_row else None)
+    monkeypatch.setattr(pl.Ctx, "children", lambda self: [])
+    monkeypatch.setattr(pl, "q_one", lambda *a, **k: {"n": 1})
+    return c
+
+
+def test_import_skips_when_already_imported_even_if_rakuten_changed(monkeypatch, tmp_path):
+    """取込済みなら楽天側が変わっていても止めない(取込をしないので古い内容を取り込む恐れが無い)。変わった項目は添える。"""
+    c = _drift_ctx(monkeypatch, tmp_path, has_row=True)
+    status, detail = pl.step_import(c)
+    assert status == "SKIP" and "商品説明" in detail and "画像" in detail and "取込はしていない" in detail
+
+
+def test_import_still_stops_when_not_imported_and_rakuten_changed(monkeypatch, tmp_path):
+    c = _drift_ctx(monkeypatch, tmp_path, has_row=False)
+    with pytest.raises(pl.NeedsUser) as e:
+        pl.step_import(c)
+    assert "商品説明" in str(e.value) and "plan を作り直し" in str(e.value)
+
+
+def test_changed_rakuten_fields_without_record_says_unknown():
+    assert "記録がありません" in pl.changed_rakuten_fields({}, {})
+
+
+def _stock_ctx(monkeypatch, tmp_path, *, variation=False):
+    plan = {"g": "G2244", "manage_number": "g2244", "sku_main": "G2244", "is_variation": variation,
+            "goq": {"resync": True}, "variants": [{"variant_id": "g2244", "stock": 0}]}
+    c = pl.Ctx(plan, tmp_path / "p.state.json")
+    monkeypatch.setattr(pl, "_goq_rows", lambda c: [{"value": "175835", "text": "{}"}])
+    monkeypatch.setattr(pl, "_plan_goq_jobs", lambda c, rows: [("175835", 0)])
+    return c
+
+
+def test_goq_stock_does_not_overwrite_nonzero_stock(monkeypatch, tmp_path):
+    """再開で在庫を0に戻さない: すでに 20 が入っていたら書き換えない。"""
+    c = _stock_ctx(monkeypatch, tmp_path)
+    monkeypatch.setattr(pl, "_goq_current_quantity", lambda c: 20)
+    monkeypatch.setattr(pl, "http", lambda *a, **k: (_ for _ in ()).throw(AssertionError("書き込んだ")))
+    status, detail = pl.step_goq_stock(c)
+    assert status == "SKIP" and "20" in detail and "書き換えません" in detail
+
+
+def test_goq_stock_sets_zero_when_current_is_zero_or_unknown(monkeypatch, tmp_path):
+    for current in (0, None):
+        c = _stock_ctx(monkeypatch, tmp_path)
+        monkeypatch.setattr(pl, "_goq_current_quantity", lambda c, v=current: v)
+        monkeypatch.setattr(pl, "http", lambda m, path, body=None, *a, **k: (200, {"id": 3}))
+        monkeypatch.setattr(pl, "_wait_queue", lambda _id, timeout_s=420: {
+            "status": "ok", "result": {"changed_fields": ["stock[175835]"], "quantity": 0, "target_row_ids": ["175835"]}})
+        status, detail = pl.step_goq_stock(c)
+        assert status == "OK" and "175835=0" in detail
+
+
+def test_goq_current_quantity_reads_preview(monkeypatch, tmp_path):
+    c = _stock_ctx(monkeypatch, tmp_path)
+    monkeypatch.setattr(pl, "http", lambda *a, **k: (200, {"snapshot": {"goq": {"quantity": 20}}}))
+    assert pl._goq_current_quantity(c) == 20
+    monkeypatch.setattr(pl, "http", lambda *a, **k: (500, {}))
+    assert pl._goq_current_quantity(c) is None
+    monkeypatch.setattr(pl, "http", lambda *a, **k: (200, {"snapshot": {"goq": {"quantity": True}}}))
+    assert pl._goq_current_quantity(c) is None
 
 
 def test_store_links_for_single_all_malls():
@@ -427,3 +616,33 @@ def test_store_links_omit_unregistered_malls():
     p = _single()
     p["yahoo"]["register"] = False
     assert [m for m, _ in pl.store_links(p)] == ["楽天", "Eストア"]
+
+
+def test_goq_unreachable_defers_and_skips_stock(monkeypatch, tmp_path):
+    """GoQ がメンテナンス中なら在庫連携は DEFERRED(登録は続ける)。在庫書込みも行わず、plan は完了にしない。"""
+    import pipeline as pl
+
+    plan = {"g": "G2244", "manage_number": "g2244", "sku_main": "G2244", "goq": {"resync": True}}
+    c = pl.Ctx(plan, tmp_path / "p.state.json")
+    monkeypatch.setattr(pl, "_goq_all_ok", lambda c: (False, {}))
+    monkeypatch.setattr(pl, "http", lambda *a, **k: (200, {"id": 1}))
+    monkeypatch.setattr(pl, "_wait_queue", lambda _id: {"status": "error", "error_msg": "メンテナンス中: GoQ がメンテナンス中のため操作できません"})
+    status, detail = pl.step_goq_resync(c)
+    assert status == pl.DEFERRED and "在庫連携は行いませんでした" in detail
+    c.state["goq_resync"] = {"status": status}
+    monkeypatch.setattr(pl, "_goq_rows", lambda c: (_ for _ in ()).throw(AssertionError("GoQ を触った")))
+    assert pl.step_goq_stock(c)[0] == pl.DEFERRED
+
+
+def test_goq_other_error_still_fails(monkeypatch, tmp_path):
+    import pipeline as pl
+
+    plan = {"g": "G2244", "manage_number": "g2244", "sku_main": "G2244", "goq": {"resync": True}}
+    c = pl.Ctx(plan, tmp_path / "p.state.json")
+    monkeypatch.setattr(pl, "_goq_all_ok", lambda c: (False, {}))
+    monkeypatch.setattr(pl, "http", lambda *a, **k: (200, {"id": 1}))
+    monkeypatch.setattr(pl, "_wait_queue", lambda _id: {"status": "error", "error_msg": "行が見つかりません"})
+    import pytest as _pt
+
+    with _pt.raises(pl.StepFail):
+        pl.step_goq_resync(c)

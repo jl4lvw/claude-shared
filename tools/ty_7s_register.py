@@ -16,7 +16,7 @@
 
 安全条件(1 つでも外れたら何も書かず exit 10):
     - 依頼の送り元が TY(relay の受信箱で message_id の from を確認。見つからなければ拒否)
-    - 件数 1〜50、各行に item_code/product_name/spec1/spec2/amazon_fba_sku
+    - 件数 1〜100、各行に item_code/product_name/spec1/spec2/amazon_fba_sku
     - 品番が `G番号4桁-色2文字-サイズ` 形式、品番・SKU 重複なし
     - 022 の register-match で全件 FNSKU あり・FNSKU 重複なし・7S 未登録
     書込は商品マスタ登録(register-via-api)のみ。数量は送らない。
@@ -40,7 +40,7 @@ BASE = "http://127.0.0.1:8090/cart/7s/"
 # 022 は state-changing リクエストの Origin を検証する(localhost は許可されている)
 HEADERS = {"Content-Type": "application/json", "Origin": "http://127.0.0.1:8090"}
 ALLOWED_SENDER = "TY"
-MAX_ITEMS = 50
+MAX_ITEMS = 100
 CODE_RE = re.compile(r"^G\d{4}-[A-Z]{2}-[0-9A-Z]{1,3}$")
 REQUIRED = ("item_code", "product_name", "spec1", "spec2", "amazon_fba_sku")
 OK_STATUSES = ("verified_ok", "callback_ok")
