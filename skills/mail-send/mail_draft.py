@@ -3,11 +3,16 @@
 このスクリプトがあるので、メールのたびに EmailMessage の組み立てコードを書かない。
 本文は必ずファイルで渡す（コマンドライン引数に日本語・改行を載せると Windows で壊れる）。
 
+【2026-10-24 運用者決定】メールの送信は「承認の画面(PWA)で承認 → 080 の自動送信」が既定。
+Thunderbird の下書きを開くのは、運用者が「Thunderbirdで」「下書きで」と指示したときだけ。
+そのため --no-open なしで実行するには --thunderbird "<運用者の指示の引用>" が必須(無ければ何も作らず終了コード 2)。
+既定の送り方は .claude/skills/calendar-order/send_via_080.py(内部で --no-open でこのスクリプトを呼ぶ)。
+
 使い方:
-    python mail_draft.py --to "a@x.com,b@y.com" --subject "件名" --body-file body.txt
-    python mail_draft.py --to ... --subject ... --body-file ... --cc "c@z.com"
-    python mail_draft.py --to ... --subject ... --body-file ... --attach report.csv
-    python mail_draft.py --to ... --subject ... --body-file ... --no-open   # 開かずに生成だけ
+    python mail_draft.py --to "a@x.com,b@y.com" --subject "件名" --body-file body.txt --thunderbird "Thunderbirdで開いて"
+    python mail_draft.py --to ... --subject ... --body-file ... --cc "c@z.com" --thunderbird "..."
+    python mail_draft.py --to ... --subject ... --body-file ... --attach report.csv --thunderbird "..."
+    python mail_draft.py --to ... --subject ... --body-file ... --no-open   # 開かずに生成だけ(080 への提出の部品)
 
 禁止事項（過去に事故済み。理由は SKILL.md 参照）:
     - thunderbird -compose "to=...,body=..." の直叩き（本文が URL エンコードのまま出る）
@@ -100,7 +105,18 @@ def main() -> None:
     p.add_argument("--attach", nargs="*", type=Path, default=[])
     p.add_argument("--out", type=Path, default=None, help="EML出力先（既定: .mail_drafts/<本文ファイル名>.eml）")
     p.add_argument("--no-open", action="store_true", help="Thunderbirdを起動しない")
+    p.add_argument("--thunderbird", default="",
+                   help="Thunderbirdで開く指示を運用者から受けたときだけ、その指示の言葉を書く(--no-open なしで必須)")
     args = p.parse_args()
+
+    if not args.no_open and len(args.thunderbird.strip()) < 3:
+        sys.stderr.reconfigure(encoding="utf-8")  # CP932 コンソールで文字化けしないように
+        print("[中止] Thunderbird の下書きは、運用者が「Thunderbirdで」「下書きで」と指示したときだけ作ります。\n"
+              "       メールの送信は『承認の画面で承認 → 080 の自動送信』が既定です(2026-10-24 運用者決定)。\n"
+              "       既定の手順: python C:/ClaudeCode/.claude/skills/calendar-order/send_via_080.py submit ...\n"
+              "       指示があるときは --thunderbird \"<運用者の指示の引用>\" を付けて再実行してください。\n"
+              "       (EML だけ作るなら --no-open)", file=sys.stderr)
+        raise SystemExit(2)
 
     to = TEAM.get(args.to.strip(), args.to)
 
