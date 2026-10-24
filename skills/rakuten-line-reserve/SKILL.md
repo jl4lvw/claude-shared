@@ -86,7 +86,9 @@ python -m lineoa_reserve.cli enqueue <ID> --send-at "YYYY-MM-DD HH:MM" --text-he
 1. **確認した観点**(観点|結果): 配信日時が依頼どおり / 配信先がすべての友だち / 商品リンクが正しい商品につながる(n点)/ 商品が品切れでない(n点)/ クーポン・特設会場・検索のリンクが開ける(m本)/ 予約中の一覧に載っている。widths `[900, 220]`
 2. **カードごとの確認(N枚)**(No|カード|リンク先|在庫|結果): ②'の `cards.json` と検査結果から 1 枚 1 行。リンク先は商品なら G番号、ほかは「マラソン特設会場」「クーポン」「店内検索」「店舗トップ」など。widths `[80, 460, 260, 150, 170]`
 - 見出しの下の行(subtitle)は「10/24(土) 19:30 配信 / すべての友だち 約406人」。
-- 実例: `900.ClaudeCode/000.tmp/lineoa_20261024/spec2.json`。
+- **本文と画像の仕様は道具で作る**(2026-10-24〜・Yahoo!店と共通。手で書かない):
+  `python -m lineoa_reserve.report --store rakuten --cards <cards.json> --check <cards_check.json> --send-at "YYYY-MM-DD HH:MM" --friends 406 --reserved --out <フォルダ> [--accept <確かめて問題なしとした警告の URL> ...]`
+  → `body.txt` と `spec.json`(OK でないカードがあれば「気づいた点」の欄が付く)。実例: `900.ClaudeCode/000.tmp/lineoa_20261024/spec2.json`。
 - `request-approval --group 楽天メルマガ配信 --purpose "<日付>の楽天LINEの配信予約が済んだことを担当者に知らせるため"` → `wait-approval`(裏で)→ `send --send`。
 - 19:00〜翌 9:00 は道具がキューに積む(終了コード 20)。その場合も「翌朝 9:00 に送ります」と書いて完了扱い。
 

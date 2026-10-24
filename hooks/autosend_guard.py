@@ -10,13 +10,14 @@
 from __future__ import annotations
 
 import json
+import posixpath
 import re
 import sys
 
 # 2026-10-07 に 077 → 080 へ引っ越し(077.商品画像検索と番号が重なったため)。
 # 旧フォルダには旧い台帳・秘密鍵が残るので、削除されるまで両方を守る
 PROJECTS = ("080.メール自動送信", "077.メール自動送信")
-READ_OK = re.compile(r"/data/(logs|rejected)/")
+READ_OK = re.compile(r"/data/(logs|rejected)/", re.IGNORECASE)
 BASH_DENY = (
     re.compile("(?:" + "|".join(re.escape(p) for p in PROJECTS) + r")[\\/]+data", re.IGNORECASE),
     re.compile(r"ledger\.sqlite3", re.IGNORECASE),
@@ -24,6 +25,8 @@ BASH_DENY = (
     re.compile(r"lw_session\.json", re.IGNORECASE),
     re.compile(r"/lineworks/callback", re.IGNORECASE),
     re.compile(r"X-WORKS-Signature", re.IGNORECASE),
+    # chat 承認の判定フック。Claude が手で起動すると、本人の返事なしに承認が通りうる(取り違えの防止)
+    re.compile(r"chat_ok_hook", re.IGNORECASE),
 )
 
 
@@ -37,12 +40,24 @@ def _deny(reason: str) -> dict:
     }
 
 
+def _normalize(path: str) -> str:
+    """`..` を解決し小文字にする。data/logs/../secret.key や /DATA/ での素通りを防ぐ。"""
+    if not path:
+        return ""
+    return posixpath.normpath(path.replace("\\", "/")).lower()
+
+
 def decide(tool: str, tool_input: dict) -> dict | None:
-    if tool in ("Write", "Edit", "MultiEdit", "NotebookEdit", "Read"):
-        path = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
-        norm = path.replace("\\", "/")
+    if tool in ("Write", "Edit", "MultiEdit", "NotebookEdit", "Read", "Grep"):
+        path = str(tool_input.get("file_path") or tool_input.get("notebook_path")
+                   or tool_input.get("path") or "")
+        norm = _normalize(path)
+        # Grep はフォルダを再帰で読むので、080 の直下を指すと data まで届く
+        if tool == "Grep" and any(norm.endswith("/" + p) for p in PROJECTS):
+            return _deny("080 のフォルダ全体は Grep できません(data まで届くため)。"
+                         "autosend など下のフォルダを path に指定してください。")
         if any(p in norm for p in PROJECTS) and "/data/" in norm + "/":
-            if tool == "Read" and READ_OK.search(norm):
+            if tool in ("Read", "Grep") and READ_OK.search(norm + "/"):
                 return None
             return _deny("077 の data(台帳・依頼・秘密鍵)は Claude から直接触れません。"
                          "状態は `python cli.py status`、ログは data/logs を Read してください。")

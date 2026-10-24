@@ -7,6 +7,7 @@
     python send_via_080.py wait <job_id> [--minutes 30]
 
 承認は運用者本人だけが行う(Claude は承認しない)。添付のあるメールは「承認の画面」でだけ承認できる。
+添付なしは --chat で、運用者がチャットで「OK」と返事をすれば送れる(chat 承認・080 で有効なときだけ)。
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import argparse
 import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 import time
@@ -83,14 +85,41 @@ def cmd_submit(args: argparse.Namespace) -> int:
     if args.dry_run:
         print("dry-run: 提出していません")
         return 0
-    r = subprocess.run([sys.executable, str(CLI_080), "submit", str(zip_path)], capture_output=True,
-                       text=True, encoding="utf-8", cwd=str(CLI_080.parent))
+    submit = [sys.executable, str(CLI_080), "submit", str(zip_path)]
+    if args.chat:
+        # chat 承認(添付なしだけ)。セッションIDは Claude が手で渡さず、実行中のセッションのものを使う
+        sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+        if sid:
+            submit += ["--chat-session", sid]
+        else:
+            print("セッションIDが取れないので、chat 承認にしません(承認の画面で承認してください)")
+    r = subprocess.run(submit, capture_output=True, text=True, encoding="utf-8", cwd=str(CLI_080.parent))
     print(r.stdout.strip(), r.stderr.strip())
-    return r.returncode
+    if r.returncode != 0 or "確認カード(ここから)" in r.stdout or args.no_link:
+        return r.returncode
+    print_approval_link(job_id, args.link_wait)
+    return 0
+
+
+def print_approval_link(job_id: str, wait_sec: int) -> None:
+    """見張り役が承認を求め始めるのを待ち、承認の画面でこのメールを直接開くリンクを出す(2026-10-24 運用者決定)。
+    出たリンクはチャットにそのまま示す。承認は運用者が画面で行う(Claude はリンクを開かない・押さない)。"""
+    deadline = time.time() + wait_sec
+    while True:
+        r = subprocess.run([sys.executable, str(CLI_080), "approval-link", job_id], capture_output=True, text=True,
+                           encoding="utf-8", cwd=str(CLI_080.parent))
+        if r.returncode == 0 and r.stdout.strip().startswith("https://"):
+            print(f"承認の画面(このメールを直接開く): {r.stdout.strip()}")
+            return
+        if time.time() >= deadline:
+            print(f"承認の画面への直リンクはまだ出せません({r.stdout.strip()})。"
+                  f"後で `python {CLI_080} approval-link {job_id[:8]}` で出せます")
+            return
+        time.sleep(5)
 
 
 def cmd_wait(args: argparse.Namespace) -> int:
-    pending = ("awaiting_approval", "approved", "queued", "sending")
+    pending = ("received", "awaiting_approval", "approved", "queued", "sending", "send_invoked")
     deadline = time.time() + args.minutes * 60
     line = ""
     while time.time() < deadline:
@@ -122,6 +151,10 @@ def main() -> int:
     s.add_argument("--four-stage-at", required=True, help="4段階チェックを実際に行った時刻(ISO・JST)")
     s.add_argument("--deepseek-at", required=True, help="DeepSeek レビューを実際に行った時刻(ISO・JST)")
     s.add_argument("--dry-run", action="store_true")
+    s.add_argument("--no-link", action="store_true", help="承認の画面への直リンクを待たない")
+    s.add_argument("--link-wait", type=int, default=120, help="直リンクが出るまで待つ秒数(既定 120)")
+    s.add_argument("--chat", action="store_true",
+                   help="チャットの返事で承認を受ける(添付なしだけ)。出力の確認カードをそのままチャットに出す")
     w = sub.add_parser("wait")
     w.add_argument("job_id")
     w.add_argument("--minutes", type=int, default=30)
