@@ -3,7 +3,7 @@ name: rakuten-new-item
 description: 楽天市場に新しい商品(G番号)を API で作る標準手順。似た既存商品(型)を写し、商品名・説明文(固有の部分)・写真・価格・色とサイズ・属性だけを入れ替えて、倉庫(非表示)・在庫0で作る。入力は最初にまとめて聞き、商品名と説明文は Claude が型の書き方に合わせて下書きし、承認は承認の画面(PWA)でだけ取る。画像フォルダは使用率90%を超えたら使わず「Tシャツ2」のような新しいフォルダを作る。公開は人が RMS で見た目を確かめてから行い、Eストア・Yahoo!・GoQ は別に /register-product で行う。「楽天に新商品を登録」「楽天に新しい商品を作って」「G2246を楽天に登録」「/rakuten-new-item」で使う。
 ---
 
-<!-- SKILL_VERSION: 2026-10-24_120000 -->
+<!-- SKILL_VERSION: 2026-10-24_123000 -->
 
 # rakuten-new-item — 楽天に新しい商品を倉庫で作る
 
@@ -46,7 +46,7 @@ description: 楽天市場に新しい商品(G番号)を API で作る標準手�
    | 楽天の商品名 | 型と兄弟商品の付け方で Claude が 2〜3 案(バイト数つき。255 バイトまで。楽天は Shift_JIS 相当で数える) |
    | 価格(税込) | 楽天の価格。部隊識別帽の一般用など例外に注意(記憶 `project_mall_price_markup_10pct`) |
    | 色・サイズ | 無し/色/サイズ/色×サイズ。SKU 番号は `G2242-BK-3L` の形(色の略語 BK/NV/OD…)、SKU 管理番号は型の付け方(単品 `g2245`・色×サイズ `g2242black3l`) |
-   | 写真 | データ共有(`/img`)の番号かフォルダ。並び順(1 枚目がメイン)。型の共用画像(サイズ表など)を使い回すか |
+   | 写真 | データ共有(`/img`)の番号かフォルダ。並び順(1 枚目がメイン)。型の共用画像(サイズ表など)を使い回すか。切り抜くと端の商品が欠けそうな写真は「白い余白」にするか |
    | 商品の事実 | 何の商品か・由来・素材・大きさ・生産国など(説明文と属性に使う。推測で書かない) |
    | 属性 | 必須属性のうち型と違う値(シリーズ名・カラー・素材・原産国など) |
    | 店内カテゴリ | 付けるなら ID(099 の対応表 `099.ECサイトカテゴリー統一プロジェクト` から候補)。分からなければ付けない(人が RMS で) |
@@ -60,7 +60,7 @@ description: 楽天市場に新しい商品(G番号)を API で作る標準手�
  "item_number": "G2246", "template": "g2245",
  "title": "自衛隊 てぬぐい 【 手ぬぐい ( … )】 …",
  "description_html": "陸上自衛隊「…」の手ぬぐいです。<br>\n<br>\n…<br>\n<br>\n大きさ：約86cm×34cm<br>\n素材：綿100%<br>\n生産国：日本<br>\n<br>\n-------------------------<br>\n<img src=\"https://www.rakuten.ne.jp/gold/seifukunofuji/banner/nekopos-ra.jpg\">\n<br>",
- "images": ["C:/…/1.jpg", "C:/…/2.jpg"],
+ "images": ["C:/…/1.jpg", {"src": "C:/…/2.jpg", "rotate": 180}, {"src": "C:/…/3.jpg", "fit": "pad"}],
  "reuse_images": ["/06978817/12092953/g2244_09.jpg"],
  "variants": [{"id": "g2246", "sku": "G2246", "price": 726}],
  "attributes": {"シリーズ名": "…", "原産国／製造国": "日本", "代表カラー": "-", "素材（生地・毛糸）": "綿・コットン",
@@ -74,6 +74,13 @@ description: 楽天市場に新しい商品(G番号)を API で作る標準手�
   (外部の仕組みが翌朝までに新しい商品用に入れ直す)。スマホ用を変えるときだけ `description_sp_html`
 - 色・サイズがあるとき: `"selectors": [{"key": "Key1", "displayName": "カラー", "values": ["ブラック", "ネイビー"]}, …]` と、
   各 SKU の `"selectors": {"Key1": "ブラック", "Key0": "M"}`・SKU ごとに違う属性 `"attributes": {"カラー": "ブラック", "代表カラー": "ブラック", "サイズ（S/M/L）": "M"}`
+- **写真は build が楽天用に加工する**(設計書 9 節。元の写真は変えず、作業フォルダの `processed/` に置く):
+  1200×1200 の正方形の JPEG・2,000,000 バイト以内・向きの情報で回転・付帯情報(位置情報など)を消す。
+  - 正方形でない写真は**中央で切り抜く**(既定)。写真ごとに `"anchor": "top"|"bottom"|"left"|"right"` で寄せる位置、
+    `"fit": "pad"` で切らずに白い余白を足す。`"rotate": 90|180|270`(時計回り)は向きの情報の後に当たる
+  - 1200 より小さい写真は拡大する(承認の画面に「拡大」と出る)。すでに 1200×1200・2MB 以内の JPEG/PNG は作り直さず、付帯情報だけを消す
+  - 写真はデータ共有から `PS get <番号> --variant orig`(元の大きさ。HEIC も読める)か `full` で取り出し、
+    `900.ClaudeCode/a_browser_data/rakuten_new_item/<品番>/source/` に置く(一覧用の小さい画像は使わない)
 - 型にキャッチコピー・JAN・商品オプションがあるときは `tagline` / 各 SKU の `jan` / `keep_customization_options` を指定(無いと止まる)
 - 型の画像が古い置き場(rakuten01 の直下)にあるときは `"image_folder": "/06978817/<フォルダ>"` で置き場の系列を指定する
 
@@ -83,7 +90,11 @@ python tools/rakuten_new_item.py build --spec C:/ClaudeCode/900.ClaudeCode/a_bro
 ```
 
 終了コード 2(入力の誤り)なら `detail` を読んで spec を直す。通ったら出力の `summary` を**返答の本文にそのまま貼り**、
-`sheet.png`(写真の一覧)を見て並びと写真を確かめる。
+`sheet.png`(写真の一覧・**加工後の写真**)を **Read で必ず目で見る**(省略しない)。確かめること:
+- 逆さ・横向きの写真が無いか(スマホの写真は、上下が逆のまま向きの情報が「正常」で届くことがあり、自動では直らない)→ `rotate` を付けて build し直す
+- 切り抜きで商品が欠けていないか(見出しの「切抜」。summary に「※ … % を落としました」が出たものは特に)→ `anchor` か `"fit": "pad"` にして build し直す
+- 拡大した写真(見出しの「拡大」)がぼやけすぎていないか → 元の大きい写真があれば差し替える
+- summary の写真ごとの行(「元 4032×3024 → 中央で正方形に切り抜き → …」)も運用者向けの本文に含める
 
 ### 画像の置き場(2026-10-24 運用者決定)
 
@@ -141,6 +152,7 @@ python tools/rakuten_new_item.py build --spec C:/ClaudeCode/900.ClaudeCode/a_bro
 - 作成 API: `PUT /es/2.0/items/manage-numbers/{管理番号}`(新規 201・既存の上書き 204・送らない項目は消える)。自動再送しない
 - 在庫は作成の後に InventoryAPI で ABSOLUTE 0 → 読み戻し。店内カテゴリは `PUT /es/2.0/categories/item-mappings/manage-numbers/{管理番号}`
 - 必須属性は `GET /es/2.0/navigation/genres/{ジャンルID}/attributes` の MANDATORY。足りなければ build が止める
-- 試験: `023.商品マスタDB/tests/test_rakuten_new_item.py`(34 件)・`900.ClaudeCode/rakuten_new_item/test_cli.py`(9 件)
+- 写真の加工: `023.商品マスタDB/tools/rakuten_image_prep.py`(試験 `tests/test_rakuten_image_prep.py` 38 件)
+- 試験: `023.商品マスタDB/tests/test_rakuten_new_item.py`(36 件)・`900.ClaudeCode/rakuten_new_item/test_cli.py`(9 件)
 - 応答が不明なときは、楽天の作成時刻と中身で自分が作ったかを確かめる。再開時は在庫・カテゴリの前に毎回同じ商品かを確かめる
   (Codex レビューの反映。詳細は設計書 8 節)
