@@ -646,3 +646,49 @@ def test_goq_other_error_still_fails(monkeypatch, tmp_path):
 
     with _pt.raises(pl.StepFail):
         pl.step_goq_resync(c)
+
+
+# ---- Eストアのカテゴリ(2026-10-24 G2246) ----
+def test_estore_categories_from_rakuten_paths():
+    p = {"yahoo": {"paths_source": "rakuten", "paths": [
+        "組織・キャラで選ぶ(グッズ関連):海上自衛隊:水上艦:訓練支援艦:訓練支援艦くろべ", "地域で選ぶ:広島県呉市"]}}
+    assert pl.estore_categories_wanted(p) == [
+        ["組織・キャラで選ぶ(グッズ関連)", "海上自衛隊", "水上艦", "訓練支援艦", "訓練支援艦くろべ"],
+        ["地域で選ぶ", "広島県呉市"]]
+
+
+def test_estore_categories_need_rakuten_source():
+    assert pl.estore_categories_wanted({"yahoo": {"paths_source": "copy", "paths": ["a:b"]}}) == []
+    assert pl.estore_categories_wanted({"yahoo": {}}) == []
+
+
+def test_estore_categories_step_order():
+    names = [n for n, _ in pl.STEPS]
+    assert names.index("estore_register") < names.index("estore_categories") < names.index("estore_publish")
+
+
+def test_estore_categories_step_sets_and_reads_back(monkeypatch):
+    calls = []
+    store = {"now": [["海上自衛隊(制服ほか)・船員服"]]}
+    want = [["組織", "海自"], ["地域で選ぶ", "広島県呉市"], ["無い", "カテゴリ"]]
+
+    def fake_api(method, path, body=None, kind="manager"):
+        calls.append((method, path, body))
+        if method == "PUT":
+            store["now"] = [c["category"] for c in body["categories"]]
+        return {}
+
+    class C:
+        plan = {"estore": {"register": True}, "yahoo": {"paths_source": "rakuten",
+                                                        "paths": [":".join(p) for p in want]}}
+        main = "G9999"
+
+        def row(self, sku):
+            return {"estore_item_code": "G9999"}
+
+    monkeypatch.setattr(pl, "_estore_cat_api", fake_api)
+    monkeypatch.setattr(pl, "_estore_category_exists", lambda p: p[0] != "無い")
+    monkeypatch.setattr(pl, "_estore_categories_now", lambda code: store["now"])
+    st, msg = pl.step_estore_categories(C())
+    assert st == "OK" and store["now"] == want[:2] and "無い > カテゴリ" in msg
+    assert pl.step_estore_categories(C())[0] == "SKIP"

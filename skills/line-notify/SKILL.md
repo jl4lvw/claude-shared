@@ -126,6 +126,7 @@ python C:/ClaudeCode/.claude/skills/line-notify/line_notify.py send --group <グ
 ### 夜間(19:00〜翌 9:00)は送らずにキューに溜める(2026-10-20 寺下さん決定・自動化済み)
 
 **全グループが対象**(取引先のグループも含む)。抑止しないグループは `line-notify/quiet_hours.json` の `exempt_groups` に名前を書く。
+**例外(2026-10-24 運用者決定): 「楽天メルマガ配信」は 22:00 まで送ってよい**(`quiet_hours.json` の `group_start`。22:00〜翌 9:00 は溜める)。
 **Claude の手順は昼と同じ**(文面と画像を作る → `request-approval`)。夜かどうかは道具が判定する:
 
 | いつ | 道具の動き |

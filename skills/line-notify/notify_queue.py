@@ -2,6 +2,7 @@
 
 2026-10-20 運用者決定:
   - 19:00〜翌 9:00 は LINE グループへの報告を送らない(抑止期間)。対象は全グループ(quiet_hours.json の exempt_groups で外せる)
+  - 2026-10-24: グループごとに抑止の始まりを遅くできる(quiet_hours.json の group_start。楽天メルマガ配信は 22:00)
   - 抑止期間中に出た報告はキューに溜め、9:00 にまとめて、1 件ずつ今と同じ LINE WORKS の承認を求める。承認されたものだけ送る
   - 19:00 より前に承認されたものは、送るのが 19:00 を過ぎても送る(承認が 19:00 以降なら溜めて翌朝送る)
   - 9:00 に許可を求めて、その日の 19:00 までに返事が無かったものは、承認を取り消してキューに戻し、翌朝 9:00 にもう一度求める
@@ -36,6 +37,7 @@ class Quiet:
     start: dtime
     end: dtime
     exempt: frozenset[str] = field(default_factory=frozenset)
+    group_start: tuple[tuple[str, dtime], ...] = ()  # グループごとの抑止の始まり(終わりは共通)
 
 
 def _hm(text: str) -> dtime:
@@ -49,7 +51,15 @@ def load_config(path: Path = CONFIG) -> Quiet:
     if path.exists():
         d = json.loads(path.read_text(encoding="utf-8"))
     return Quiet(_hm(d.get("start", DEFAULT_START)), _hm(d.get("end", DEFAULT_END)),
-                 frozenset(d.get("exempt_groups", [])))
+                 frozenset(d.get("exempt_groups", [])),
+                 tuple((g, _hm(t)) for g, t in d.get("group_start", {}).items()))
+
+
+def quiet_for(group: str, q: Quiet) -> Quiet:
+    """このグループに当てはめる抑止期間。group_start に書いたグループは始まりだけ遅くする
+    (2026-10-24 運用者決定: 楽天メルマガ配信は 22:00 まで送ってよい)。"""
+    start = dict(q.group_start).get(group)
+    return Quiet(start, q.end, q.exempt, q.group_start) if start else q
 
 
 def in_quiet(dt: datetime, q: Quiet) -> bool:
@@ -61,7 +71,7 @@ def in_quiet(dt: datetime, q: Quiet) -> bool:
 
 def held(group: str, dt: datetime, q: Quiet) -> bool:
     """このグループへの報告を、いまは送らずに溜めるか。"""
-    return group not in q.exempt and in_quiet(dt, q)
+    return group not in q.exempt and in_quiet(dt, quiet_for(group, q))
 
 
 def next_open(dt: datetime, q: Quiet) -> datetime:

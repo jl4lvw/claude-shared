@@ -27,6 +27,23 @@ def test_held_respects_exempt_groups() -> None:
     assert not nq.held("制服のフジ情報共有", D.replace(hour=10), Q)
 
 
+def test_group_start_delays_quiet_for_that_group_only() -> None:
+    q = nq.Quiet(dtime(19, 0), dtime(9, 0), frozenset(), (("楽天メルマガ配信", dtime(22, 0)),))
+    assert not nq.held("楽天メルマガ配信", D.replace(hour=21, minute=59), q)
+    assert nq.held("楽天メルマガ配信", D.replace(hour=22), q)
+    assert nq.held("楽天メルマガ配信", D.replace(hour=8, minute=59), q)
+    assert not nq.held("楽天メルマガ配信", D.replace(hour=9), q)
+    assert nq.held("制服のフジ情報共有", D.replace(hour=20), q)
+
+
+def test_load_config_reads_group_start(tmp_path) -> None:
+    cfg = tmp_path / "q.json"
+    cfg.write_text('{"start": "19:00", "end": "09:00", "group_start": {"楽天メルマガ配信": "22:00"}}', encoding="utf-8")
+    q = nq.load_config(cfg)
+    assert nq.quiet_for("楽天メルマガ配信", q).start == dtime(22, 0)
+    assert nq.quiet_for("ほかのグループ", q).start == dtime(19, 0)
+
+
 def test_next_open_and_day_close() -> None:
     assert nq.next_open(D.replace(hour=22), Q) == D.replace(hour=9) + timedelta(days=1)
     assert nq.next_open(D.replace(hour=3), Q) == D.replace(hour=9)

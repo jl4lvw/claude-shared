@@ -689,6 +689,58 @@ def step_estore_register(c: Ctx) -> tuple[str, str]:
     return "OK", f"item_code={body['item_code']} 画像={len(body['images_uploaded'])}枚(非表示で作成)"
 
 
+# Eストアのカテゴリ(2026-10-24 G2246): 登録の道具はカテゴリを指定しないので、何もしないと
+# 「海上自衛隊(制服ほか)・船員服」だけに入る(運用者「よくない」)。楽天の紐付け(Yahoo! と同じ
+# yahoo.paths)を Eストアのカテゴリにする。Eストアに無いカテゴリは外して報告する。
+def _estore_cat_api(method: str, path: str, body: dict | None = None, kind: str = "manager") -> Any:
+    sys.path.insert(0, str(PM_ROOT))
+    from server.services.estore_client import request as es_request
+    return es_request(method, path, api_kind=kind, json_body=body).body
+
+
+def _estore_category_exists(path: list[str]) -> bool:
+    try:
+        body = _estore_cat_api("POST", "/item-categories/_get",
+                               {"category_path": path[:-1]} if len(path) > 1 else {}, kind="open_shop")
+    except Exception:  # noqa: BLE001  親カテゴリが無いと 404
+        return False
+    return path[-1] in (body or {}).get("children", [])
+
+
+def estore_categories_wanted(plan: dict) -> list[list[str]]:
+    y = plan.get("yahoo") or {}
+    if y.get("paths_source") != "rakuten":
+        return []
+    return [p.split(":") for p in y.get("paths") or [] if p]
+
+
+def _estore_categories_now(code: str) -> list[list[str]]:
+    body = _estore_cat_api("GET", f"/items/{code}/categories") or {}
+    return [c["category_names"] for c in sorted(body.get("categories") or [], key=lambda x: x["sort_number"])]
+
+
+def step_estore_categories(c: Ctx) -> tuple[str, str]:
+    if not c.plan["estore"]["register"]:
+        return "SKIP", "plan で対象外"
+    code = c.row(c.main)["estore_item_code"]
+    if not code:
+        raise StepFail("Eストアの商品コードが空(estore_register が済んでいない)")
+    wanted = estore_categories_wanted(c.plan)
+    if not wanted:
+        raise NeedsUser("楽天の紐付けから Eストアのカテゴリを決められません(plan の yahoo.paths_source が rakuten でない)。"
+                        "カテゴリを人が決めて、Eストアの管理画面か商品カテゴリ設定 API で付けてください")
+    ok = [p for p in wanted if _estore_category_exists(p)]
+    missing = [" > ".join(p) for p in wanted if p not in ok]
+    if not ok:
+        raise NeedsUser(f"楽天の紐付けに当たるカテゴリが Eストアに1つもありません: {missing}")
+    if _estore_categories_now(code) == ok:
+        return "SKIP", f"カテゴリは付け済み({len(ok)}件)"
+    _estore_cat_api("PUT", f"/items/{code}/categories", {"categories": [{"category": p} for p in ok]})
+    back = _estore_categories_now(code)
+    if back != ok:
+        raise StepFail(f"Eストアのカテゴリを読み戻すと違います: {back}")
+    return "OK", f"カテゴリ {len(ok)}件を設定" + (f"(Eストアに無いので外した: {missing})" if missing else "")
+
 def _all_bound(c: Ctx) -> bool:
     imgs = c.images()
     return bool(imgs) and all(r["bound_at"] for r in imgs)
@@ -1123,14 +1175,27 @@ def step_verify(c: Ctx) -> tuple[str, str]:
             price_txt = f"{p['estore_price_main']:,}円"
             if price_txt not in html:
                 issues.append(f"Eストア: 価格 {price_txt} が見つからない")
-            n_img = len(set(re.findall(rf"{c.g}_\d+\.jpg", html)))
+            # 写真を送り直すと {G番号}_v{日時}_{NN}.jpg の名前になる(tools/photo_expand.py)
+            n_img = len(set(re.findall(rf"{c.g}_(?:v\d+_)?\d+\.jpg", html)))
             if n_img < 1:
                 issues.append("Eストア: 商品画像の参照が見つからない")
+            # 楽天の「関連商品」の表が説明文に写ると、商品説明と写真の間に他の商品が大量に並ぶ
+            # (2026-10-20 G0191・2026-10-24 G2246 で運用者が「絶対にダメ」と指摘)
+            if "<b>関連商品</b>" in html or "TJ R PC" in html:
+                issues.append("Eストア: 説明文に楽天の「関連商品」の表が入っている")
             facts.append(f"Eストア店頭OK(画像{n_img}枚)" + ("(在庫切れ表示)" if "btn_nostock" in html else ""))
+    if p["estore"]["register"] and estore_categories_wanted(p):
+        now_cats = _estore_categories_now(c.row(c.main)["estore_item_code"])
+        if not now_cats or not set(map(tuple, now_cats)) <= set(map(tuple, estore_categories_wanted(p))):
+            issues.append(f"Eストア: カテゴリが楽天の紐付けと違う {now_cats}")
+        else:
+            facts.append(f"Eストアカテゴリ{len(now_cats)}件")
     if p["yahoo"]["register"]:
         info = run_json_tool(["tools/yahoo_publish_tool.py", "item", c.mn])
         path_issues = _yahoo_path_problems(c, info)
         issues += [f"Yahoo!: {x}" for x in path_issues]
+        if info.get("explanation_has_related"):
+            issues.append("Yahoo!: 説明文に楽天の「関連商品」の羅列が入っている")
         if not path_issues and p["yahoo"].get("expected_paths") is not None:
             facts.append(f"Yahoo!パス一致({len(info.get('paths') or [])}本)")
     if p["yahoo"]["register"] and p["yahoo"]["publish"] and p["yahoo"]["reserve_publish"]:
@@ -1159,6 +1224,7 @@ STEPS: list[tuple[str, Callable[[Ctx], tuple[str, str]]]] = [
     ("import", step_import),
     ("prices", step_prices),
     ("estore_register", step_estore_register),
+    ("estore_categories", step_estore_categories),
     ("estore_images", step_estore_images),
     ("estore_bind", step_estore_bind),
     ("estore_publish", step_estore_publish),

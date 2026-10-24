@@ -4,7 +4,40 @@ description: 楽天RMSに登録済みの新商品(G番号)を、023商品マス�
 trigger: 「Gxxxxを商品登録して」「新商品を登録」「023・Eストア・Yahoo!に登録」
 ---
 
-<!-- SKILL_VERSION: 2026-10-23_133354 -->
+<!-- SKILL_VERSION: 2026-10-24_175500 -->
+
+## 説明文に楽天の「関連商品」を写さない(絶対ルール・2026-10-24 運用者「絶対にダメ」)
+
+楽天の説明文の後半には、店の道具が差し込む「関連商品」の表(`<!--TJ R PC-->`〜`<!--TJ R PC-->`。他の商品の写真・名前・価格が十数件)
+が入っている。これを Eストアへそのまま写すと、**商品説明と商品写真の間に関連商品が大量に並んで見にくい**。Yahoo! にも商品名と価格の羅列が文字で残る。
+2026-10-20 に G0191 で指摘され、記録だけ残して道具を直さなかったため、2026-10-24 の G2246 で**同じ間違いを繰り返した**。
+
+- 道具で外す: `023.商品マスタDB/server/services/rakuten_desc_clean.py` の `strip_rakuten_related()` を、Eストアの説明文を送る3か所
+  (`estore_register.py` の下見・新規登録・更新)と Yahoo! の説明文を作る `yahoo_register_export.html_to_text()` で必ず通す。
+  説明文を送る経路を新しく作るときも、必ずこの関数を通す(試験: `server/tests/test_rakuten_desc_clean.py`)
+- `verify` が検査する: Eストアの店頭に「関連商品」の表が出ていたら・Yahoo! の説明文に「関連商品」があったら **FAIL**
+  (`yahoo_publish_tool.py item` の `explanation_has_related`)
+- **登録が終わったら Eストアの商品ページを Playwright(ヘッドレス・非GETは止める)で撮って、説明文のすぐ下に商品写真があることを目で確かめる**
+- 道具が外すのは関連商品の表だけ。表の手前にある「関連グッズ一覧」(楽天の店のカテゴリへの案内バナー)は残る。
+  G2246 では運用者の判断で、Eストア・Yahoo! とも「-----」線から下(バナーも)を外した。今後の扱いは運用者に確認する
+
+## Eストアのカテゴリは楽天の紐付けと同じにする(2026-10-24 運用者指示)
+
+Eストアの登録 API はカテゴリを指定しないため、何もしないと「海上自衛隊(制服ほか)・船員服」だけに入る(G2246 で運用者「よくない」)。
+`estore_categories` ステップ(estore_register の直後)が、plan の `yahoo.paths`(楽天から決めた紐づけ・`paths_source: "rakuten"`)を
+Eストアの商品カテゴリ設定 API(V2-M-0029・`PUT /v2/items/{商品番号}/categories`。**送った内容で全部置き換わる**)で付け、読み戻す。
+
+- Eストアに無いカテゴリ(`item-categories/_get` で確かめる)は外して、STEP の行に書く。1つも無い・楽天から決められないときは NEEDS_USER
+- `verify` は、Eストアのカテゴリが楽天の紐付けの範囲に入っているかを見る
+- 仕様書: `023.商品マスタDB/shopserve_api/`(NAS の写し `\\192.168.1.50\共有スペース\寺下\999.一時ファイル\EストアAPI仕様書(ショップサーブ)\`)
+
+## 写真の並び: Amazon のトップ画像用の「全体の写真」は末尾(2026-10-24 運用者指示)
+
+白い背景に商品全体だけが写った写真(Amazon のトップ画像に使うためのもの。楽天のファイル名は `_05c` などのことがある)は、
+**どのモールでも末尾に置く**。写真の並びは楽天から写すので、Phase 0 の下見で楽天の並びを見て、途中にあれば確認画面に
+「末尾へ移す」を入れる。登録後に直すときは、楽天の `images` を並べ替え(`rakuten_items.patch_item`・images だけ)→
+`023.商品マスタDB/tools/photo_expand.py --plan <{"g","locations"}> --work <作業フォルダ> [--apply]` で Eストア・Yahoo! へそろえる
+(G2246 で実施)。
 
 # register-product — 新商品登録(楽天登録済み → 023 / Eストア / Yahoo! / GoQ / 在庫)
 
@@ -114,6 +147,7 @@ python C:/ClaudeCode/.claude/skills/register-product/pipeline.py run --plan <pla
 | import | 楽天→023 取込(画像込み) | 子SKUの集合が plan と一致・画像あり |
 | prices | `estore_price`(親・子)・納期・**Eストア表示名**を PATCH | 親と全子を読み戻して一致(表示名も) |
 | estore_register | Eストアへ非表示で新規登録+画像FTP | final_status=ok・画像失敗0 |
+| estore_categories | Eストアのカテゴリを楽天の紐付けと同じにする(V2-M-0029) | 読み戻して一致。付け済みなら SKIP。Eストアに無いカテゴリは外して報告 |
 | estore_images | 画像台帳CSVの往復(保存セッションでブラウザ操作) | 023 の紐付け記録で SKIP 判定。CSV の画像名が対象SKUの送信済み画像と**完全一致**のときだけ送る |
 | estore_bind | 画像を商品に紐付け | 023 の `bound_at` が全画像で埋まる |
 | estore_publish | 公開(display=Yes+陳列期間解除) | `estore_status=public` |
@@ -121,7 +155,7 @@ python C:/ClaudeCode/.claude/skills/register-product/pipeline.py run --plan <pla
 | yahoo_reserve | 店頭反映(ストア全体) | 店頭に出ていれば SKIP。未反映が下見+許容を超えていれば**停止**。反映後は店頭ページが開くまで最大3分 |
 | goq_resync | GoQ在庫連携(キュー経由・ログイン失敗は1回だけ再実行) | 連携判定が**連携更新より新しく**全モール True。NG・古い判定は最大5分待ち、45秒ごとに GoQ の連携表の取り直し(023 の `goq-status-sync`・GoQ は読むだけ)を最大3回促す。期限までに全OKにならなければ FAIL ではなく **PENDING(確認待ち)** |
 | goq_stock | GoQ総在庫数を1行ずつ書く(行ID指定) | 行数=variant数・1対1対応・job の `changed_fields==["stock[<行ID>]"]`(実際に変わった行が対象の1行だけ)。行ごとの進捗を state に保存。**単品は GoQ の現在庫が0以外なら上書きしない**(再開で人が入れた在庫を0に戻さない)。連携が DEFERRED/PENDING のときは書かない |
-| verify | 店頭(Eストア・Yahoo!)と GoQ の最終確認 | 商品名・価格・画像の参照・Yahoo!のパス・連携判定 |
+| verify | 店頭(Eストア・Yahoo!)と GoQ の最終確認 | 商品名・価格・画像の参照・Yahoo!のパス・連携判定・**説明文に楽天の「関連商品」が無いこと**(Eストア店頭・Yahoo!説明文) |
 
 出力は 1行1ステップ `STEP <名前>: OK|SKIP|FAIL|NEEDS_USER|DEFERRED|PENDING <詳細>`。終了コード 0=完了 / 1=失敗 / 10=ユーザー操作が要る。
 DEFERRED(GoQ にアクセスできず連携を飛ばした)・PENDING(連携更新は済んだが全モールの連携を確認できていない)は**失敗ではなく**、終了コード 0 で plan を未完了のまま残す。どちらも在庫の設定(goq_stock)へは進まない。

@@ -377,7 +377,7 @@ def cmd_send(a: argparse.Namespace) -> None:
 
 
 def approved_in_quiet(group: str, row) -> bool:
-    """いま抑止期間中で、承認されたのも抑止期間に入ってから(19:00 以降)なら True。
+    """いま抑止期間中で、承認されたのも抑止期間に入ってから(19:00 以降。group_start のグループはその時刻以降)なら True。
     19:00 より前に承認されたものは、送るのが 19:00 を過ぎても送る(2026-10-20 運用者決定)。"""
     from datetime import datetime
     q = notify_queue.load_config()
@@ -386,7 +386,7 @@ def approved_in_quiet(group: str, row) -> bool:
     decided = row["decided_at"]
     if not decided:
         return True  # 承認の時刻が分からなければ、送らない側に倒す
-    return notify_queue.in_quiet(datetime.fromtimestamp(decided / 1000), q)
+    return notify_queue.in_quiet(datetime.fromtimestamp(decided / 1000), notify_queue.quiet_for(group, q))
 
 
 def deliver(group_id: str, group: str, text: str, mention_id: str, sha: str, code: str) -> list[str]:
