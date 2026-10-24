@@ -3,7 +3,7 @@ name: rakuten-new-item
 description: 楽天市場に新しい商品(G番号)を API で作る標準手順。似た既存商品(型)を写し、商品名・説明文(固有の部分)・写真・価格・色とサイズ・属性だけを入れ替えて、倉庫(非表示)・在庫0で作る。入力は最初にまとめて聞き、商品名と説明文は Claude が型の書き方に合わせて下書きし、承認は承認の画面(PWA)でだけ取る。画像フォルダは使用率90%を超えたら使わず「Tシャツ2」のような新しいフォルダを作る。公開は人が RMS で見た目を確かめてから行い、Eストア・Yahoo!・GoQ は別に /register-product で行う。「楽天に新商品を登録」「楽天に新しい商品を作って」「G2246を楽天に登録」「/rakuten-new-item」で使う。
 ---
 
-<!-- SKILL_VERSION: 2026-10-24_123000 -->
+<!-- SKILL_VERSION: 2026-10-24_140000 -->
 
 # rakuten-new-item — 楽天に新しい商品を倉庫で作る
 
@@ -78,6 +78,11 @@ description: 楽天市場に新しい商品(G番号)を API で作る標準手�
   1200×1200 の正方形の JPEG・2,000,000 バイト以内・向きの情報で回転・付帯情報(位置情報など)を消す。
   - 正方形でない写真は**中央で切り抜く**(既定)。写真ごとに `"anchor": "top"|"bottom"|"left"|"right"` で寄せる位置、
     `"fit": "pad"` で切らずに白い余白を足す。`"rotate": 90|180|270`(時計回り)は向きの情報の後に当たる
+  - **背景が写り込んだ写真は `"box": [左, 上, 右, 下]` で商品の範囲だけを切り出す**(2026-10-24 G2246 で追加)。
+    座標は元の写真のピクセルで、向きの補正と `rotate` を当てた後の向きで数える。切り出した後に `fit`(多くは `"pad"`)で正方形にする。
+    範囲の決め方: 元の写真に 256px ごとの目盛りを描いた確認用の画像を作って Read で見る(G2246 の実例は下)→ 試しに
+    `rakuten_image_prep.prepare(...)` で 1 枚作って目で見る → spec に書く。**斜めから撮った写真(台形)は四角では背景が残るので使わない**
+    (撮り直しを頼むか、外す)。例: `{"src": "…/61.jpg", "rotate": 180, "box": [235, 950, 3895, 2815], "fit": "pad"}`(真上から撮ったタオル全体)
   - 1200 より小さい写真は拡大する(承認の画面に「拡大」と出る)。すでに 1200×1200・2MB 以内の JPEG/PNG は作り直さず、付帯情報だけを消す
   - 写真はデータ共有から `PS get <番号> --variant orig`(元の大きさ。HEIC も読める)か `full` で取り出し、
     `900.ClaudeCode/a_browser_data/rakuten_new_item/<品番>/source/` に置く(一覧用の小さい画像は使わない)
@@ -152,7 +157,8 @@ python tools/rakuten_new_item.py build --spec C:/ClaudeCode/900.ClaudeCode/a_bro
 - 作成 API: `PUT /es/2.0/items/manage-numbers/{管理番号}`(新規 201・既存の上書き 204・送らない項目は消える)。自動再送しない
 - 在庫は作成の後に InventoryAPI で ABSOLUTE 0 → 読み戻し。店内カテゴリは `PUT /es/2.0/categories/item-mappings/manage-numbers/{管理番号}`
 - 必須属性は `GET /es/2.0/navigation/genres/{ジャンルID}/attributes` の MANDATORY。足りなければ build が止める
-- 写真の加工: `023.商品マスタDB/tools/rakuten_image_prep.py`(試験 `tests/test_rakuten_image_prep.py` 38 件)
+- 写真の加工: `023.商品マスタDB/tools/rakuten_image_prep.py`(試験 `tests/test_rakuten_image_prep.py` 42 件)
+- 実績: **G2246**(バスタオル 訓練支援艦くろべ・型 g2204)を 2026-10-24 13:46 に作成(申請 #62)。写真 5 枚・メインは #61 を box で切り出し
 - 試験: `023.商品マスタDB/tests/test_rakuten_new_item.py`(36 件)・`900.ClaudeCode/rakuten_new_item/test_cli.py`(9 件)
 - 応答が不明なときは、楽天の作成時刻と中身で自分が作ったかを確かめる。再開時は在庫・カテゴリの前に毎回同じ商品かを確かめる
   (Codex レビューの反映。詳細は設計書 8 節)
