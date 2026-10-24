@@ -105,7 +105,7 @@ python ".claude/skills/relay/scripts/relay_client.py" send --to A --type task --
 ### ⑥ 予約受付メールの確認（運用者の配信予約を待つ）
 運用者が RMS で配信予約すると、楽天（support@rakuten.co.jp）から「【RMS】R-Mail 配信予約を受け付けました」が **予約 1 件ごとに 1 通**、fw-shopmaster@ の受信箱へ届く。本文の `rmail_id` を下書きの ID と照らし合わせ、**全部の種類の分がそろったら予約完了**。
 ```
-python ".claude/skills/rakuten-merumaga-flow/scripts/reserve_notice.py" wait --ids <HTML の ID>,<携帯の ID> --out "900.ClaudeCode/000.tmp/reserve_<日付>" --timeout-min 360
+python ".claude/skills/rakuten-merumaga-flow/scripts/reserve_notice.py" wait --ids <HTML の ID>,<携帯の ID> --out "900.ClaudeCode/000.tmp/reserve_<日付>" --timeout-min 360 --check "900.ClaudeCode/000.tmp/check_<日時>.json" [--accept <確かめて問題なしとした警告の URL> ...]
 ```
 - `run_in_background` で回し、運用者には「予約したら自動で気づきます」と伝えて待つ（「予約したら教えて」とは頼まない）。先に `check` で 1 回見る（予約が先に済んでいることがある）。
 - 終了コード 0=そろった（`reserve.json`・`body.txt`（LINE の本文）・`spec.json`（画像の仕様）を保存）／13=時間切れ（運用者に予約の状況を聞く）。
@@ -114,15 +114,20 @@ python ".claude/skills/rakuten-merumaga-flow/scripts/reserve_notice.py" wait --i
 - 予約受付メールは「予約を受け付けた」知らせだけ。あとでキャンセルされても分からない。
 
 ### ⑦ LINE で完了を知らせる（`/line-notify` の手順 2〜4）
-本文は `reserve_notice.py` が作る形（**2026-10-24 運用者が 5 案から案 3 を採用**）。URL は書かない（`--url` が末尾に足す）:
+**本文は短く、詳細は画像に書く**（2026-10-24 運用者決定。画像は 5 案から**案 1（確認した観点の表）+ 案 2（リンクごとの表）**を採用）。
+本文は `reserve_notice.py` の `body.txt`。URL は書かない（`--url` が末尾に足す）:
 ```
 ◆楽天メルマガ 配信予約完了
-
-10/24(土) 15:00 に配信されます。
-件名：本日20時〜＼6時間限定10%OFFクーポン／Tシャツなど新作も続々♪
-PC用 1,967人 / 携帯用 766人
+10/24(土) 15:00 配信(PC用・携帯用)
+リンク・在庫を確認しました。
+詳しくは画像をご確認ください。
 ```
-- 件名は HTML メールの件名（携帯用は固定の件名なので書かない）。人数は予約受付メールの「送信人数」。種類ごとに配信時刻が違うときは、種類ごとに時刻を並べる。
+画像（`spec.json`）は 2 つの表:
+1. **確認した観点**（観点｜結果）… PC 用・携帯用の配信予約（日時・人数）／件名／商品リンクが正しい（n 点）／品切れでない（n 点）／そのほかのリンクが開ける（m 本）。OK は緑、要確認は赤い行
+2. **リンクごとの確認**（No｜リンク｜リンク先（G番号）｜在庫｜結果）… 商品は 1 行ずつ、問題のあったリンクも 1 行ずつ、OK のそのほかのリンクは「そのほかのリンク N 本」の 1 行にまとめる（1 枚に収めるため 14 行まで）
+- ②の検査結果を `--check` で渡す（渡さないと①の表だけ）。人が確かめて問題なしとした警告（案内文と名前が合わないだけ等）は `--accept <URL>` で「OK(確認済)」にする。**確かめていない警告に `--accept` を付けない**。
+- 絵文字は画像の字体に無いので、名前から自動で外す。
+- 種類ごとに配信時刻が違うときは、本文に種類ごとの時刻を並べる。
 - 画像は `spec.json` から `make_status_image.py` で作る → `line_notify.py publish` → `request-approval --group 楽天メルマガ配信 --purpose "<日付>の楽天メルマガの配信予約が済んだことを担当者に知らせるため"` → `wait-approval`（裏で）→ 承認後に `send --send`。
 - 19:00〜翌 9:00 は道具がキューに積む（終了コード 20）。その場合も「翌朝 9:00 に送ります」と書いてスキルは完了扱い。
 - 送ったら、LINE のメッセージ ID と、予約内容（種類・日時・人数）を報告して完了。

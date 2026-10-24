@@ -4,7 +4,7 @@ description: 合同会社ハイアップ(呉市光町・コンパス得意先236
 trigger: ハイアップ(合同会社ハイアップ・若狭様)から卸売の発注書が届いたとき
 ---
 
-<!-- SKILL_VERSION: 2026-10-24_1515 -->
+<!-- SKILL_VERSION: 2026-10-24_1540 -->
 
 # hiup-order — ハイアップの発注書 → GoQ 新規受注
 
@@ -38,6 +38,10 @@ trigger: ハイアップ(合同会社ハイアップ・若狭様)から卸売の
    - `023.商品マスタDB/data/productmaster.db` の `products`(商品名 LIKE)
    - `036.ピッキングリスト出力/data/picking.db` の `product_master`(ピッキングで出る名前・保管場所)と `code_map`(GoQ のコードが何に解決されるか)
    - ネット未出品の店頭品は品番が無いことがある → コンパスの売上(`/conphas-search --mode sales --kw <半角カナ>`)で実在を確かめ、運用者に仮コードを決めてもらう(例 `FUNA-PLACUP-GN`)
+   - **仮コードは SKUDB にも行を足す**(足さないとピッキングリストで所在が出ない)。書く口は 042 の `POST http://127.0.0.1:8303/api/skudb/ops/add` だけ(CSV を直接いじらない)。
+     行は A列=品名・B列とE列=仮コード・F列=所在(既存の所在から運用者に選んでもらう)。まず `commit:false` でエラー・警告・照合のずれが 0 件か確かめ、
+     その後 `commit:true` で保存。保存直後は 036 が「書き出された直後」として約 20 秒読めない。読めたら `picking_logic.resolve_sku` で名前と所在が出るか確かめる
+     (2026-10-24 FUNA-PLACUP-GN/WH を 12_F2-2階 で登録・履歴 4ba4db5b0b5e654b)
    - 色違い・枚数違いに注意(タンブラー 零戦 グリーン=G0768/灰色=G1283、カレー皿は 1枚単位 `CG0849-CRRYSARA-Sx1`)
 
    決まったら `parsers/hiup_products.json` に 1 行足す(`pdf_name` は発注書の表記そのまま。空白・全角半角は無視して照合される)。

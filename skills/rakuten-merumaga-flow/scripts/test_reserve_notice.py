@@ -42,16 +42,53 @@ def test_plain_text_works_without_get_body():
     assert "rmail_id：26792904" in rn.plain_text(m)
 
 
-def test_body_uses_html_subject_and_counts():
-    body = rn.build_body([rn.parse(SAMPLE), _mobile()])
-    assert body == ("◆楽天メルマガ 配信予約完了\n\n"
-                    "10/24(土) 15:00 に配信されます。\n"
-                    "件名：本日20時〜＼6時間限定10%OFFクーポン／Tシャツなど新作も続々♪\n"
-                    "PC用 1,967人 / 携帯用 766人\n")
+def test_body_is_short_and_points_to_image():
+    body = rn.build_body([rn.parse(SAMPLE), _mobile()], checked=True)
+    assert body == ("◆楽天メルマガ 配信予約完了\n"
+                    "10/24(土) 15:00 配信(PC用・携帯用)\n"
+                    "リンク・在庫を確認しました。\n"
+                    "詳しくは画像をご確認ください。\n")
     assert "https://" not in body  # URL は --url が足す
 
 
 def test_body_lists_each_time_when_they_differ():
     body = rn.build_body([rn.parse(SAMPLE), _mobile("2026-10-24 20:00:00")])
-    assert "PC用：10/24(土) 15:00 に配信" in body
-    assert "携帯用：10/24(土) 20:00 に配信" in body
+    assert "PC用 10/24(土) 15:00 / 携帯用 10/24(土) 20:00 配信" in body
+
+
+FINDINGS = [
+    {"level": "ok", "url": "https://item.rakuten.co.jp/seifukunofuji/g2243/", "name": "部隊識別帽",
+     "message": "OK(在庫 計125・2バリエーション)"},
+    {"level": "warn", "url": "https://item.rakuten.co.jp/seifukunofuji/g1510/", "name": "Tシャツ",
+     "message": "一部欠品(在庫 計3)"},
+    {"level": "ok", "url": "https://www.rakuten.ne.jp/gold/seifukunofuji/", "name": "", "message": "到達OK"},
+    {"level": "warn", "url": "https://item.rakuten.co.jp/seifukunofuji/c/0000000418/", "name": "＞アウトドア",
+     "message": "リンク切れの疑い(HTTP 404)"},
+]
+
+
+def test_spec_has_view_table_and_link_table():
+    spec = rn.build_spec([rn.parse(SAMPLE), _mobile()], FINDINGS)
+    view, links = spec["sections"][0]["grid"], spec["sections"][1]["grid"]
+    assert view["header"] == ["観点", "結果"] and view["ok_col"] == 1
+    results = dict(view["rows"])
+    assert results["商品リンクが正しい商品につながる(2点)"] == "要確認"  # 一部欠品の警告がある
+    assert results["そのほかのリンクが開ける(2本)"] == "要確認"  # 404 がある
+    assert links["rows"][0] == ["1", "部隊識別帽", "G2243", "125", "OK"]
+    assert links["rows"][1][4] == "要確認" and 1 in links["stop_rows"]
+    assert links["rows"][-1] == ["4", "そのほかのリンク", "1 本", "―", "OK"]
+
+
+def test_accept_marks_reviewed_warning_ok_and_strips_emoji():
+    f = [{"level": "warn", "url": "https://www.rakuten.co.jp/seifukunofuji/contents/kagurazakaevent/",
+          "name": "詳しくは下記リンクをCHECK👀", "message": "名前が合いません"}]
+    spec = rn.build_spec([rn.parse(SAMPLE)], f, frozenset({f[0]["url"]}))
+    view, links = spec["sections"][0]["grid"], spec["sections"][1]["grid"]
+    assert dict(view["rows"])["そのほかのリンクが開ける(1本)"] == "OK"
+    assert links["rows"][0] == ["1", "詳しくは下記リンクをCHECK", "リンク", "―", "OK(確認済)"]
+    assert links["stop_rows"] == []
+
+
+def test_spec_without_check_has_only_view_table():
+    spec = rn.build_spec([rn.parse(SAMPLE), _mobile()])
+    assert len(spec["sections"]) == 1 and all(r[1] == "OK" for r in spec["sections"][0]["grid"]["rows"])
