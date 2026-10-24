@@ -357,7 +357,10 @@ BASE\mail_history\YYYYMMDD_件名_業者名.txt
 
 チャットには本文を貼らない（改行が崩れて読みにくいため）。完了サマリーでフルパスのみ案内する。
 
-### Step 7.7: Thunderbird で発注メールの下書きを自動起動（アドプロセスのみ・EML方式）
+### Step 7.7: （旧手順）Thunderbird で発注メールの下書きを自動起動（アドプロセスのみ・EML方式）
+
+> **2026-10-24〜: 発注メールの送信は、承認の画面(PWA)で承認 → 080 の自動送信が既定**（上の「素材の注文が確定したら止まらない」の手順）。
+> この Step 7.7 は、運用者が「Thunderbirdで」「下書きで」と指示したときだけ使う。`mail_draft.py` は `--thunderbird "<運用者の指示の引用>"` なしでは開かない。
 
 > **2026-10-19 以降は `/mail-send` の手順に従う**（CLAUDE.md の決まり）: 送る内容（宛先・件名・添付・本文全文）を**アーティファクトで見せて承認を得てから**、
 > `C:\ClaudeCode\.claude\skills\mail-send\mail_draft.py --to … --cc … --subject … --body-file … --attach <PDF>` で EML を作って開く。
@@ -447,7 +450,7 @@ BASE\current_order\
    - **2026-10-21 14:16〜 080 は approval_mode=watch**（3 桁の承認番号は出ない）。承認は見張り役が LINE WORKS とスマホの承認の画面（approve.sfuji.f5.si）に出す。**添付のあるメールは承認の画面で画像を確かめたときだけ承認できる**（LINE WORKS の「実行」・文の返信・電話では中止だけ）。運用者には「承認の画面で承認してください」と案内する
    - job.json に `"purpose"`（6〜120 字・何のためのメールか。お客様名・人名・住所・電話・メールアドレスは書かない。例「G1802 侍魂6 Tシャツ100枚のプリント発注」）を入れる承認の受け方（3桁の番号か、見張り役のボタン・承認の画面か）は 080 の `approval_mode` で決まる（2026-10-21〜。mail-send スキル参照）。
    メール本文は **`last_mail/アドプロセス.txt`（直近の実送信）の書式に合わせる**（`####`・「位置・色数：」・「受注番号」・AI 断り書きなし）。4段階チェック（DeepSeek は採否を判断）→ **メールと書き込む記録（history.csv・Sheets・product_db）を1つのアーティファクトで見せて承認**
-7. 承認後: history.csv 追記（`.bak`）→ Sheets 追記して読み戻し → `build_product_db.py` → mail_history 保存 → `mail_draft.py` で開く
+7. 承認後: history.csv 追記（`.bak`）→ Sheets 追記して読み戻し → `build_product_db.py` → mail_history 保存 → 承認システム(080)で送信済みを確認(Thunderbird の下書きは運用者が指示したときだけ。上の 6. 参照)
 8. 「送った」→ `check_sent.py "<件名の一部>" --to adpro` で確認 → history.csv のメール送付日を記入、`last_mail/アドプロセス.txt` を今回の本文に更新（どちらも `.bak`）
 9. **社内報告は必ず送る（頼まれなくても。2026-10-20 寺下さん指示）。ただし 19:00〜翌 9:00 は抑止期間（同日指示）：文面と画像を作って普段どおり `request-approval` すると、道具が承認を求めずにキューに積む（終了コード 20）。翌朝 9:00 にタスク `LineNotifyMorningFlush` が寺下さんへ許可を求め、承認されたら自動で送る。夜はそこで報告を終えてよい（「キューに積みました・明朝 9:00 に許可を求めます」と書く。【対応待ち】は付けない）。詳細は line-notify スキル「夜間は送らずにキューに溜める」。** 送信確認（8）が済んだら、そのまま続けて `/line-notify` で「制服のフジ情報共有」宛ての報告を作り、
    **送る前に必ず寺下さんの許可を求める**（`line_notify.py request-approval --purpose "<目的>"` で寺下さんの1対1トークへ下書きを送り、`wait-approval` を裏で待つ。

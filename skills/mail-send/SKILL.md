@@ -55,7 +55,7 @@ job.json に `purpose`(6〜120字・何のためのメールか)を書くと承�
 - 送信前の運用はこのスキルのまま(4段階チェック・DeepSeek レビュー・Cc の既定値・AI 断り書きなし)。
   チェックの記録を依頼 zip に入れる。仕様は `080.メール自動送信/docs/TK_job_spec.md`
 - 宛先の許可リストは廃止済み(どの宛先でも、運用者が To / Cc / 件名 / 添付を見て承認したものだけ送る)
-- 077 を使わない送信は、すべて下の手順(下書きを開くまで・送信は人)に従う
+- Thunderbird の下書き(下の手順・送信は人)は、運用者が「Thunderbirdで」「下書きで」と指示したときだけ。それ以外は上の「既定の送り方」
 
 ---
 
@@ -63,7 +63,8 @@ job.json に `purpose`(6〜120字・何のためのメールか)を書くと承�
 
 | やってはいけないこと | 正しいやり方 |
 |---|---|
-| **勝手にメールを送信する** | 送信は必ずユーザーが手動。Claudeは下書きを開くまで(例外は上の 077・LINE WORKS 承認済みのものだけ) |
+| **勝手にメールを送信する・承認をチャットで求める** | 承認は運用者本人が承認の画面(PWA)で行う(上の「既定の送り方」)。Claude は承認しない |
+| **指示なしに Thunderbird の下書きを作る・開く** | 運用者が「Thunderbirdで」「下書きで」と言ったときだけ。既定は 080 へ提出(2026-10-24 に2度目の再発) |
 | **アーティファクトを飛ばしてEMLを作る/Thunderbirdを開く** | 先にアーティファクト表示→明示承認を待つ |
 | `thunderbird -compose "to=...,body=..."` の直叩き | `mail_draft.py`（内部で `-file`）を使う |
 | `write_text()` でEMLを書く | `mail_draft.py`（内部で `write_bytes`）を使う |
@@ -85,8 +86,9 @@ job.json に `purpose`(6〜120字・何のためのメールか)を書くと承�
     【転送の場合】転送の定型フォーマットを使う(後述)
 1️⃣  アーティファクトで送信予定内容を表示          ← 省略禁止
 2️⃣  ユーザーの明示承認を待つ（「OK」「送って」等） ← 省略禁止
-3️⃣  本文を .txt に書き、mail_draft.py でEML生成＋Thunderbird起動
+3️⃣  (旧手順・Thunderbird の指示があったときだけ) 本文を .txt に書き、mail_draft.py --thunderbird "<指示の引用>" でEML生成＋起動
     → ユーザーがCtrl+E→下書き化→手動送信。Claudeはここで止まる
+    (既定は send_via_080.py submit → wait。上の「既定の送り方」)
 4️⃣  (該当する場合)066.業務秘書等で「処理済み」マーク
 ```
 
@@ -335,7 +337,7 @@ python C:/ClaudeCode/.claude/hooks/ctx_cli.py add <SID> OK "<宛先>へのメー
 
 ---
 
-## 3️⃣ EML生成＋Thunderbird起動は `mail_draft.py` を呼ぶだけ
+## 3️⃣ (旧手順・運用者が Thunderbird を指示したときだけ) EML生成＋Thunderbird起動は `mail_draft.py` を呼ぶだけ
 
 **EMLの組み立てコードを毎回書かない。** このスキルのフォルダに専用CLIがある。
 `EmailMessage(policy=SMTP)` / `write_bytes` / `-file` 起動 / 生成後の自己検証まで
@@ -364,7 +366,8 @@ python "C:\ClaudeCode\.claude\skills\mail-send\mail_draft.py" --to "いつもの
 | `--cc` | Cc |
 | `--attach a.csv b.pdf` | 添付ファイル（複数可） |
 | `--out` | EML出力先（既定: `C:\ClaudeCode\.mail_drafts\<本文ファイル名>.eml`） |
-| `--no-open` | Thunderbirdを起動せず生成だけ（動作確認用） |
+| `--no-open` | Thunderbirdを起動せず生成だけ(080 への提出の部品・動作確認用) |
+| `--thunderbird "<運用者の指示の引用>"` | **Thunderbird で開くときは必須**(無いと何も作らず終了コード 2。2026-10-24 の鍵) |
 
 実行すると生成したEMLを**読み直して本文・添付を検証**し、`[OK] 検証通過` が出てから
 Thunderbirdが開く。`[NG]` が出たら本文の文字化け・添付欠落なので、送らずに原因を直す。
