@@ -101,6 +101,14 @@ _HOOKS: tuple[tuple[str, str | None, str, int, str], ...] = (
         "(同名が優先されて project 側の修正が隠れる事故の防止)",
     ),
     (
+        "PreToolUse",
+        "Read|Write|Edit|MultiEdit|NotebookEdit|Grep|Glob|Bash|PowerShell",
+        ".claude/hooks/secret_path_guard.py",
+        5,
+        "TS のコマンドに署名する秘密鍵の置き場(a_browser_data/ts_command)を Claude から読み書きさせない"
+        "(承認を経ない署名=自己承認の防止。.codex-review/DESIGN.md §16)",
+    ),
+    (
         # relay の待ち受け(/m watch)は確認なし(bypass)で動かすので、その代わりに
         # 危険な操作だけを止める。relay_watch.ps1 が登録したセッションにしか効かない
         # (2026-09-30。GUI 廃止に伴い agent_runner の PreToolUse を移植)
