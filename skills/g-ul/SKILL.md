@@ -150,7 +150,9 @@ fi
 echo ""
 echo "=== commit ==="
 echo "message: $MSG"
-if ! git commit -m "$MSG"; then
+# メッセージは標準入力で渡す。-m "$MSG" だと git-bash が "/cr ..." のような先頭 "/" の引数を
+# パスとみなして "C:/Program Files/Git/cr ..." に書き換える(2026-10-25 実発生)。printf は組み込みなので変換されない
+if ! printf '%s\n' "$MSG" | git commit -F -; then
     echo "commit に失敗しました。push していません。" >&2
     exit 1
 fi
