@@ -2,7 +2,7 @@
 name: cr
 description: Codex 自動点検（codex-review）の指摘を一覧・確認し、採用／却下を判定表へ記録する。「/cr」「点検の指摘」「Codex の指摘を見せて」「指摘一覧」で使う。Claude は報告の本文を読まず、findings.py の出力をそのまま伝える。
 ---
-<!-- SKILL_VERSION: 2026-10-25_123000 -->
+<!-- SKILL_VERSION: 2026-10-25_140000 -->
 
 # cr — Codex 自動点検の指摘を見る・判定する
 
@@ -17,10 +17,14 @@ description: Codex 自動点検（codex-review）の指摘を一覧・確認し�
 | `/cr 全部` | `python C:/ClaudeCode/.codex-review/findings.py list --all` |
 | `/cr <ID>` | `python C:/ClaudeCode/.codex-review/findings.py show <ID>` |
 | `/cr <ID> 採用` | `python C:/ClaudeCode/.codex-review/findings.py decide <ID> adopt` |
-| `/cr <ID> 却下 <理由>` | `python C:/ClaudeCode/.codex-review/findings.py decide <ID> reject --reason "<理由>"` |
+| `/cr <ID> 却下 <種類> <理由>` | `python C:/ClaudeCode/.codex-review/findings.py decide <ID> reject --type <種類> --reason "<理由>"` |
+| `/cr 記録` / `/cr 記録 <フォルダ番号 or YYYYMMDD>` | `python C:/ClaudeCode/.codex-review/findings.py record [<対象>]` |
+| `/cr 評価` / `/cr 評価 先週` | `python C:/ClaudeCode/.codex-review/findings.py evaluate [先週]` |
+| `/cr 見逃し <フォルダ> <内容>` | `python C:/ClaudeCode/.codex-review/findings.py miss <フォルダ> "<内容>"` |
 
 - ID は `1025-011-001` の形（一覧の ID 列）。行番号ではない
-- 却下は理由が必須。無ければ実行せず「却下の理由を書いてください」とだけ返す
+- 却下は種類（`誤り` / `既知` / `軽微` / `範囲外`）と理由が必須。無ければ実行せず「却下の種類（誤り・既知・軽微・範囲外）と理由を書いてください」とだけ返す
+- サブコマンド名・引数は `findings.py --help` が正。食い違ったら `--help` に従う
 - 採用・却下は運用者が打ったときだけ実行する。Claude が自分で判定しない
 
 ## してはいけないこと
