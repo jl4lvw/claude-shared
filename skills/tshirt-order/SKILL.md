@@ -510,7 +510,7 @@ TOMS 用 CSV を作ったら、**端末 A の `C:\ClaudeCode\900.ClaudeCode\toms
 4. 結果（`show` の status）: `confirmed`（確定・照合一致）／`stopped`／`needs_human`／`failed`／`cart_not_empty`。
    - `confirmed` なら、受注番号・出荷予定日を取り、この先の工程（発注書 PDF・history.csv・Sheets・product_db・メール）へ進む。注文詳細の全文は `toms-result_YYYYMMDD_HHMM.txt`（data/results・Downloads・NAS 999.一時ファイル）。
    - `cart_not_empty` は TOMS のカートを空にしてから再申請。`failed`／`needs_human` は再申請せず、理由を報告して運用者に聞く。
-5. 納品先がセブンエスの無地 T（ECM 依頼）なら、確定後に入荷登録の申請（`/toms-web` の「入荷登録の申請」。キーは `C:\Users\user\.ecm\api_key.txt`）。
+5. 納品先がセブンエスの無地 T（ECM 依頼）なら、確定後に `python cli.py arrival <ID>` で入荷登録を申請まで自動で行う（人の貼り付けは不要。確定は運用者が ECM 画面で PIN 承認。詳しくは `/toms-web` の「入荷登録の申請」。キーは `C:\Users\user\.ecm\api_key.txt`）。
 
 詳しい規則（上限 500 枚・税込 200,000 円、24 時間以内の同一申請は確定しない等）は toms_order の README.md と `/toms-web`。
 

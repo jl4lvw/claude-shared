@@ -55,7 +55,9 @@ def check_purpose(purpose: object) -> str:
 
 
 def build(tag_html: str, subject: str, template_name: str, kinds: tuple[str, ...] = ("html", "mobile_text"),
-          *, purpose: str) -> dict:
+          *, purpose: str, text_override: str | None = None, source: str = SOURCE) -> dict:
+    """text_override: 5,000 文字を超えたときに運用者が決めた削り方で作った携帯用テキスト(テキスト版にも使う)。
+    差し替えても文字数などの検査はそのまま通す(2026-10-26 受付 30 番: 末尾の安全靴・ふるさと納税の案内を外した)。"""
     purpose = check_purpose(purpose)
     subject = subject.strip()
     if not subject:
@@ -71,11 +73,11 @@ def build(tag_html: str, subject: str, template_name: str, kinds: tuple[str, ...
     size = len(tag_html.encode("utf-8"))
     if size > HTML_MAX_BYTES:
         raise RequestError(f"HTML が大きすぎます({size:,} バイト。上限 {HTML_MAX_BYTES:,})")
-    text = m.convert(tag_html)
+    text = m.convert(tag_html) if text_override is None else text_override.replace("\r\n", "\n")
     rep = m.inspect(text)
     if rep.chars_crlf > m.LIMIT:
         raise RequestError(f"携帯用テキストが {m.LIMIT:,} 文字を超えます({rep.chars_crlf:,} 文字・改行を 2 文字と数えた値。超過 {rep.chars_crlf - m.LIMIT:,})。削る候補を決めてください")
-    req: dict = {"source": SOURCE, "template_name": template_name.strip(), "purpose": purpose, "kinds": list(kinds)}
+    req: dict = {"source": source, "template_name": template_name.strip(), "purpose": purpose, "kinds": list(kinds)}
     if "html" in kinds:
         req["html"] = {"subject": subject, "body": tag_html.strip(), "text_body": text.strip()}
     if "mobile_text" in kinds:
@@ -102,9 +104,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--kinds", nargs="+", default=["html", "mobile_text"])
     ap.add_argument("--purpose", required=True, help="目的(何のための下書きか・6〜120 字。承認の画面・LINE WORKS・電話で示す)")
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--mobile-text", type=Path, help="携帯用テキストを差し替える(5,000 文字を超えて運用者が削り方を決めたとき)")
+    ap.add_argument("--source", default=SOURCE, help="申請元(端末 A で出すときは A)")
     a = ap.parse_args(argv)
     try:
-        req = build(m.read_text(a.tag), a.subject, a.template_name, tuple(a.kinds), purpose=a.purpose)
+        override = a.mobile_text.read_text(encoding="utf-8") if a.mobile_text else None
+        req = build(m.read_text(a.tag), a.subject, a.template_name, tuple(a.kinds), purpose=a.purpose,
+                    text_override=override, source=a.source)
     except RequestError as e:
         print(f"エラー: {e}")
         return 2
