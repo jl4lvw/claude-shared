@@ -41,7 +41,7 @@ cd "C:/ClaudeCode/029.メルカリショップス登録" && python scripts/stock
 
 ### 3. 計画を作る(Eストア在庫の取得を含む)
 ```bash
-cd "C:/ClaudeCode/029.メルカリショップス登録" && python scripts/stock_sync_cli.py plan --store fuji --product-csv "exports/stock_sync/fuji/<日時>/product_before.csv" --fetch --out-dir "exports/stock_sync/fuji/<日時>"
+cd "C:/ClaudeCode/029.メルカリショップス登録" && python scripts/stock_sync_cli.py plan --store fuji --product-csv "exports/stock_sync/fuji/<日時>/product_before.csv" --fetch --refresh --out-dir "exports/stock_sync/fuji/<日時>"
 ```
 - `--fetch` はEストアの在庫を読み取り(GET)で取得する(919商品で約15分。**`run_in_background` で実行**し、終わりの通知を待つ)。取得済みのキャッシュ(`stores/fuji/estore_cache.json`)は再利用されるが、**更新の計画には毎回 `--refresh` を付けて取り直す**。
 - 出力: `approval.html`(承認用の一覧)・`stock_update_日付.csv`(差分CSV)・`..._REVERT.csv`(巻き戻し用)・`plan.csv`・`summary.json`。
