@@ -72,10 +72,12 @@ def test_spec_has_view_table_and_link_table():
     view, links = spec["sections"][0]["grid"], spec["sections"][1]["grid"]
     assert view["header"] == ["観点", "結果"] and view["ok_col"] == 1
     results = dict(view["rows"])
-    assert results["商品リンクが正しい商品につながる(2点)"] == "要確認"  # 一部欠品の警告がある
+    # 一部欠品はリンク先の商品としては正しい。在庫の観点で「一部品切れ」と出す(10/26 変更)
+    assert results["商品リンクが正しい商品につながる(2点)"] == "OK"
+    assert results["商品が品切れでない(2点)"] == "一部品切れ"
     assert results["そのほかのリンクが開ける(2本)"] == "要確認"  # 404 がある
     assert links["rows"][0] == ["1", "部隊識別帽", "G2243", "125", "OK"]
-    assert links["rows"][1][4] == "要確認" and 1 in links["stop_rows"]
+    assert links["rows"][1][4] == "一部品切れ" and 1 in links["stop_rows"]
     assert links["rows"][-1] == ["4", "そのほかのリンク", "1 本", "―", "OK"]
 
 
@@ -92,3 +94,14 @@ def test_accept_marks_reviewed_warning_ok_and_strips_emoji():
 def test_spec_without_check_has_only_view_table():
     spec = rn.build_spec([rn.parse(SAMPLE), _mobile()])
     assert len(spec["sections"]) == 1 and all(r[1] == "OK" for r in spec["sections"][0]["grid"]["rows"])
+
+
+def test_item_link_without_trailing_slash_and_partial_remarks():
+    f = [{"level": "warn", "url": "https://item.rakuten.co.jp/seifukunofuji/g1997", "name": "フライトジャケット",
+          "message": "一部欠品: 3/5 バリエーション(G1997-BK-LL, G1997-BK-S, G1997-BK-3L)"}]
+    spec = rn.build_spec([rn.parse(SAMPLE)], f)
+    links = spec["sections"][1]["grid"]["rows"]
+    assert links[0][2:] == ["G1997", "一部", "一部品切れ"]
+    assert spec["sections"][2]["lines"] == ["・G1997(フライトジャケット): 在庫 0 の種類 BK-LL、BK-S、BK-3L"]
+    assert rn.has_partial(f) and not rn.has_partial(f, frozenset({f[0]["url"]}))
+    assert "一部品切れの商品があります。" in rn.build_body([rn.parse(SAMPLE)], True, True)

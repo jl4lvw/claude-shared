@@ -78,7 +78,9 @@ def when(send_at: str) -> str:
     return f"{d.month}/{d.day}({WEEKDAY[d.weekday()]}) {d:%H:%M}"
 
 
-ITEM_RE = re.compile(r"item\.rakuten\.co\.jp/seifukunofuji/(g\d{4})/", re.I)
+# 末尾の「/」が無い商品リンクもある(10/26 受付 30 番の g1997・g1892 が「リンク・要確認」になった)
+ITEM_RE = re.compile(r"item\.rakuten\.co\.jp/seifukunofuji/(g\d{4}[a-z]?)(?=[/?#]|$)", re.I)
+PARTIAL_RE = re.compile(r"一部欠品[^(]*\(([^)]*)\)")
 STOCK_RE = re.compile(r"在庫 計(\d+)")
 MAX_LINK_ROWS = 14  # 1 枚に収める(A4 縦)ための上限。超えた分は「ほか N 本」にまとめる
 
@@ -87,7 +89,7 @@ def _kinds(rs: list[Reservation]) -> str:
     return "・".join(KIND_LABEL.get(r.mail_type, r.mail_type) for r in rs)
 
 
-def build_body(rs: list[Reservation], checked: bool = False) -> str:
+def build_body(rs: list[Reservation], checked: bool = False, partial: bool = False) -> str:
     """LINE の本文(短く。詳細は画像)。2026-10-24 運用者決定: 案 1(観点の表)+ 案 2(リンクごとの表)を画像に書く。
     URL は line_notify.py の --url が末尾に足すので書かない。"""
     times = sorted({r.send_at for r in rs})
@@ -95,7 +97,7 @@ def build_body(rs: list[Reservation], checked: bool = False) -> str:
                  else " / ".join(f"{KIND_LABEL.get(r.mail_type, r.mail_type)} {when(r.send_at)}" for r in rs) + " 配信")
     lines = ["◆楽天メルマガ 配信予約完了", when_line]
     if checked:
-        lines.append("リンク・在庫を確認しました。")
+        lines.append("リンク・在庫を確認しました。" + ("一部品切れの商品があります。" if partial else ""))
     lines.append("詳しくは画像をご確認ください。")
     return "\n".join(lines) + "\n"
 
@@ -125,11 +127,15 @@ def _link_rows(findings: list[dict], accept: frozenset[str] = frozenset()) -> tu
             continue
         if m:
             items["n"] += 1
-            items["ok"] += ok
-            s = STOCK_RE.search(f.get("message", ""))
-            stock = s.group(1) if s else ("0" if "欠品" in f.get("message", "") else "あり")
-            items["stock_ok"] += stock not in ("0",) and "欠品" not in f.get("message", "")
-            rows.append([str(len(rows) + 1), _plain(f.get("name") or "")[:16], m.group(1).upper(), stock, "OK" if ok else "要確認"])
+            msg = f.get("message", "")
+            partial = "一部欠品" in msg
+            items["ok"] += ok or partial  # 一部品切れでも、リンク先の商品は正しい
+            s = STOCK_RE.search(msg)
+            stock = s.group(1) if s else ("一部" if partial else ("0" if "欠品" in msg else "あり"))
+            items["stock_ok"] += stock not in ("0", "一部") and "欠品" not in msg
+            items["partial"] = items.get("partial", 0) + partial
+            rows.append([str(len(rows) + 1), _plain(f.get("name") or "")[:16], m.group(1).upper(), stock,
+                         "OK" if ok else ("一部品切れ" if partial else "要確認")])
         else:
             items["other"] += 1
             items["other_ok"] += ok
@@ -140,12 +146,25 @@ def _link_rows(findings: list[dict], accept: frozenset[str] = frozenset()) -> tu
         if not ok:
             stop.append(len(rows) - 1)
     if len(rows) > MAX_LINK_ROWS:
-        rest = len(rows) - MAX_LINK_ROWS + 1
-        rows = rows[:MAX_LINK_ROWS - 1] + [["…", f"ほか {rest} 件(詳細は担当へ)", "", "", ""]]
-        stop = [i for i in stop if i < MAX_LINK_ROWS - 1]
+        # 縮めるときも OK でない行は必ず残す(10/26 G1892 の一部品切れが「ほか N 件」に隠れた)。残りを OK の行で埋める
+        keep = set(stop)
+        for i in range(len(rows)):
+            if len(keep) >= MAX_LINK_ROWS - 1:
+                break
+            keep.add(i)
+        order = sorted(keep)
+        rest = len(rows) - len(order)
+        stop = [order.index(i) for i in stop if i in keep]
+        rows = [rows[i] for i in order] + [["…", f"ほか {rest} 件(すべて OK)", "", "", ""]]
     if others_ok:
         rows.append([str(len(rows) + 1), "そのほかのリンク", f"{others_ok} 本", "―", "OK"])
     return rows, stop, items
+
+
+def has_partial(findings: list[dict] | None, accept: frozenset[str] = frozenset()) -> bool:
+    """商品リンクに一部品切れ(人が確かめて問題なしとしたものを除く)があるか。"""
+    return any(ITEM_RE.search(f.get("url", "")) and "一部欠品" in f.get("message", "") and f.get("url") not in accept
+               for f in findings or [])
 
 
 def build_spec(rs: list[Reservation], findings: list[dict] | None = None,
@@ -161,11 +180,20 @@ def build_spec(rs: list[Reservation], findings: list[dict] | None = None,
     if findings is not None:
         rows, stop, it = _link_rows(findings, accept)
         view += [[f"商品リンクが正しい商品につながる({it['n']}点)", res(it["ok"] == it["n"])],
-                 [f"商品が品切れでない({it['n']}点)", res(it["stock_ok"] == it["n"])],
+                 [f"商品が品切れでない({it['n']}点)",
+                  "OK" if it["stock_ok"] == it["n"] else ("一部品切れ" if it.get("partial") else "要確認")],
                  [f"そのほかのリンクが開ける({it['other']}本)", res(it["other_ok"] == it["other"])]]
         sections.append({"heading": "リンクごとの確認", "grid": {
             "header": ["No", "リンク", "リンク先", "在庫", "結果"], "widths": [80, 460, 260, 150, 170],
             "ok_col": 4, "rows": rows, "stop_rows": stop}})
+        remarks = []  # 気づいた点: 一部品切れの種類(担当者が読める形)
+        for f in findings:
+            m, p = ITEM_RE.search(f.get("url", "")), PARTIAL_RE.search(f.get("message", ""))
+            if m and p and f.get("url") not in accept:
+                kinds = "、".join(x.strip().split("-", 1)[-1] for x in p.group(1).split(","))
+                remarks.append(f"・{m.group(1).upper()}({_plain(f.get('name') or '')[:20]}): 在庫 0 の種類 {kinds}")
+        if remarks:
+            sections.append({"heading": "気づいた点", "lines": remarks})
     view_stop = [i for i, v in enumerate(view) if v[1] != "OK"]
     sections.insert(0, {"heading": "確認した観点", "grid": {
         "header": ["観点", "結果"], "widths": [900, 220], "ok_col": 1, "rows": view, "stop_rows": view_stop}})
@@ -178,7 +206,8 @@ def save(rs: list[Reservation], out: Path, findings: list[dict] | None = None,
     out.mkdir(parents=True, exist_ok=True)
     (out / "reserve.json").write_text(json.dumps([asdict(r) for r in rs], ensure_ascii=False, indent=1),
                                       encoding="utf-8", newline="")
-    (out / "body.txt").write_text(build_body(rs, findings is not None), encoding="utf-8", newline="")
+    (out / "body.txt").write_text(build_body(rs, findings is not None, has_partial(findings, accept)), encoding="utf-8",
+                                  newline="")
     (out / "spec.json").write_text(json.dumps(build_spec(rs, findings, accept), ensure_ascii=False, indent=1),
                                    encoding="utf-8", newline="")
 
@@ -206,7 +235,7 @@ def main() -> int:
             rs = [found[i] for i in ids]
             save(rs, a.out, findings, frozenset(a.accept))
             print("--- LINE の本文 ---")
-            print(build_body(rs, findings is not None), end="")
+            print((a.out / "body.txt").read_text(encoding="utf-8"), end="")
             print(f"保存: {a.out}")
             return 0
         if a.mode == "check" or time.time() >= end:
