@@ -160,6 +160,9 @@ class Snapshotter:
 
     def __init__(self) -> None:
         self._known: dict[tuple[int, str], _Known] = {}
+        # 変えられなかったプロセス(PID, 起動時刻)。管理者権限のタスクは毎回 AccessDenied に
+        # なるので、ログには最初の 1 回だけ出す(30 秒ごとに同じ行が増えるのを防ぐ)
+        self.denied: set[tuple[int, float]] = set()
 
     def _get(self, pid: int, name: str) -> _Known | None:
         key = (pid, name)
@@ -180,6 +183,8 @@ class Snapshotter:
         rows = toolhelp_table()
         alive = {(pid, name) for pid, _, name in rows}
         self._known = {k: v for k, v in self._known.items() if k in alive}
+        live = {(pid, v.created) for (pid, _), v in self._known.items()}
+        self.denied &= live
         procs: dict[int, Proc] = {}
         for pid, ppid, name in rows:
             if pid in (0, 4):
@@ -235,7 +240,10 @@ def run_once(snap: Snapshotter, dry_run: bool) -> int:
             changed += 1
             log(label)
         except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
-            log(f"skip {label}: {type(e).__name__}")
+            key = (p.pid, p.created)
+            if key not in snap.denied:
+                snap.denied.add(key)
+                log(f"skip {label}: {type(e).__name__}(以後この PID は記録しない)")
     return changed
 
 

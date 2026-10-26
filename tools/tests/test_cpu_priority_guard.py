@@ -79,3 +79,26 @@ def test_reused_parent_pid_is_not_followed() -> None:
     bg = g.background_pids(procs)
     assert 30 not in bg
     assert g.decide(procs[30], {30}, bg) == g.NORMAL
+
+
+class _DeniedHandle:
+    def nice(self, value: int) -> None:
+        raise g.psutil.AccessDenied(pid=7)
+
+
+def test_access_denied_logged_once_per_process(monkeypatch) -> None:
+    snap = g.Snapshotter()
+    admin_pwa = proc(7, 0, "python.exe", nice=g.BELOW, created=5.0)
+    monkeypatch.setattr(snap, "take", lambda: table(admin_pwa))
+    monkeypatch.setattr(snap, "handle", lambda p: _DeniedHandle())
+    monkeypatch.setattr(g, "listening_pids", lambda: {7})
+    lines: list[str] = []
+    monkeypatch.setattr(g, "log", lines.append)
+    for _ in range(3):
+        g.run_once(snap, dry_run=False)
+    assert len(lines) == 1 and "AccessDenied" in lines[0]
+    # 同じ PID でも起動し直した別のプロセスなら、もう一度記録する
+    restarted = proc(7, 0, "python.exe", nice=g.BELOW, created=99.0)
+    monkeypatch.setattr(snap, "take", lambda: table(restarted))
+    g.run_once(snap, dry_run=False)
+    assert len(lines) == 2
