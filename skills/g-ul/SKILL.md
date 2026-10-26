@@ -101,7 +101,8 @@ for t in $TARGETS; do
         //XD __pycache__ "logs" ".bootstrap-bak-*" ".migrate-pending-*" \
         //XF "*.bak_*" "*.pyc" "*.migrated" "*.migrating.*" \
              ".deepseek_usage_session.json" ".qwen_usage_session.json" ".gemini_usage_session.json" \
-             "telemetry.jsonl" "pv_usage_*.sqlite3" "cgd_usage_*.sqlite3" > /dev/null 2>&1
+             "telemetry.jsonl" "pv_usage_*.sqlite3" "cgd_usage_*.sqlite3" \
+             "cpu_priority_guard.log" "cpu_priority_guard.pid" > /dev/null 2>&1
     EXIT=$?
     # robocopy 終了コード: 0-7 = 成功（差分の有無）、8+ = エラー
     if [ $EXIT -ge 8 ]; then

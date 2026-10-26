@@ -78,6 +78,9 @@ EXCLUDE_FILES: tuple[str, ...] = (
     "cgd_usage_*.sqlite3",
     # 移行途中の一時ファイル。残骸が出たときにミラーへ載せない。
     "*.migrating.*",
+    # CPU優先度の見張り役が常駐して書き続ける端末ローカルのログと PID (2026-10-26)
+    "cpu_priority_guard.log",
+    "cpu_priority_guard.pid",
 )
 
 
