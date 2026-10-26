@@ -92,8 +92,18 @@ python -m lineoa_reserve.cli enqueue <ID> --send-at "YYYY-MM-DD HH:MM" --text-he
 - `request-approval --group 楽天メルマガ配信 --purpose "<日付>の楽天LINEの配信予約が済んだことを担当者に知らせるため"` → `wait-approval`(裏で)→ `send --send`。
 - 19:00〜翌 9:00 は道具がキューに積む(終了コード 20)。その場合も「翌朝 9:00 に送ります」と書いて完了扱い。
 
+## 2026-10-26 受付 #32 で分かったこと(日時が空の下書き・画像だけの下書き・日時の変更)
+
+- **090 が断った依頼もこのスキルで受ける。** 090 は「楽天LINEを確認して配信して」を一斉配信として断って終わる(受付 #32「未完終了」)。運用者に「対応して」と言われたら、ここの手順で予約まで進める。
+- **一覧は台本で読める**(Chrome のログインが切れていても、専用ブラウザで読める): `python ..\.claude\skills\rakuten-line-reserve\scripts\list_drafts.py`(900.ClaudeCode で)。下書き・配信予約中・配信済みの最新 1 件を、ID・配信日時・届いた人数・吹き出しの種類つきで出す。専用ブラウザもログインが切れていたら `cli login` を裏で起動し、運用者にログインを頼む。
+- **配信日時が空(今すぐ配信)の下書き**: 止めて運用者に聞く。候補の時刻は**これまでの配信時刻から Claude が出す**(10 月は 18:30 が多い)。運用者が「Claude が入れる」を選んだときだけ、`scripts/set_schedule.py <ID> YYYY/MM/DD HH:MM` で入れて確かめ(保存しない)、`--save` で「下書き保存」だけ押す。台本は「予約・すべての友だち・日時・UTC +9:00」が画面で合わないと保存しない。承認は台帳(ctx)に `OK` で残す。
+- **予約の日時を変えるとき**: 配信予約中の配信に `set_schedule.py --save` を使うと下書きに戻る(=前の予約は消える)。そのあと ③照合 → ④申請(目的の文を変えて新しい申請にする)→ 承認でやり直す。古い日時の知らせを申請済みなら、承認の画面で中止してもらい、文と画像を作り直して申請し直す。
+- **カードでなく画像 1 枚(RICH・imagemap)の下書き**: `cli cards` は空を返す。リンクは配信のデータの `balloons[].messageObject.actions[].linkUri` にある。`cards.json` を `[{"no":1,"texts":["<altText>"],"uris":["<リンク>"]}]` の形で書き、`cards_tag.txt` を作って `check_mail_links.py` に通す。照合の本文の先頭(text_head)は、その `altText`(例「東京・神楽坂「MADE IN KURE」出店のお知らせ」)でよかった。
+- 知らせの表は、カードが無いときは「商品リンク(0点)」の行を消し、「画像のリンク先(○○)が開ける」にする。日時を Claude が入れたときは、本文にその理由を 1 行書く(「下書きに配信日時が入っていなかったため、本日 18:30 で予約しました。」)。実例: `900.ClaudeCode/000.tmp/lineoa_20261026/report/`。
+
 ## 道具
 - `900.ClaudeCode/lineoa_reserve/`(config・models(照合)・guard(通信の見張り)・page(画面操作)・cli)。テスト `lineoa_reserve/tests`。
+- `scripts/list_drafts.py`(一覧を読むだけ)・`scripts/set_schedule.py`(日時を入れて下書き保存。運用者の指示があるときだけ)。2026-10-26 追加。
 - 見張り役の対象 `lineoa`(`a_browser_watch/targets.py` の `_lineoa_summary`)。対象を足したら見張り役の再起動が要る。
 
 ## 観察記録(2026-10-24)
