@@ -35,6 +35,7 @@ from pathlib import Path
 import psutil
 
 from win_proc_snapshot import Snap, snapshot
+from win_thread_origin import hot_threads
 
 OUT_ROOT = Path(r"C:\ClaudeCode\.claude\incidents\logs\boot_cpu")  # logs は /g-ul の対象外
 PY_SPY = Path(r"C:\Users\user\AppData\Local\Programs\Python\Python312\Scripts\py-spy.exe")
@@ -136,6 +137,13 @@ def describe(pid: int) -> dict[str, object]:
             info["top_threads"] = [(t.id, round(t.user_time, 1), round(t.system_time, 1)) for t in ths]
         except (psutil.Error, OSError):
             pass
+        try:
+            # 空回りは Python 以外のスレッドで起きていた(2026-10-26)。どの部品から始まったスレッドかを残す
+            uses, wmi = hot_threads(pid)
+            info["hot_threads"] = [[u.tid, u.user_cores, u.kernel_cores, u.origin] for u in uses]
+            info["wmi_modules"] = wmi
+        except (psutil.Error, OSError) as e:
+            info["hot_threads"] = f"({type(e).__name__})"
         if info.get("name", "").lower().startswith("python"):
             info["py_spy"] = py_spy_dump(pid)
             # 空回りは Python 側では「待機中」に見えるので、C 側のどの呼び出しで回っているかも取る
