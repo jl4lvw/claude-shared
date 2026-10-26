@@ -692,3 +692,190 @@ def test_estore_categories_step_sets_and_reads_back(monkeypatch):
     st, msg = pl.step_estore_categories(C())
     assert st == "OK" and store["now"] == want[:2] and "無い > カテゴリ" in msg
     assert pl.step_estore_categories(C())[0] == "SKIP"
+
+
+# ---- 092 自前在庫管理(2026-10-26 新商品は GoQ に登録しない) ----
+def _zaiko_plan(stock=0) -> dict:
+    p = _single()
+    p["goq"] = {"resync": False}
+    p["zaiko"] = {"register": True, "initial_stock": stock}
+    return p
+
+
+def test_zaiko_plan_passes():
+    pl.validate_plan(_zaiko_plan())
+    pl.validate_plan(_zaiko_plan(20))
+    v = _variation()
+    v["goq"] = {"resync": False}
+    v["zaiko"] = {"register": True, "initial_stock": {"G2300-NV-M": 5, "G2300-NV-L": 0}}
+    pl.validate_plan(v)
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda p: p["goq"].update(resync=True),                 # 新しい plan で GoQ は使わない
+    lambda p: p["zaiko"].update(register="yes"),
+    lambda p: p["zaiko"].update(initial_stock=-1),
+    lambda p: p["zaiko"].update(initial_stock=True),
+    lambda p: p["zaiko"].update(initial_stock={"G2225": 3}),  # 単品は整数
+    lambda p: p["zaiko"].update(register=False, initial_stock=5),
+])
+def test_zaiko_plan_rejects(mutate):
+    p = _zaiko_plan(20)
+    mutate(p)
+    with pytest.raises(SystemExit):
+        pl.validate_plan(p)
+
+
+def test_zaiko_variation_needs_dict():
+    v = _variation()
+    v["goq"] = {"resync": False}
+    v["zaiko"] = {"register": True, "initial_stock": 5}
+    with pytest.raises(SystemExit):
+        pl.validate_plan(v)
+
+
+def test_old_plan_without_zaiko_still_valid():
+    pl.validate_plan(_single())   # 2026-10-26 より前の plan(goq.resync=true・zaiko なし)の再開は従来どおり
+
+
+def test_zaiko_wanted_stock():
+    assert pl.zaiko_wanted_stock(_zaiko_plan(0)) == {}
+    assert pl.zaiko_wanted_stock(_zaiko_plan(20)) == {"G2225": 20}
+    assert pl.zaiko_wanted_stock({"sku_main": "X-parent", "zaiko": {"initial_stock": {"A": 3, "B": 0}}}) == {"A": 3}
+    assert pl.zaiko_wanted_stock(_single()) == {}
+
+
+class _FakeCtx:
+    def __init__(self, plan):
+        self.plan, self.g, self.mn, self.main = plan, plan["g"], plan["manage_number"], plan["sku_main"]
+        self.state = {}
+
+    def children(self):
+        return []
+
+
+@pytest.fixture()
+def zdb(tmp_path, monkeypatch):
+    """092 の DB を一時ファイルに作り、モールのワーカーの代わりに書いた結果を直接入れられるようにする."""
+    zdb_mod = pl._zaiko_mod()[0]
+    path = tmp_path / "shadow.db"
+    zdb_mod.connect(path).close()
+    monkeypatch.setattr(pl, "ZAIKO_DB", path)
+    return path
+
+
+def test_zaiko_steps_skip_when_not_registered():
+    p = _single()
+    assert pl.step_zaiko_register(_FakeCtx(p))[0] == "SKIP"
+    assert pl.step_zaiko_stock(_FakeCtx(p))[0] == "SKIP"
+    assert pl.step_zaiko_stock(_FakeCtx(_zaiko_plan(0)))[0] == "SKIP"
+
+
+def test_zaiko_stock_does_not_overwrite_human_value(zdb, monkeypatch):
+    import sqlite3
+    c = sqlite3.connect(zdb)
+    c.execute("INSERT INTO cutover_sku (sku, malls, switched_at, note) VALUES ('G2225','rakuten,yahoo,estore','x','t')")
+    c.execute("INSERT INTO sku_stock (sku, qty, updated_at) VALUES ('G2225', 7, 'x')")
+    c.commit(); c.close()
+    st = pl._zaiko_mod()[2]
+    monkeypatch.setattr(st, "push_enabled", lambda conn: True)
+    status, detail = pl.step_zaiko_stock(_FakeCtx(_zaiko_plan(20)))
+    assert status == "SKIP" and "G2225=7" in detail
+
+
+def test_zaiko_stock_needs_push_on(zdb, monkeypatch):
+    st = pl._zaiko_mod()[2]
+    monkeypatch.setattr(st, "push_enabled", lambda conn: False)
+    with pytest.raises(pl.NeedsUser):
+        pl.step_zaiko_stock(_FakeCtx(_zaiko_plan(20)))
+
+
+def test_zaiko_stock_writes_ledger_and_waits_for_malls(zdb, monkeypatch):
+    import sqlite3
+    c = sqlite3.connect(zdb)
+    c.execute("INSERT INTO cutover_sku (sku, malls, switched_at, note) VALUES ('G2225','rakuten,yahoo,estore','x','t')")
+    c.commit(); c.close()
+    st = pl._zaiko_mod()[2]
+    monkeypatch.setattr(st, "push_enabled", lambda conn: True)
+
+    real = pl._wait_zaiko_sync
+
+    def fake_wait(want, malls, **kw):   # ワーカーが3モールへ書いて読み戻した、という結果だけを作る
+        c2 = sqlite3.connect(zdb)
+        c2.execute("UPDATE mall_sync_state SET status='ok', synced_qty=? WHERE sku='G2225'", (want["G2225"],))
+        c2.commit(); c2.close()
+        return real(want, malls, wait=0)
+
+    monkeypatch.setattr(pl, "_wait_zaiko_sync", fake_wait)
+    status, detail = pl.step_zaiko_stock(_FakeCtx(_zaiko_plan(20)))
+    assert status == "OK" and "G2225=20" in detail
+    c = sqlite3.connect(zdb)
+    assert c.execute("SELECT qty FROM sku_stock WHERE sku='G2225'").fetchone()[0] == 20
+    assert {r[0] for r in c.execute("SELECT mall FROM mall_sync_state WHERE sku='G2225'")} == {"rakuten", "yahoo", "estore"}
+    c.close()
+    # 2回目(再開)は同じ数なので書かずに待つだけ・台帳は 20 のまま
+    status, _ = pl.step_zaiko_stock(_FakeCtx(_zaiko_plan(20)))
+    assert status == "OK"
+
+
+def test_zaiko_stock_fails_when_mall_not_synced(zdb, monkeypatch):
+    import sqlite3
+    c = sqlite3.connect(zdb)
+    c.execute("INSERT INTO cutover_sku (sku, malls, switched_at, note) VALUES ('G2225','rakuten,yahoo,estore','x','t')")
+    c.commit(); c.close()
+    st = pl._zaiko_mod()[2]
+    monkeypatch.setattr(st, "push_enabled", lambda conn: True)
+    real = pl._wait_zaiko_sync
+    monkeypatch.setattr(pl, "_wait_zaiko_sync", lambda want, malls, **kw: real(want, malls, wait=0))
+    with pytest.raises(pl.StepFail):
+        pl.step_zaiko_stock(_FakeCtx(_zaiko_plan(20)))
+
+
+def test_zaiko_stock_rejects_foreign_sku(zdb, monkeypatch):
+    p = _variation()
+    p["goq"] = {"resync": False}
+    p["zaiko"] = {"register": True, "initial_stock": {"G9999-NV-M": 3}}   # 別の商品の SKU
+    ctx = _FakeCtx(p)
+    monkeypatch.setattr(ctx, "children", lambda: [{"sku": "G2300-NV-M"}, {"sku": "G2300-NV-L"}])
+    with pytest.raises(pl.StepFail):
+        pl.step_zaiko_stock(ctx)
+
+
+def test_zaiko_stock_continues_other_skus_when_one_is_kept(zdb, monkeypatch):
+    import sqlite3
+    c = sqlite3.connect(zdb)
+    for s in ("G2300-NV-M", "G2300-NV-L"):
+        c.execute("INSERT INTO cutover_sku (sku, malls, switched_at, note) VALUES (?,'rakuten,yahoo,estore','x','t')", (s,))
+    c.execute("INSERT INTO sku_stock (sku, qty, updated_at) VALUES ('G2300-NV-M', 9, 'x')")   # 人が入れた数
+    c.commit(); c.close()
+    st = pl._zaiko_mod()[2]
+    monkeypatch.setattr(st, "push_enabled", lambda conn: True)
+    seen = {}
+
+    def fake_wait(want, malls, **kw):
+        seen.update(want)
+        return {"done": True, "bad": [], "rows": {}}
+
+    monkeypatch.setattr(pl, "_wait_zaiko_sync", fake_wait)
+    p = _variation()
+    p["goq"] = {"resync": False}
+    p["zaiko"] = {"register": True, "initial_stock": {"G2300-NV-M": 5, "G2300-NV-L": 4}}
+    ctx = _FakeCtx(p)
+    monkeypatch.setattr(ctx, "children", lambda: [{"sku": "G2300-NV-M"}, {"sku": "G2300-NV-L"}])
+    status, detail = pl.step_zaiko_stock(ctx)
+    assert status == "OK" and seen == {"G2300-NV-L": 4} and "G2300-NV-M=9" in detail
+    c = sqlite3.connect(zdb)
+    assert c.execute("SELECT qty FROM sku_stock WHERE sku='G2300-NV-M'").fetchone()[0] == 9
+    assert c.execute("SELECT qty FROM sku_stock WHERE sku='G2300-NV-L'").fetchone()[0] == 4
+    c.close()
+
+
+def test_verify_zaiko_ignores_changed_or_zero_ledger(zdb):
+    import sqlite3
+    c = sqlite3.connect(zdb)
+    c.execute("INSERT INTO cutover_sku (sku, malls, switched_at, note) VALUES ('G2225','rakuten,yahoo,estore','x','t')")
+    c.execute("INSERT INTO sku_stock (sku, qty, updated_at) VALUES ('G2225', 0, 'x')")   # 入れた後に人が 0 にした
+    c.commit(); c.close()
+    issues, facts = [], []
+    pl._verify_zaiko(_FakeCtx(_zaiko_plan(20)), issues, facts)
+    assert issues == [] and "G2225=0" in facts[0]

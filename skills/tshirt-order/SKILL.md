@@ -664,9 +664,13 @@ xlsx, info = oc.generate_order_xlsx([
     ('潜水艦くろしお', 2),
 ])
 # xlsx: CURRY_BASE\orders\YYYYMMDD_海自カレー注文書.xlsx
+pdf = oc.export_pdf(xlsx)
+# pdf: 同じ名前の .pdf(Excel 本体で書き出す。既にあれば上書きせず止まる)
 ```
 
 検証: 合計箱数<5/数量非正数/14品目超過 → ValueError。
+
+**澤村様へ送るのは PDF(2026-10-26 運用者決定)。** 080 のメール自動送信は添付を PDF しか受け付けないため。それまでは Excel を添付していた。Excel は控えとして orders に残す。PDF は 1 ページ目を画像にして、品名・箱数・合計金額が Excel と同じか目で確かめてから送る。
 
 ## Step C3: メール本文生成
 
@@ -697,31 +701,32 @@ xlsx, info = oc.generate_order_xlsx([
 - 過去のメール（〜2026-10-02）は本文に数量がない。これ以前の控えをテンプレにしない
 - `mail_template.md` 自体は数量なしの雛形のまま変更しない（差し込みは生成時に行う）
 
-## Step C4: Thunderbird 起動（EML方式）
+## Step C4: 080 の自動送信へ提出（承認の画面で運用者が承認）
 
-`open_thunderbird.compose_via_eml()` を流用。
+`/mail-send` の「既定の送り方」で送る。Thunderbird の下書きは運用者が指示したときだけ。
+先に「メール送信前チェック（4段階）」を行い、その時刻を控える。
 
-```python
-TBASE = Path(r'C:\ClaudeCode\017.Tシャツなどの注文')
-spec3 = importlib.util.spec_from_file_location('tb', str(TBASE/'open_thunderbird.py'))
-tb = importlib.util.module_from_spec(spec3); spec3.loader.exec_module(tb)
-tb.compose_via_eml(
-    to='kure.kaijicury@gmail.com',
-    cc='kawasaki@seifukunofuji.com,c.nagahari@seifukunofuji.com',
-    subject=info['subject'],   # '海自カレー注文 YYYY.MM.DD'
-    body_file=mail_path,
-    attachments=[xlsx],
-)
+```bash
+B="C:/ClaudeCode/017.Tシャツなどの注文/呉海自カレー"
+python C:/ClaudeCode/.claude/skills/calendar-order/send_via_080.py submit \
+  --to kure.kaijicury@gmail.com --cc "kawasaki@seifukunofuji.com,c.nagahari@seifukunofuji.com" \
+  --subject "海自カレー注文 YYYY.MM.DD" --body-file "$B/mail_history/YYYYMMDD_海自カレー_澤村.txt" \
+  --attach "$B/orders/YYYYMMDD_海自カレー注文書.pdf" \
+  --purpose "呉海自カレーの仕入先への定例の注文(計N箱)" --work-dir <スクラッチの作業フォルダ> \
+  --four-stage-at <ISO JST> --deepseek-at <ISO JST>
 ```
 
-ユーザーは Thunderbird 上で **`Ctrl+E`** で下書きに変換し送信。
+- 出力の「承認の画面(このメールを直接開く): https://approve.sfuji.f5.si/approve/#ap-…」をチャットにそのまま示す
+- `send_via_080.py wait <job_id>` を裏で待ち、送信済み・写しの照合(copy=OK)まで確かめて報告する
+- **Excel(.xlsx)を --attach に渡すと「添付は PDF だけです」で受け付けられない**(2026-10-26 に実際に止まった)
 
 ## Step C5: 完了サマリ
 
 ```
-✅ Excel:  CURRY_BASE\orders\YYYYMMDD_海自カレー注文書.xlsx
+✅ Excel:  CURRY_BASE\orders\YYYYMMDD_海自カレー注文書.xlsx（控え）
+✅ PDF:    CURRY_BASE\orders\YYYYMMDD_海自カレー注文書.pdf（送ったもの）
 ✅ Mail:   CURRY_BASE\mail_history\YYYYMMDD_海自カレー_澤村.txt
-✅ Thunderbird 起動済（Ctrl+E で下書きへ）
+✅ 080 で送信済み（job_id・copy=OK）
 合計: N箱 / 税抜 ¥XX,XXX / 税込 ¥XX,XXX
 ```
 

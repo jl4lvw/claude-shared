@@ -1,4 +1,7 @@
-"""新商品登録パイプライン (楽天登録済みの G 番号 → 023 / Eストア / Yahoo! / GoQ 在庫連携 / 在庫数).
+"""新商品登録パイプライン (楽天登録済みの G 番号 → 023 / Eストア / Yahoo! / 092 自前在庫管理 / 在庫数).
+
+2026-10-26〜 新商品の在庫は GoQ に登録しない(運用者決定)。092(zaiko.sfuji.f5.si)に載せ、台帳の数を各モールへ配る。
+GoQ の手順(goq_resync・goq_stock)は、それより前に作った plan(goq.resync=true)の再開のためだけに残してある。
 
 使い方 (詳細は SKILL.md):
   python pipeline.py preflight G2225                 # 読み取りのみ。plan の下書きと確認事項を出す
@@ -405,7 +408,7 @@ def preflight(g: str) -> dict:
         if v["price"] and abs(v["price"] / TAX - round(v["price"] / TAX)) > 1e-6:
             flags.append(f"税抜換算に端数あり: {v['variant_id']} {v['price']}円 → {v['price'] / TAX:.2f}(丸め方を決めてください)")
     if is_var:
-        flags.append("バリエーション商品は初回の実機検証が済んでいません(試験運用): GoQ の行の対応確認などで途中で確認が入る可能性があります")
+        flags.append("バリエーション商品は初回の実機検証が済んでいません(試験運用): 092 の書き先(色・サイズ)の確認などで途中で確認が入る可能性があります")
     y_pending = run_json_tool(["tools/yahoo_publish_tool.py", "summary"])
     pending_rows = y_pending.get("pending_rows", 0)
     if pending_rows:
@@ -438,7 +441,10 @@ def preflight(g: str) -> dict:
                   "reserve_publish": pending_rows == 0,
                   "pending_before": {"rows": pending_rows, "item_pages": y_pending.get("pending_item_pages", 0)},
                   "pending_allow": YAHOO_PENDING_ALLOW},
-        "goq": {"resync": True},
+        # 新商品の在庫は GoQ に登録しない(2026-10-26 運用者決定)。092 に載せる。initial_stock は台帳に入れる数
+        # (0=入れない。単品は整数、バリエーションは {SKU: 数})。モールは常に在庫0で登録し、092 から配る
+        "goq": {"resync": False},
+        "zaiko": {"register": True, "initial_stock": 0},
         "not_included": ["Amazon (amz-register)", "LCL", "7S(コマースロボ)"],
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -460,7 +466,8 @@ def preflight(g: str) -> dict:
                       "Eストア価格(既定: 楽天税込価格÷1.1)と納期日数(既定: 5日)",
                       "Yahoo!のコピー元商品(yahoo_paths_from_rakuten が ok なら紐づけは楽天から決めた paths を使い、"
                       "コピー元は product_category だけに使う。ok でなければ従来どおり紐付くパスで選ぶ)",
-                      "公開の可否(Eストア/Yahoo!)。Yahoo!の店頭反映はストア全体の未反映分をまとめて公開する"],
+                      "公開の可否(Eストア/Yahoo!)。Yahoo!の店頭反映はストア全体の未反映分をまとめて公開する",
+                      "092(自前在庫管理)の台帳に入れる在庫数(決まっていれば。0なら入れず、画面で後から入れる)"],
     }
 
 
@@ -516,6 +523,25 @@ def validate_plan(p: dict) -> None:
                 raise SystemExit(f"NG: {section}.{k} は true/false で指定してください: {name_s.get(k)!r}")
     if not isinstance(p["goq"].get("resync"), bool):
         raise SystemExit(f"NG: goq.resync は true/false で指定してください: {p['goq'].get('resync')!r}")
+    if "zaiko" in p:   # 2026-10-26〜の plan。無いのはそれより前の plan(GoQ の再開のため従来どおり)
+        z = p["zaiko"]
+        if not isinstance(z, dict) or not isinstance(z.get("register"), bool):
+            raise SystemExit(f"NG: zaiko.register は true/false で指定してください: {z!r}")
+        if p["goq"]["resync"]:
+            raise SystemExit("NG: 新商品の在庫は GoQ に登録しません(2026-10-26 運用者決定)。goq.resync は false にしてください")
+        n = z.get("initial_stock", 0)
+        if isinstance(n, dict):
+            bad = {k: v for k, v in n.items() if not _is_int(v) or not 0 <= v <= 100000}
+            if bad:
+                raise SystemExit(f"NG: zaiko.initial_stock は 0〜100000 の整数で指定してください: {bad}")
+            if not p["is_variation"]:
+                raise SystemExit("NG: 単品の zaiko.initial_stock は整数で指定してください")
+        elif not _is_int(n) or not 0 <= n <= 100000:
+            raise SystemExit(f"NG: zaiko.initial_stock は 0〜100000 の整数で指定してください: {n!r}")
+        elif n > 0 and p["is_variation"]:
+            raise SystemExit("NG: バリエーションの zaiko.initial_stock は {SKU: 数} で指定してください")
+        if (n if _is_int(n) else any(n.values())) and not z["register"]:
+            raise SystemExit("NG: 092 に登録しないのに zaiko.initial_stock が指定されています")
     allow = y.get("pending_allow", YAHOO_PENDING_ALLOW)
     if not _is_int(allow) or allow < 0:
         raise SystemExit(f"NG: yahoo.pending_allow は0以上の整数で指定してください: {allow!r}")
@@ -1157,6 +1183,197 @@ def step_goq_stock(c: Ctx) -> tuple[str, str]:
     return "OK", "在庫数を反映: " + ", ".join(done)
 
 
+# ------------------------------------------------- 092 自前在庫管理(zaiko)
+# 2026-10-26 運用者決定: 新商品の在庫は GoQ に一切登録しない。092(zaiko.sfuji.f5.si)に登録し、そこから各モールへ配る。
+# 順序: 各モールを在庫0で登録 → 092 に親SKUを追加 → (在庫数が決まっていれば)台帳に入れる → 各モールへ伝わったことを確かめる。
+# 092 の画面の API はメインPC(192.168.1.200)以外はログインが要るので、画面と同じ関数(shadow.web.stock_edit)を直接呼ぶ。
+# モールへ書くのは 092 の画面のサーバーが持つワーカー(30秒おき)。ここでは依頼を積み、結果(mall_sync_state)を待つ。
+ZAIKO_ROOT = Path(r"C:\ClaudeCode\092.受注影武者と在庫台帳")
+ZAIKO_DB = ZAIKO_ROOT / "data" / "shadow.db"
+ZAIKO_ACTOR = "register-product"
+ZAIKO_SYNC_WAIT = 300  # 秒。ワーカーは30秒おきに見に来る。失敗は2分おきに再試行する
+
+
+def _zaiko_mod():
+    if str(ZAIKO_ROOT) not in sys.path:
+        sys.path.insert(0, str(ZAIKO_ROOT))
+    from shadow import db as zdb, mall_sync, stop_sale  # noqa: PLC0415 — 092 は必要なときだけ読む
+    from shadow.mall_targets import TargetIndex  # noqa: PLC0415
+    from shadow.product_index import DEFAULT_DB  # noqa: PLC0415
+    from shadow.web import catalog, stock_edit  # noqa: PLC0415
+    return zdb, mall_sync, stop_sale, TargetIndex, DEFAULT_DB, catalog, stock_edit
+
+
+def zaiko_wanted_stock(plan: dict) -> dict[str, int]:
+    """092 の台帳に入れる数 {SKU: 数}。0 や未指定の SKU は入れない(台帳は空のまま=画面で後から入れる)."""
+    z = plan.get("zaiko") or {}
+    n = z.get("initial_stock", 0)
+    if isinstance(n, dict):
+        return {str(k): v for k, v in n.items() if _is_int(v) and v > 0}
+    if _is_int(n) and n > 0:
+        return {plan["sku_main"]: n}
+    return {}
+
+
+def _zaiko_children(c: Ctx) -> list[str]:
+    return [r["sku"] for r in c.children()] if c.plan["is_variation"] else [c.main]
+
+
+def _zaiko_malls(c: Ctx) -> list[str]:
+    """092 から在庫を書くモール。このパイプラインで登録したモール+楽天(登録済みが前提)."""
+    malls = ["rakuten"]
+    if c.plan["estore"]["register"]:
+        malls.append("estore")
+    if c.plan["yahoo"]["register"]:
+        malls.append("yahoo")
+    return malls
+
+
+def _zaiko_conn():
+    zdb = _zaiko_mod()[0]
+    if not ZAIKO_DB.exists():
+        raise StepFail(f"092 の DB が見つかりません: {ZAIKO_DB}")
+    return zdb.connect(ZAIKO_DB)
+
+
+def _zaiko_managed(conn, skus: list[str]) -> dict[str, list[str]]:
+    """自前連携に載っている SKU → モールの一覧."""
+    out: dict[str, list[str]] = {}
+    for s in skus:
+        r = conn.execute("SELECT malls FROM cutover_sku WHERE sku=?", (s,)).fetchone()
+        if r is not None:
+            out[s] = [m for m in re.split(r"[,\s]+", str(r["malls"] or "")) if m]
+    return out
+
+
+def _zaiko_qty(conn, sku: str) -> int | None:
+    r = conn.execute("SELECT qty FROM sku_stock WHERE sku=?", (sku,)).fetchone()
+    return None if r is None else r["qty"]
+
+
+def step_zaiko_register(c: Ctx) -> tuple[str, str]:
+    if not (c.plan.get("zaiko") or {}).get("register"):
+        return "SKIP", "plan で対象外"
+    _, _, _, TargetIndex, products_db, catalog, stock_edit = _zaiko_mod()
+    skus = _zaiko_children(c)
+    malls = _zaiko_malls(c)
+    conn = _zaiko_conn()
+    try:
+        have = _zaiko_managed(conn, skus)
+        if len(have) == len(skus) and all(set(malls) <= set(have[s]) for s in skus):
+            return "SKIP", f"092 に登録済み({len(skus)} SKU・{'/'.join(malls)})"
+        cat, targets = catalog.Catalog.from_db(products_db), TargetIndex.from_db(products_db)
+        p = cat.parents.get(c.main)
+        if p is None:
+            raise StepFail(f"092 から見た商品マスタに {c.main} がありません")
+        missing = {}
+        for s in skus:
+            got = set(targets.targets_for(s).targets)
+            if not set(malls) <= got:
+                missing[s] = sorted(set(malls) - got)
+        if missing:
+            raise NeedsUser(f"092 で在庫を書くモールが決まらない SKU があります {missing}"
+                            "(023 の楽天・Yahoo!・Eストアの番号を確かめてください)")
+        res = stock_edit.add_parent(conn, cat, targets, c.main, who=ZAIKO_ACTOR)
+        have = _zaiko_managed(conn, skus)
+    finally:
+        conn.close()
+    lost = [s for s in skus if s not in have]
+    if lost:
+        raise StepFail(f"092 に載らなかった SKU があります {lost}(追加の結果 {res})")
+    return "OK", f"092 に登録 {len(skus)} SKU({'/'.join(malls)})。台帳在庫は{'未設定(画面で入れる)' if not zaiko_wanted_stock(c.plan) else 'この後に入れる'}"
+
+
+def _zaiko_sync_rows(conn, sku: str) -> dict[str, dict]:
+    return {r["mall"]: dict(r) for r in conn.execute("SELECT * FROM mall_sync_state WHERE sku=?", (sku,))}
+
+
+def _wait_zaiko_sync(want: dict[str, int], malls: list[str], wait: int = ZAIKO_SYNC_WAIT, every: int = 10) -> dict:
+    """台帳の数がモールへ書かれて読み戻せるまで待つ。{SKU: {mall: 状態}} を返す."""
+    deadline = time.time() + wait
+    while True:
+        conn = _zaiko_conn()
+        try:
+            rows = {s: _zaiko_sync_rows(conn, s) for s in want}
+        finally:
+            conn.close()
+        done = all(rows[s].get(m, {}).get("status") == "ok" and rows[s][m].get("synced_qty") == n
+                   for s, n in want.items() for m in malls)
+        bad = [f"{s}/{m}:{rows[s].get(m, {}).get('status')}" for s in want for m in malls
+               if rows[s].get(m, {}).get("status") == "gave_up"]
+        if done or bad or time.time() >= deadline:
+            return {"done": done, "bad": bad, "rows": rows}
+        time.sleep(every)
+
+
+def step_zaiko_stock(c: Ctx) -> tuple[str, str]:
+    want = zaiko_wanted_stock(c.plan)
+    if not (c.plan.get("zaiko") or {}).get("register") or not want:
+        return "SKIP", "台帳に入れる数の指定なし(在庫は 092 の画面で入れる)"
+    _, _, stop_sale, _, _, _, stock_edit = _zaiko_mod()
+    malls = _zaiko_malls(c)
+    foreign = sorted(set(want) - set(_zaiko_children(c)))
+    if foreign:   # 別の商品の SKU に在庫を入れない(Codex レビュー 2026-10-26)
+        raise StepFail(f"zaiko.initial_stock にこの商品の子SKUでないものがあります: {foreign}")
+    conn = _zaiko_conn()
+    try:
+        if not stop_sale.push_enabled(conn):
+            raise NeedsUser("092 のモールへの送信がオフです(`python -m shadow push on` は運用者の判断)")
+        changes, kept = [], []
+        for sku, n in list(want.items()):
+            cur = _zaiko_qty(conn, sku)
+            if cur is None:
+                changes.append({"sku": sku, "expected": None, "value": str(n)})
+            elif cur != n:
+                kept.append(f"{sku}={cur}")   # 人が入れた数を上書きしない(再開で戻さない)。ほかの SKU は続ける
+                del want[sku]
+        if not want:
+            return "SKIP", f"092 の台帳にすでに別の数があるので書きません: {', '.join(kept)}"
+        if changes:
+            rid = f"rp-{c.g}-{plan_hash(c.plan)[:12]}"
+            r = stock_edit.apply_changes(conn, changes, reason="inbound", note="新商品の初回の在庫(register-product)",
+                                         who=ZAIKO_ACTOR, request_id=rid)
+            if r.conflicts:
+                raise StepFail(f"092 の台帳が保存の直前に変わりました {r.conflicts}")
+    finally:
+        conn.close()
+    res = _wait_zaiko_sync(want, malls)
+    if not res["done"]:
+        detail = {s: {m: (v.get("status"), v.get("synced_qty"), (v.get("last_error") or "")[:80])
+                      for m, v in rows.items()} for s, rows in res["rows"].items()}
+        raise StepFail(f"092 から各モールへの反映を確かめられません({'失敗 ' + ', '.join(res['bad']) if res['bad'] else '時間切れ'})"
+                       f" {json.dumps(detail, ensure_ascii=False)[:400]}")
+    return "OK", ("092 の台帳在庫を各モールへ反映: " + ", ".join(f"{s}={n}" for s, n in want.items()) + f"({'/'.join(malls)})"
+                  + (f"。台帳に別の数があり書かなかった: {', '.join(kept)}" if kept else ""))
+
+
+def _verify_zaiko(c: Ctx, issues: list[str], facts: list[str]) -> None:
+    skus = _zaiko_children(c)
+    malls = _zaiko_malls(c)
+    conn = _zaiko_conn()
+    try:
+        have = _zaiko_managed(conn, skus)
+        lost = [s for s in skus if s not in have or not set(malls) <= set(have[s])]
+        if lost:
+            issues.append(f"092: 自前連携に載っていない・モールが足りない SKU {lost}")
+            return
+        want = zaiko_wanted_stock(c.plan)
+        qtys = {s: _zaiko_qty(conn, s) for s in skus}
+        for s, n in want.items():
+            # 確かめるのは、このパイプラインが入れた数のまま残っている SKU だけ。人が数を変えた・0 以下にした SKU は
+            # 092 の画面の管理(0 以下は 092 がモールへ書かず停止の送信に任せる仕様)なので、ここでは問わない
+            if qtys.get(s) != n or n <= 0:
+                continue
+            rows = _zaiko_sync_rows(conn, s)
+            not_synced = [m for m in malls if rows.get(m, {}).get("status") != "ok"
+                          or rows[m].get("synced_qty") != qtys.get(s)]
+            if not_synced:
+                issues.append(f"092: {s} の台帳 {qtys.get(s)} がモールへ反映されていない {not_synced}")
+    finally:
+        conn.close()
+    facts.append("092 登録済み(台帳 " + ", ".join(f"{s}={'未設定' if q is None else q}" for s, q in qtys.items()) + ")")
+
+
 def step_verify(c: Ctx) -> tuple[str, str]:
     p, issues, facts = c.plan, [], []
     # 店頭に出る表示名はチャネルで別物: Eストアは estore_product_name(短縮名)、Yahoo!は楽天由来の title
@@ -1205,6 +1422,8 @@ def step_verify(c: Ctx) -> tuple[str, str]:
             issues.append(f"Yahoo!店頭が確認できない(HTTP {code})")
         else:
             facts.append("Yahoo!店頭OK" + ("(在庫切れ表示)" if re.search("在庫なし|売り切れ|在庫切れ", html) else ""))
+    if (p.get("zaiko") or {}).get("register"):
+        _verify_zaiko(c, issues, facts)
     if p["goq"]["resync"] and _goq_deferred(c):
         facts.append("GoQ: 在庫連携は未実施(GoQにアクセスできなかった)"
                      if (c.state.get("goq_resync") or {}).get("status") == DEFERRED
@@ -1230,6 +1449,8 @@ STEPS: list[tuple[str, Callable[[Ctx], tuple[str, str]]]] = [
     ("estore_publish", step_estore_publish),
     ("yahoo_register", step_yahoo_register),
     ("yahoo_reserve", step_yahoo_reserve),
+    ("zaiko_register", step_zaiko_register),
+    ("zaiko_stock", step_zaiko_stock),
     ("goq_resync", step_goq_resync),
     ("goq_stock", step_goq_stock),
     ("verify", step_verify),
