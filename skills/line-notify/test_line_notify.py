@@ -46,3 +46,31 @@ def test_resolve_mention(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
         ln.resolve_mention("佐藤")  # 同名が2人
     with pytest.raises(SystemExit):
         ln.resolve_mention("鈴木")  # いない
+
+
+# ---------------------------------------------------------------- wait-approval の差し戻し(2026-10-27。承認の表・LINE には触れない)
+def _wait(monkeypatch: pytest.MonkeyPatch, capsys, status: str, text: str | None) -> tuple[int, str]:
+    import argparse
+    import time
+    row = {"status": status, "expires_at": int(time.time() * 1000) + 60000, "decision_text": text}
+    monkeypatch.setattr(ln, "read_approval", lambda code: row)
+    with pytest.raises(SystemExit) as e:
+        ln.cmd_wait(argparse.Namespace(code="ABC234", timeout_min=0, poll=0))
+    return e.value.code, capsys.readouterr().out
+
+
+def test_wait_shows_the_return_reason(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    rc, out = _wait(monkeypatch, capsys, "revise", ln.RETURN_PREFIX + "画像の切り抜きを直して")
+    assert rc == 11 and "差し戻されました" in out
+    assert "--- 差し戻しの理由 ---\n画像の切り抜きを直して" in out and ln.RETURN_PREFIX not in out
+
+
+def test_wait_keeps_the_lineworks_revise(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    rc, out = _wait(monkeypatch, capsys, "revise", "ABC234 数を2に")
+    assert rc == 11 and "修正の依頼です" in out and "寺下さんの返信" in out and "数を2に" in out
+
+
+def test_return_prefix_matches_the_watcher() -> None:
+    sys.path.insert(0, r"C:\ClaudeCode\900.ClaudeCode")
+    from a_browser_watch import approval_pwa
+    assert ln.RETURN_PREFIX == approval_pwa.RETURN_PREFIX
