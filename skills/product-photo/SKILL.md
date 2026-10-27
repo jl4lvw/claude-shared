@@ -1,9 +1,9 @@
 ---
 name: product-photo
-description: 商品写真(Tシャツ・スポーツタオル・ワッペン)の仕上げから楽天の差し替えまでの標準手順。元写真の背景を白にする・正方形にする(Claude が作り、2回失敗したら Codex の gpt-6-astra に頼む)→ Tシャツの着用画像(最初から astra)→ 名前と顔のある女性モデル(みゆき)の着用画像・切り抜き・それで作るトップ画像(023 tools/wear_model_photo.py)→ トップ画像(白い背景の版・着用画像の版。共通の道具 023 tools/product_photo.py が座標と倍率を写真から測る)→ 一覧で確認 → 承認の画面(rakuten_photo)で楽天の写真を差し替え、本店・Yahoo! へ展開。新商品は写真まで作って /rakuten-new-item に渡す。「商品写真を作って」「写真を差し替えて」「着用イメージ」「着用画像」「トップ画像を作って」「背景を白に」「/product-photo」で使う。旧 /wear-image(Gemini を手で操作)は置き換え済み。
+description: 商品写真(Tシャツ・スポーツタオル・ワッペン)の仕上げから楽天の差し替えまでの標準手順。元写真の背景を白にする・正方形にする(Claude が作り、2回失敗したら Codex の gpt-6-astra に頼む)→ Tシャツの着用画像(最初から astra)→ 名前と顔のある女性モデル(みゆき)の着用画像・切り抜き・それで作るトップ画像(023 tools/wear_model_photo.py)→ トップ画像(白い背景の版・着用画像の版。共通の道具 023 tools/product_photo.py が座標と倍率を写真から測る)→ 一覧で確認 → 承認の画面(rakuten_photo)で楽天の写真を差し替え、本店・Yahoo! へ展開 → Amazon の画像も承認の画面(amazon_photo)で差し替え。新商品は写真まで作って /rakuten-new-item に渡す。「商品写真を作って」「写真を差し替えて」「着用イメージ」「着用画像」「トップ画像を作って」「背景を白に」「/product-photo」で使う。旧 /wear-image(Gemini を手で操作)は置き換え済み。
 ---
 
-<!-- SKILL_VERSION: 2026-10-27_2330 -->
+<!-- SKILL_VERSION: 2026-10-28_0100 -->
 
 # product-photo — 商品写真の仕上げと差し替え
 
@@ -184,6 +184,28 @@ python tools/product_photo.py top-wear  --config <作業フォルダ>/photo.json
    `status=done` 以外(`needs_human`・`終了:`・`結果不明`)は、理由を読んで運用者に報告する。差し戻しは理由に沿って写真や spec を直し、申請し直す
 6. 3 モールを読み直して一覧にする(`cd C:/ClaudeCode/023.商品マスタDB && python tools/photo_inspect.py <G番号>`)。並び・枚数・楽天だけの写真が本店・Yahoo! に写っていないことを確かめて報告する
 
+## 7. Amazon の画像を差し替える(既存商品・2026-10-27 G1051 で作成)
+
+楽天・本店・Yahoo! を差し替えたあとに続ける。Amazon は色ごとの子 SKU が画像を持つので、**色の組ごとに** MAIN・PT01〜PT08 を決める。
+
+1. 今の画像を 022 の台帳で見る(`022.Amazon在庫PWA/server/amzinv.db` の `inventory_items`・読み取りだけ)。親・子・LCL 用(`FUJI-LCL-…`・子と同じ ASIN)・停止中のサイズも全部対象にする(運用者決定)
+2. 案をアーティファクトで出して決めてもらう。決まり:
+   - **MAIN は白い背景の着用画像**(文字入り不可・背景は純白 255。`wear_model_photo.py` の着用画像は純白)。文字入りのトップ画像は PT01
+   - 着用画像はその組の色のものだけ。楽天で外した写真(錨の寄りなど)は Amazon でも外す。お店の紹介(PT08)は残す
+   - キッズの写真は各色の組に 1 枚。楽天のランキング画像は使わない
+3. `<作業フォルダ>/replace/amazon_spec.json` を書く(形は `022.Amazon在庫PWA/server/scripts/amazon_photo_replace.py` の冒頭。**9 枠を全部**書く: `{"src": 写真}`・`{"keep": "今の枠"}`・`{"empty": true}`)
+4. 計画を作る(読み取り+写真を `sfuji.xyz/pic/auto_upload/` に置く+ Amazon の確かめの送信。出品は変わらない):
+   ```bash
+   cd C:/ClaudeCode/022.Amazon在庫PWA/server && python scripts/amazon_photo_replace.py build --spec <作業フォルダ>/replace/amazon_spec.json
+   ```
+5. Codex(medium)に、送る中身(SKU・枠・URL・画像の項目だけか)の漏れを確かめさせる
+6. 申請を積む(承認の画面に組ごとの「今・新」の一覧画像が出る。電話では承認できない):
+   ```bash
+   cd C:/ClaudeCode/900.ClaudeCode && python -m amazon_photo.cli enqueue <plan.json> --purpose "<G番号>(<商品名>)の Amazon の画像を新しい写真に差し替えるため"
+   ```
+7. 結果を裏で待つ(`rakuten_photo` と同じ。`amazon_photo id=<N> (実行終了|終了:|結果不明)` を watch.log で待つ)。実行は直前に読み直し、計画のときと違えば書かずに止まる。途中で止まったら、もう一度承認すれば済んだ SKU は飛ばして残りだけ進む
+8. 終わったら 022 の台帳ではなく **Amazon から読み直して**枠を確かめる。売り場の表示に出るまで数時間かかることがあるので、翌日にも売り場の画像を見る
+
 ## astra に頼む
 
 ```bash
@@ -244,6 +266,7 @@ codex exec -m gpt-6-astra -c model_reasoning_effort=medium --sandbox workspace-w
 - `/rakuten-new-item`(新商品の楽天登録。写真はこのスキルで作って渡す)・`/register-product`(本店・Yahoo!・092)・`/mall-product-update`(名前・説明の変更。写真はこのスキル)
 - 差し替え: `023 tools/rakuten_photo_replace.py`・`900.ClaudeCode/rakuten_photo/cli.py`(見張り役の `rakuten_photo`)
 - 紺の布の背景: `023 tools/navy_backdrop.py`
+- Amazon の画像の差し替え: `022 server/scripts/amazon_photo_replace.py`・`900.ClaudeCode/amazon_photo/cli.py`(見張り役の `amazon_photo`・手順 7)
 - 名前付きモデルの着用画像の切り抜き・切り方・トップ画像(案 D-3 改): `023 tools/wear_model_photo.py`(手順 3b)。モデル帳 `a_browser_data/rakuten_new_item/_models/`
 - 実績: **G1051**(セーラーTシャツ)2026-10-27 みゆきの着用画像 6 枚とトップ画像を作成(差し替えはまだ)
 - 実績: **G1635**(IPD2021 護衛艦かが記念Tシャツ)2026-10-27 差し替え(申請 405・408。楽天 12 枚・本店 9 枚・Yahoo! 9 枚)。道具の倍率は手作業の 1.22 に対し 1.224
