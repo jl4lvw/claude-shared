@@ -1,16 +1,20 @@
-"""fba_replenish.py のテスト (node で picking-select.js を実際に動かす)。
+"""fba_replenish.py / materials.py / fba_decide.py のテスト (node で picking-select.js を実際に動かす)。
 
 python -m pytest -q .claude/skills/fba-replenish/test_fba_replenish.py
 """
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import fba_decide as fd  # noqa: E402
 import fba_replenish as fr  # noqa: E402
+import materials as mt  # noqa: E402
 
 BASE = {
     "is_fba": True, "listing_status": "Active", "sales_30d": 10, "fulfillable_qty": 3,
@@ -23,12 +27,24 @@ def _item(sku: str, **o) -> dict:
     return {**BASE, "sku": sku, "product_name": sku, **o}
 
 
-def _run(tmp_path: Path, items: list[dict], *extra: str) -> tuple[dict, str]:
+def _make_db(path: Path, rows: list[tuple[str, date, int]]) -> Path:
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE order_items_raw (amazon_order_id TEXT, sku TEXT, purchase_date DATE,"
+                " order_status TEXT, item_status TEXT, quantity INTEGER)")
+    con.executemany("INSERT INTO order_items_raw VALUES (?,?,?,?,?,?)",
+                    [(f"o{i}", s, d.isoformat(), "Shipped", "Shipped", q) for i, (s, d, q) in enumerate(rows)])
+    con.commit()
+    con.close()
+    return path
+
+
+def _run(tmp_path: Path, items: list[dict], *extra: str, db_rows=None) -> tuple[dict, str]:
     inv = tmp_path / "inv.json"
     inv.write_text(json.dumps({"items": items}), encoding="utf-8")
     out = tmp_path / "out"
-    assert fr.main(["--input", str(inv), "--out-dir", str(out), *extra]) == 0
-    cart = json.loads((out / "cart_import_hq.json").read_text(encoding="utf-8"))
+    db = _make_db(tmp_path / f"db{len(list(tmp_path.glob('db*')))}.db", db_rows or [])
+    assert fr.main(["--input", str(inv), "--out-dir", str(out), "--db", str(db), *extra]) == 0
+    cart = json.loads((out / "cart_import_hq_machine.json").read_text(encoding="utf-8"))
     return cart, (out / "report.md").read_text(encoding="utf-8")
 
 
@@ -71,3 +87,150 @@ def test_extra_shows_sendable_for_7s():
     row = {"sku": "S", "product_name": "x", "source": "7s", "fba": 0, "inbound": 0, "sales": 10,
            "reqFba": 20, "send": 7, "extra": 10, "extraSend": 2, "overset": False, "short7s": 0}
     assert "設定数まで+10(7Sから送れるのは+2)" in fr.table([row], 5)[2]
+
+
+# ---- 判断の材料 (materials) ----
+
+def test_windows_and_summary():
+    w = mt.Windows(date(2026, 10, 28))
+    assert w.d7 == (date(2026, 10, 22), date(2026, 10, 28))
+    assert w.d30[0] == date(2026, 9, 29)
+    assert w.ly_next30 == (date(2025, 10, 29), date(2025, 11, 27))
+    daily = {date(2026, 10, 28): 2, date(2026, 10, 1): 3, date(2025, 11, 1): 5, date(2025, 10, 20): 1}
+    assert mt.sales_summary(daily, w) == {"s7": 2, "s30": 5, "s90": 5, "ly_same30": 1, "ly_next30": 5}
+    # 履歴が始まる前に掛かる期間は 0 ではなく None
+    assert mt.sales_summary(daily, w, date(2026, 4, 1)) == {
+        "s7": 2, "s30": 5, "s90": 5, "ly_same30": None, "ly_next30": None}
+    assert mt.sales_summary(daily, w, date(2026, 9, 1))["s90"] is None
+
+
+def test_history_start_skips_sparse_months(tmp_path):
+    rows = [("x", date(2024, 11, 5), 1), ("x", date(2025, 10, 5), 1)]
+    rows += [("x", date(2026, m, 1) + timedelta(days=i % 28), 1) for m in (4, 5, 6) for i in range(50)]
+    assert mt.history_start(_make_db(tmp_path / "h.db", rows)) == date(2026, 4, 1)
+    assert mt.history_start(_make_db(tmp_path / "e.db", [])) is None
+
+
+def test_guide_and_cover():
+    assert mt.guide_qty(30, 10, 7) == 27        # 1日1個 × 37日 − 10
+    assert mt.guide_qty(30, 50, 7) == 0
+    assert mt.cover_days(30, 10) == 10.0
+    assert mt.cover_days(0, 10) is None
+
+
+def test_materials_near_and_skipped_b(tmp_path):
+    today = mt.today_jst()
+    items = [
+        _item("A-HQ"),                                                    # A
+        _item("NEAR", sales_30d=30, fulfillable_qty=32),                  # 30日分はあるが 37日分に届かない → 準A
+        _item("OK", sales_30d=30, fulfillable_qty=40),                    # 足りている → 出ない
+        _item("B-ZERO", sales_30d=0, fulfillable_qty=0, required_qty=5),  # 売上0の B → 一括で送らない
+        _item("B-SEASON", sales_30d=0, fulfillable_qty=0, required_qty=5),  # 昨年この先に売れた → 一件ずつ見る
+    ]
+    # 履歴の始まりを 400 日前にする (昨年の期間が「データなし」にならないように)
+    rows = [("OLD", today - timedelta(days=400), 1), ("B-SEASON", today - timedelta(days=360), 4), ("A-HQ", today, 3)]
+    _run(tmp_path, items, db_rows=rows)
+    m = json.loads((tmp_path / "out" / "materials.json").read_text(encoding="utf-8"))
+    assert {r["sku"]: r["kind"] for r in m["review"]} == {"A-HQ": "A", "NEAR": "準A", "B-SEASON": "B"}
+    assert [r["sku"] for r in m["skipped_b"]] == ["B-ZERO"]
+    a = next(r for r in m["review"] if r["sku"] == "A-HQ")
+    assert a["s7"] == 3 and a["machine"] == 7 and a["guide"] == 10   # ceil(10/30*37)=13 − 3
+    near = next(r for r in m["review"] if r["sku"] == "NEAR")
+    assert near["machine"] == 0 and near["guide"] == 5
+    assert m["lead_days"] == 7
+    assert "準A" in (tmp_path / "out" / "materials.md").read_text(encoding="utf-8")
+
+
+def test_materials_guide_capped_by_7s_stock(tmp_path):
+    _run(tmp_path, [_item("A-7S", source_7s_only=True, airlogi_qty=4)])
+    m = json.loads((tmp_path / "out" / "materials.json").read_text(encoding="utf-8"))
+    assert m["review"][0]["guide"] == 3
+
+
+def test_lead_days_changes_near(tmp_path):
+    items = [_item("NEAR", sales_30d=30, fulfillable_qty=32)]
+    _run(tmp_path, items, "--lead-days", "0")
+    m = json.loads((tmp_path / "out" / "materials.json").read_text(encoding="utf-8"))
+    assert m["review"] == [] and m["lead_days"] == 0
+
+
+def test_db_opened_read_only(tmp_path):
+    db = _make_db(tmp_path / "ro.db", [])
+    assert mt.load_daily_sales(db, date(2026, 1, 1)) == {}
+    con = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+    try:
+        con.execute("INSERT INTO order_items_raw VALUES ('x','y','2026-01-01','Shipped','',1)")
+        raise AssertionError("書けてしまった")
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        con.close()
+
+
+# ---- Claude の決定の検査 (fba_decide) ----
+
+def _mat() -> dict:
+    return {"today": "2026-10-28", "lead_days": 7, "keep_7s": 1, "skipped_b": [{"sku": "Z"}],
+            "review": [
+                {"kind": "A", "sku": "H", "product_name": "本店の品", "source": "hq", "machine": 5, "airlogi": 3},
+                {"kind": "A", "sku": "S", "product_name": "7Sの品", "source": "7s", "machine": 2, "airlogi": 3},
+                {"kind": "B", "sku": "B", "product_name": "Bの品", "source": "hq", "machine": 4, "airlogi": None},
+            ]}
+
+
+def test_decide_ok_and_outputs(tmp_path):
+    (tmp_path / "materials.json").write_text(json.dumps(_mat()), encoding="utf-8")
+    (tmp_path / "decisions.json").write_text(json.dumps({"items": [
+        {"sku": "H", "qty": 7, "source": "hq", "reason": "直近7日が伸びている"},
+        {"sku": "S", "qty": 2, "source": "7s"},
+        {"sku": "B", "qty": 0, "reason": "設定数が多すぎる疑い"},
+    ]}), encoding="utf-8")
+    assert fd.main(["--dir", str(tmp_path)]) == 0
+    cart = json.loads((tmp_path / "cart_import_hq.json").read_text(encoding="utf-8"))
+    assert cart == {"version": 1, "mode": "replace", "items": [{"sku": "H", "qty": 7}]}
+    rep = (tmp_path / "decision_report.md").read_text(encoding="utf-8")
+    assert "送る: 2 件・9 個" in rep
+    assert "7S から送る (7S カートへ手で入れる) (1 件)" in rep
+    assert "機械は送る判定だが送らない (1 件)" in rep
+    assert "一括で送らない B: 1 件" in rep
+
+
+def test_decide_errors():
+    _, errors, _ = fd.validate(_mat(), [
+        {"sku": "H", "qty": 6},                                  # 理由なし
+        {"sku": "S", "qty": 4, "source": "7s", "reason": "x"},   # 7S在庫超え
+        {"sku": "NOPE", "qty": 1},                               # 知らない SKU
+        {"sku": "H", "qty": 5},                                  # 重複
+    ])
+    text = " / ".join(errors)
+    assert "理由がありません" in text
+    assert "7S在庫 3 個より多い" in text
+    assert "材料に無い SKU" in text
+    assert "2 回書かれています" in text
+    assert "決めていない商品が 1 件" in text                       # B が無い
+
+
+def test_decide_rejects_bad_qty_and_source():
+    _, errors, _ = fd.validate(_mat(), [
+        {"sku": "H", "qty": -1}, {"sku": "S", "qty": True},
+        {"sku": "B", "qty": 1, "source": "fba", "reason": "x"},
+    ])
+    assert sum("0 以上の整数" in e for e in errors) == 2
+    assert any("補充元は hq か 7s" in e for e in errors)
+
+
+def test_decide_warns_when_7s_emptied_and_source_moved():
+    decisions, errors, warns = fd.validate(_mat(), [
+        {"sku": "H", "qty": 3, "source": "7s", "reason": "本店に無い"},
+        {"sku": "S", "qty": 2}, {"sku": "B", "qty": 4},
+    ])
+    assert not errors
+    assert any("FBM 用が 0 個" in w for w in warns)
+    assert "補充元が「7S専用」の印と違う (1 件)" in fd.build_report(_mat(), decisions, warns)
+
+
+def test_decide_stops_without_writing(tmp_path):
+    (tmp_path / "materials.json").write_text(json.dumps(_mat()), encoding="utf-8")
+    (tmp_path / "decisions.json").write_text(json.dumps({"items": []}), encoding="utf-8")
+    assert fd.main(["--dir", str(tmp_path)]) == 1
+    assert not (tmp_path / "cart_import_hq.json").exists()
