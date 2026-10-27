@@ -23,6 +23,10 @@ URL = "https://sfuji.f5.si/conphasapi/api/external/data/extract/rows"
 KEY_NAME = "fuji-main"
 MAX_DAYS = 90  # サーバー上限は 92 日。余裕を持って分割する
 MODE_LABEL = {"purchase": "仕入", "sales": "売上"}
+REQUEST_INTERVAL_SEC = 6.1  # API は 1分10回まで。取得と取得の間をこれだけ空ける(最初の取得の前は待たない)
+MAX_RETRIES = 3  # HTTP 429(回数制限)のときに取り直す回数
+RETRY_DEFAULT_SEC = 60.0  # Retry-After が無い・読めないときの待ち時間(制限の1分を待つ)
+RETRY_MAX_SEC = 120.0  # Retry-After が長すぎるときはここで打ち切る
 
 
 def fold(s: str) -> str:
@@ -38,7 +42,26 @@ def load_key() -> str:
     raise SystemExit(f"API キー {KEY_NAME} が見つかりません")
 
 
-def fetch(key: str, mode: str, start: date, end: date, customer: str) -> list[dict]:
+def retry_after_seconds(value: str | None) -> float:
+    """Retry-After(秒数)を待ち時間にする。日付形式・不正値・無しは既定の待ち時間."""
+    try:
+        sec = float(value) if value is not None else RETRY_DEFAULT_SEC
+    except ValueError:
+        sec = RETRY_DEFAULT_SEC
+    if sec != sec or sec < 0:  # NaN・負の値
+        sec = RETRY_DEFAULT_SEC
+    return min(sec, RETRY_MAX_SEC)
+
+
+def fetch(
+    key: str,
+    mode: str,
+    start: date,
+    end: date,
+    customer: str,
+    urlopen=urllib.request.urlopen,
+    sleep=time.sleep,
+) -> list[dict]:
     body = json.dumps(
         {
             "mode": mode,
@@ -52,11 +75,18 @@ def fetch(key: str, mode: str, start: date, end: date, customer: str) -> list[di
     req = urllib.request.Request(
         URL, data=body, headers={"Content-Type": "application/json", "X-API-Key": key}
     )
-    try:
-        with urllib.request.urlopen(req, timeout=90) as r:
-            d = json.load(r)
-    except urllib.error.HTTPError as e:
-        raise SystemExit(f"API エラー {e.code}: {e.read()[:200].decode('utf-8', 'replace')}")
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            with urlopen(req, timeout=90) as r:
+                d = json.load(r)
+            break
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < MAX_RETRIES:
+                wait = retry_after_seconds(e.headers.get("Retry-After") if e.headers else None)
+                print(f"[待機] 回数制限(429)のため {wait:g} 秒待って取り直します", file=sys.stderr)
+                sleep(wait)
+                continue
+            raise SystemExit(f"API エラー {e.code}: {e.read()[:200].decode('utf-8', 'replace')}")
     if d.get("truncated"):
         print(f"[警告] {start}〜{end} は件数上限で切り詰められました。期間を狭めてください", file=sys.stderr)
     return d["rows"]
@@ -68,6 +98,34 @@ def chunks(start: date, end: date):
         nxt = min(cur + timedelta(days=MAX_DAYS - 1), end)
         yield cur, nxt
         cur = nxt + timedelta(days=1)
+
+
+def collect(
+    key: str,
+    modes: list[str],
+    start: date,
+    end: date,
+    customer: str,
+    kws: list[str],
+    fetch_fn=fetch,
+    sleep=time.sleep,
+) -> tuple[list[tuple[str, dict]], int]:
+    """期間を分割して取得し、キーワードに合う行を集める。取得の間は REQUEST_INTERVAL_SEC 空ける."""
+    hits: list[tuple[str, dict]] = []
+    total = 0
+    first = True
+    for mode in modes:
+        for s, e in chunks(start, end):
+            if not first:
+                sleep(REQUEST_INTERVAL_SEC)
+            first = False
+            rows = fetch_fn(key, mode, s, e, customer)
+            total += len(rows)
+            for r in rows:
+                hay = fold(f"{r.get('SNA','')}{r.get('顧客名','')}{r.get('備考','')}{r.get('TKY','')}")
+                if all(k in hay for k in kws):
+                    hits.append((mode, r))
+    return hits, total
 
 
 def main() -> None:
@@ -88,17 +146,7 @@ def main() -> None:
     key = load_key()
     modes = ["purchase", "sales"] if a.mode == "both" else [a.mode]
 
-    hits: list[tuple[str, dict]] = []
-    total = 0
-    for mode in modes:
-        for s, e in chunks(start, end):
-            rows = fetch(key, mode, s, e, a.customer)
-            total += len(rows)
-            for r in rows:
-                hay = fold(f"{r.get('SNA','')}{r.get('顧客名','')}{r.get('備考','')}{r.get('TKY','')}")
-                if all(k in hay for k in kws):
-                    hits.append((mode, r))
-            time.sleep(0.5)
+    hits, total = collect(key, modes, start, end, a.customer, kws)
 
     hits.sort(key=lambda t: (t[1].get("年月日", ""), t[1].get("DNO", "")))
     if a.json:
