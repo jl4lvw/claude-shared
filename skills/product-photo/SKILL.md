@@ -1,9 +1,9 @@
 ---
 name: product-photo
-description: 商品写真(Tシャツ・スポーツタオル・ワッペン)の仕上げから楽天の差し替えまでの標準手順。元写真の背景を白にする・正方形にする(Claude が作り、2回失敗したら Codex の gpt-6-astra に頼む)→ Tシャツの着用画像(最初から astra)→ トップ画像(白い背景の版・着用画像の版。共通の道具 023 tools/product_photo.py が座標と倍率を写真から測る)→ 一覧で確認 → 承認の画面(rakuten_photo)で楽天の写真を差し替え、本店・Yahoo! へ展開。新商品は写真まで作って /rakuten-new-item に渡す。「商品写真を作って」「写真を差し替えて」「着用イメージ」「着用画像」「トップ画像を作って」「背景を白に」「/product-photo」で使う。旧 /wear-image(Gemini を手で操作)は置き換え済み。
+description: 商品写真(Tシャツ・スポーツタオル・ワッペン)の仕上げから楽天の差し替えまでの標準手順。元写真の背景を白にする・正方形にする(Claude が作り、2回失敗したら Codex の gpt-6-astra に頼む)→ Tシャツの着用画像(最初から astra)→ 名前と顔のある女性モデル(みゆき)の着用画像・切り抜き・それで作るトップ画像(023 tools/wear_model_photo.py)→ トップ画像(白い背景の版・着用画像の版。共通の道具 023 tools/product_photo.py が座標と倍率を写真から測る)→ 一覧で確認 → 承認の画面(rakuten_photo)で楽天の写真を差し替え、本店・Yahoo! へ展開。新商品は写真まで作って /rakuten-new-item に渡す。「商品写真を作って」「写真を差し替えて」「着用イメージ」「着用画像」「トップ画像を作って」「背景を白に」「/product-photo」で使う。旧 /wear-image(Gemini を手で操作)は置き換え済み。
 ---
 
-<!-- SKILL_VERSION: 2026-10-27_1500 -->
+<!-- SKILL_VERSION: 2026-10-27_2330 -->
 
 # product-photo — 商品写真の仕上げと差し替え
 
@@ -68,8 +68,80 @@ Claude には作れないので、最初から astra に頼む。雛形 `templat
 - **袖のプリントは袖の外側の面**: 真後ろ・真正面からは袖の丸みに沿って回り込み、端の半分ほどが斜めに細く見えるだけ
 - **袖のプリントは実物の比率**: 袖口寄りで、袖の長さの半分ほど。袖いっぱいに広げない
 - 顔は写さない(あごから下)・短髪の男性・直立・明るい無地の背景・茶色系のチノパン
+- **名前と顔のあるモデルで作るとき(2026-10-27〜)は雛形 `templates/task_wear_model.md`**。モデル帳 `a_browser_data/rakuten_new_item/_models/<フォルダ名>/`(profile.md と顔・全身の見本)を `ref_model/` へ写して渡す。モデルの名前はすべてひらがな(1 人目は「みゆき」= `_models/miyuki/`)。髪で背中のプリントを隠さない。出来たら見本の顔と並べて同じ人か確かめる
 - 手本の姿勢 `G1635_photo/ref_wear/pose_back.jpg`・書き方 `G1635_photo/ref_wear/example_prompt_g1591.md` を `ref_wear/` に写して渡す
 - 出来たら、元写真のプリントと見比べる(文字・胸の位置・袖の大きさと見え方)。おかしければ `templates/fix.md` で直しを頼む(1 回 4〜5 分)
+
+## 3b. 名前付きモデルの着用画像とトップ画像(女性モデル・2026-10-27 G1051 で決定)
+
+顔と名前のあるモデル(1 人目「みゆき」)で着用画像を作り、それでトップ画像を作るときの決まった作り方。
+G1051(セーラーTシャツ)で運用者と何度も直して決めたもの。**次からはこの形を最初の案にし、違う点だけ相談する。**
+道具は `C:/ClaudeCode/023.商品マスタDB/tools/wear_model_photo.py`(試験 `tests/test_wear_model_photo.py`)。
+
+### 1) 着用画像を astra に頼む
+- 雛形 `templates/task_wear_model.md`。モデル帳 `a_browser_data/rakuten_new_item/_models/<フォルダ名>/` の `profile.md` と顔・全身の見本を `ref_model/` へ写して渡す
+- 向きは 4 方向以上: 紺(濃い色)は 正面・真後ろ・斜め前・斜め後ろ、白(薄い色)は 正面・真後ろ。名前は `wear_<色>_<front|back|front45|back45>.jpg`
+- 下の服は、シャツと溶けない色: 濃いシャツには白い細身のパンツ、白いシャツには濃い青のデニム(道具が裾を測れる色)
+- 背景は明るい灰色(灰青)の無地のスタジオ。**髪で背中のプリントを隠さない**
+
+### 2) 切り抜く(Claude が道具で・画素ごと)
+```bash
+cd C:/ClaudeCode/023.商品マスタDB
+python tools/wear_model_photo.py cutout <作業フォルダ>/final/gray_bg/wear_navy_front.jpg --jpg <作業フォルダ>/cut/wear_navy_front.jpg --png <作業フォルダ>/final/png/wear_navy_front.png
+```
+- astra の出来上がり(灰色の背景)は `final/gray_bg/` に残す。`--jpg` は白い背景の版、`--png` は透明の版(トップ画像に使う)
+- 背景は縁の色から場所ごとに推定して消す(グラデーション・むらに合う)。腕と胴の間・脚の間の細いすき間も消し、紺の上のプリント(錨・線)と白い服の影は残す
+- **赤い背景に重ねて確かめる**: 灰色の残り(すき間)・欠け(錨・線の縁・白い服の影)を拡大して見る
+
+### 3) 商品用の着用画像に切る
+```bash
+python tools/wear_model_photo.py crop <作業フォルダ>/cut/wear_navy_front.jpg --png <作業フォルダ>/final/png/wear_navy_front.png --shirt dark --out <作業フォルダ>/final/wear_navy_front.jpg
+```
+- **パンツは Tシャツの裾の下 10cm ほどまで**(運用者指定)。頭のてっぺんから裾までを 68cm(身長 158cm の目安)として 1cm の画素数を出す
+- 頭の上に 30 画素の余白・体の真ん中(人の画素の重さの真ん中。手の先に引っぱられない)で正方形に切り、1200 角へ拡大(G1051 は 1.12〜1.17 倍)
+- `--shirt` は 紺など濃いシャツ=`dark`、白など明るいシャツ=`light`。明るいシャツはデニムか黒のパンツで裾を測る。ほかの色のパンツは止まるので `--hem <裾の y>` で渡す
+
+### 4) トップ画像(案 D-3 改)
+```bash
+python tools/wear_model_photo.py top --config <作業フォルダ>/wear_top.json
+```
+配置(1200 角。位置は道具が決めた値で固定):
+
+| 場所 | 中身 |
+|---|---|
+| 右寄りの中央 | 斜め前の全身。肩から裾まで Tシャツ全体が見える大きさ(高さ 1150)・中心 x=875。裾の下は背景へなじませる(パンツはほとんど出さない) |
+| 左の列 いちばん上 | 題名 2 行(「セーラー」「Tシャツ」)。**丸みのある書体 HG丸ゴシックM-PRO**・紺 |
+| その下 | 題名の真ん中の下に **錨のマーク**(高さ 130。元のトップ画像から切り出した `assets/product_photo/anchor_navy.png`)→ その下に「2colors」(差し色) |
+| その下 | サイズの札(紺の丸い札・白い文字。**文字は札の上下・左右の真ん中**。1 文字は丸) |
+| その下 | 後ろ姿の写真 2 枚(紺=斜め後ろ・白=真後ろ)を角の丸い札に。下に「紺」「白」。白の札の地は薄い灰青(白が溶けない) |
+| いちばん下 | 「後ろ姿もキュート♪」(丸ゴシック・差し色・後ろ姿 2 枚の真ん中にそろえる) |
+
+運用者の好み(省略しない):
+- 差し色は **コーラルピンク (226,108,116)**。赤は不可(イマイチと言われた)
+- 「前も後ろもセーラー襟」の言い方は好まれない。一言は「後ろ姿もキュート♪」
+- 錨のマークは大きすぎない(高さ 200 は大きすぎ・130 前後)。題名の横ではなく、元のトップ画像と同じく題名の下の真ん中
+- 参考は楽天のレディースTシャツの上位(モデルを大きく・文字は少なく・色見本)。他社のロゴ・文字・図柄は使わない
+
+`wear_top.json`(パスは json のフォルダからの相対。G1051 の実物は `G1051_photo/wear_top.json`):
+```json
+{
+  "out": "final/a_main.jpg",
+  "main": {"png": "final/png/wear_navy_front45.png", "shirt": "dark"},
+  "title": ["セーラー", "Tシャツ"],
+  "anchor_h": 130,
+  "colors_text": "2colors",
+  "sizes": ["130", "150", "S", "M", "L", "LL"],
+  "backs": [
+    {"png": "final/png/wear_navy_back45.png", "label": "紺", "shirt": "dark"},
+    {"png": "final/png/wear_white_back.png", "label": "白", "shirt": "light", "card_bg": [226, 232, 242]}
+  ],
+  "subtitle": "後ろ姿もキュート♪",
+  "accent": [226, 108, 116]
+}
+```
+- 各写真の `hem` で裾の y を手で渡せる(G1051 は main 937・紺の後ろ 907・白の後ろ 905。渡すと決めた版と 1 画素も違わずに作れる)
+- 出来たら Read で全体と、題名・錨・サイズの札・後ろ姿の札の縁を拡大して見る(人と札が重なっていないか)
+- 写真の並びは アーティファクトで提示して決めてもらう(G1051: 新トップ → ハンガー 4 → 寄り 4 → 着用画像 6 → 色違いの紹介 → キッズ。上限 20 枚に収めるため 外す候補を付ける)
 
 ## 4. トップ画像(Claude が道具で作る)
 
@@ -172,5 +244,7 @@ codex exec -m gpt-6-astra -c model_reasoning_effort=medium --sandbox workspace-w
 - `/rakuten-new-item`(新商品の楽天登録。写真はこのスキルで作って渡す)・`/register-product`(本店・Yahoo!・092)・`/mall-product-update`(名前・説明の変更。写真はこのスキル)
 - 差し替え: `023 tools/rakuten_photo_replace.py`・`900.ClaudeCode/rakuten_photo/cli.py`(見張り役の `rakuten_photo`)
 - 紺の布の背景: `023 tools/navy_backdrop.py`
+- 名前付きモデルの着用画像の切り抜き・切り方・トップ画像(案 D-3 改): `023 tools/wear_model_photo.py`(手順 3b)。モデル帳 `a_browser_data/rakuten_new_item/_models/`
+- 実績: **G1051**(セーラーTシャツ)2026-10-27 みゆきの着用画像 6 枚とトップ画像を作成(差し替えはまだ)
 - 実績: **G1635**(IPD2021 護衛艦かが記念Tシャツ)2026-10-27 差し替え(申請 405・408。楽天 12 枚・本店 9 枚・Yahoo! 9 枚)。道具の倍率は手作業の 1.22 に対し 1.224
 - 旧 `/wear-image`(Gemini を手で操作)は 2026-10-27 に置き換え、`.claude/_retired_skills/wear-image/` へ退避した
