@@ -86,6 +86,8 @@ description: 楽天市場に新しい商品(G番号)を API で作る標準手�
   - 1200 より小さい写真は拡大する(承認の画面に「拡大」と出る)。すでに 1200×1200・2MB 以内の JPEG/PNG は作り直さず、付帯情報だけを消す
   - 写真はデータ共有から `PS get <番号> --variant orig`(元の大きさ。HEIC も読める)か `full` で取り出し、
     `900.ClaudeCode/a_browser_data/rakuten_new_item/<品番>/source/` に置く(一覧用の小さい画像は使わない)
+- **写真(背景を白に・白抜き・トップ画像・Tシャツの着用画像)は `/product-photo` で作る**(2026-10-27)。出来た `final/` の写真を
+  spec の `images` に並び順で渡す(1200 角は build が作り直さない)。下の決まりは /product-photo と同じもの:
 - **写真の仕上げの決まり(運用者決定)**:
   - **明るさをそろえる**(2026-10-26): 写真ごとに背景の明るさ・色味が違うときは、背景を同じ白(約 238・無彩色)に合わせ、黒はそのまま残す曲線を色ごとに当てる。
     白を基準にする補正だけでは変わらない(背景のほうがずれている)。補正前後の一覧を見せてから使う
@@ -141,7 +143,7 @@ python tools/rakuten_new_item.py build --spec C:/ClaudeCode/900.ClaudeCode/a_bro
    `purpose` は 6〜120 字。人名・住所・電話番号・お客様名は書かない(電話の音声案内に使われる)
 3. 運用者には「LINE WORKS の知らせのリンクから承認の画面で承認してください」とだけ伝え、**結果は自分で見張る**(裏で待つ):
    ```bash
-   until grep -qE "rakuten_new_item id=<N> 実行終了" C:/ClaudeCode/900.ClaudeCode/a_browser_data/watch.log; do sleep 15; done; grep -E "rakuten_new_item id=<N>" C:/ClaudeCode/900.ClaudeCode/a_browser_data/watch.log | tail -3
+   until grep -qE "rakuten_new_item id=<N> (実行終了|終了:|結果不明)" C:/ClaudeCode/900.ClaudeCode/a_browser_data/watch.log; do sleep 15; done; grep -E "rakuten_new_item id=<N> " C:/ClaudeCode/900.ClaudeCode/a_browser_data/watch.log | tail -3
    ```
    終わったら `python -m rakuten_new_item.cli show <N>` で結果(`result`)を読む
 
