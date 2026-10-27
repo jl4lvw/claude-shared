@@ -7,8 +7,9 @@ description: ヤマトビジネスメンバーズ（bmypage.kuronekoyamato.co.jp
 
 - **通常（A）**: `900.ClaudeCode/yamato_pickup`（Playwright・keyring・専用プロファイル）。使い方の詳細は `900.ClaudeCode/yamato_pickup/README.md`
 - **予備（B）**: Claude in Chrome で手で進める（自動が使えないとき・画面の観察）
-- 画面の観察記録（2026-10-20）: `C:\ClaudeCode\094.Chrome自動操作\docs\yamato_pickup_screens.md`
-- **状態: 試作（入力・確認・履歴は観察済み。完了画面・確定の確認ダイアログ・訂正/キャンセルは未観察）。** 初回の実依頼の後、結果とスクリーンショットで観察記録・README・この文書を直す。
+- 画面の観察記録（2026-10-20・10-28 追記）: `C:\ClaudeCode\094.Chrome自動操作\docs\yamato_pickup_screens.md`
+- **状態: 本番運用。** 実依頼 3 件（申請 37・40・435。10/21・22・28、どれも当日・指定なし・宅急便）を確定まで進め、すべて confirmed。
+  まだ確かめていないのは、翌日以降の依頼の確定・時間帯の指定あり・宅急便以外の荷物・ご要望あり・訂正/キャンセル（README「まだ実機で確かめていないこと」）。初めて通したときは観察記録と README に追記する。
 
 ## 🚨 絶対ルール
 
@@ -35,7 +36,8 @@ description: ヤマトビジネスメンバーズ（bmypage.kuronekoyamato.co.jp
 3. `C:\ClaudeCode\900.ClaudeCode` で `python -m yamato_pickup.cli enqueue <json>` → `queued` と申請番号を伝え、見張り役の記録（`a_browser_data\watch.log`）に「yamato id=N 承認を依頼」が出たことを確かめて、「LINE WORKS に届く承認の『実行』を押してください。押されしだい自動で続けます」と伝える。`rejected` なら理由をそのまま伝える。
    **「押したら知らせて」と頼まない**（2026-10-20 ユーザー指示）。続けて Bash の `run_in_background` で待ち受けを始める（watch.log に `yamato id=N 実行終了` か `yamato id=N 終了` が出るまで 15 秒ごと・最大 2 時間 15 分）。終わりの通知が来たら手順 4 へ自動で進む。
 4. 待ち受けが終わったら `python -m yamato_pickup.cli show <id>` の `status`・`result.detail` を伝える:
-   - `confirmed`: 日付・時間帯・荷物・（あれば）受付番号。`warnings`・`note` があれば必ず添える
+   - `confirmed`: 日付・時間帯・荷物。**受付番号は出ない**（完了画面は「ご依頼を承りました。」だけで、内容は集荷先のメールアドレスへ届く）。
+     確定後の同じ日の履歴（`history_same_day_after`）が今回の 1 行だけかも伝える。`warnings`・`note` があれば必ず添える
    - `stopped` / `failed`: 確定していない。`detail`・`problems` を伝える
    - `needs_human`: 依頼が入ったか分からない。**再申請しない**（ルール 6）
    - `queued` のまま: まだ承認されていない（承認の期限は 2 時間）
@@ -114,7 +116,7 @@ set('nimotsuTakkyu','1');           // 宅急便の個数
 - 修正が要るときは「戻る」（`action:ShukaDataConfirmAction_doBack`）で入力画面へ。入力値は残っている。
 
 ### 6. 確定（承認後のみ）
-承認を得たら「確定」（`action:ShukaDataConfirmAction_doDecision`）を `find` → ref クリック → 6 秒待つ → 完了画面を `get_page_text` + screenshot で読み、受付番号などを報告する。
+承認を得たら「確定」（`action:ShukaDataConfirmAction_doDecision`）を `find` → ref クリック → 6 秒待つ → 完了画面を `get_page_text` + screenshot で読んで報告する。確認ダイアログは出ない。完了画面は「ご依頼を承りました。」だけで受付番号は無いので、「履歴・再依頼」で今回の行が増えたことを確かめて報告する。
 **確定は 1 回だけ押す。** 反応が無くても連打せず、「履歴・再依頼」タブで登録されたかを確かめる。
 
 ### 7. 片付け
@@ -125,8 +127,10 @@ set('nimotsuTakkyu','1');           // 宅急便の個数
 - 確認画面の後のステップ表示は `1.入力 → 2.住所選択 → 3.確認 → 4.完了`。「住所変更」を押さなければ 2 は飛ばされる。
 - 画面にサイズ・重さ・伝票番号の欄は無い（種類ごとの個数だけ）。
 - `javascript_tool` の結果に URL のクエリが含まれると `[BLOCKED]` になる。関数の中身を調べるときは URL を含めない形で返す。
-- 実績: 2026-10-20 観察のみ（確定は押していない）。
+- 当日を選ぶと時間帯の欄は `shukaTimeToday` に切り替わる（予備の手順で当日を入れるときは `shukaTimeAll` ではなくこちらに入れる）。
+- これからの依頼の行には「内容確認／変更」ボタンが出る。訂正・キャンセルはその先だが未観察で、自動にはしていない（ヤマトの画面で人が行う）。
+- 実績: 予備（B）は 2026-10-20 の観察のみ（確定は押していない）。通常（A）は申請 37・40・435 で確定まで成功。
 
 ## 更新ルール
 
-初回の実依頼で、完了画面の項目（受付番号の有無など）と、これからの依頼の訂正・キャンセルの画面を `docs/yamato_pickup_screens.md` とこの SKILL.md に追記し、冒頭の「試作」表記を外す。
+README「まだ実機で確かめていないこと」の項目（翌日以降の確定・時間帯の指定・宅急便以外・ご要望・訂正/キャンセル）を初めて通したら、`docs/yamato_pickup_screens.md`・README・この SKILL.md に追記する。
