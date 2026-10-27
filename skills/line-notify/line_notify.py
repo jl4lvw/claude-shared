@@ -11,7 +11,7 @@ pub.sfuji.f5.si(自社の公開置き場・ログイン不要・一覧なし)に
         → 寺下さんの1対1トークへ、下書き(全文・画像・「送信する」「中止」ボタン)を送り、確認コードを表示
         --mention: 先頭に「@表示名 さん」のメンションを付ける(send にも同じ値を渡す。相手も承認の照合に入る)
   python line_notify.py wait-approval コード [--timeout-min 30]
-        → LINE での返信を待つ。終了コード 0=承認 / 10=中止 / 11=修正の依頼(本文を表示) / 12=期限切れ / 13=時間切れ(まだ待ち)
+        → LINE での返信を待つ。終了コード 0=承認 / 10=中止 / 11=修正の依頼・承認の画面の差し戻し(本文・理由を表示) / 12=期限切れ / 13=時間切れ(まだ待ち)
   python line_notify.py send --group 名前 --text-file 本文.txt --url URL --approval コード            確認のみ
   python line_notify.py send --group 名前 --text-file 本文.txt --url URL --approval コード --send     グループへ送信
 
@@ -67,6 +67,7 @@ MAX_LEN = 4500
 TTL_HOURS = 24
 PREVIEW_MAX = 1024 * 1024  # LINE の previewImageUrl は 1MB まで
 CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # 紛らわしい文字(0/O・1/I)を除く
+RETURN_PREFIX = "📱差し戻し: "  # a_browser_watch/approval_pwa.RETURN_PREFIX と同じ(承認の画面の差し戻しの理由の頭)
 EXIT = {"approved": 0, "rejected": 10, "revise": 11, "expired": 12, "pending": 13, "used": 14, "queued": 20}
 
 
@@ -335,9 +336,13 @@ def cmd_wait(a: argparse.Namespace) -> None:
         time.sleep(a.poll)
     label = {"approved": "承認されました", "rejected": "中止されました", "revise": "修正の依頼です",
              "expired": "期限切れです", "used": "すでに送信済みです"}[status]
-    print(f"{a.code}: {label}")
-    if status == "revise":
-        print("--- 寺下さんの返信 ---\n" + (row["decision_text"] or ""))
+    note = row["decision_text"] or ""
+    returned = status == "revise" and note.startswith(RETURN_PREFIX)  # 承認の画面の差し戻し(2026-10-27)
+    print(f"{a.code}: {'差し戻されました' if returned else label}")
+    if returned:
+        print("--- 差し戻しの理由 ---\n" + note[len(RETURN_PREFIX):])
+    elif status == "revise":
+        print("--- 寺下さんの返信 ---\n" + note)
     sys.exit(EXIT[status])
 
 
