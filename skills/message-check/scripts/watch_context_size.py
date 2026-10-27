@@ -24,7 +24,7 @@ import re
 import sys
 from pathlib import Path
 
-DEFAULT_THRESHOLD = 150_000
+DEFAULT_THRESHOLD = 300_000  # 2026-10-27 運用者決定: 15万 -> 30万
 # 新しく開いた待ち受けの文脈(実測 2026-10-04: 新規セッションの床 4.5〜9.5万、A の待ち受けは開いた直後 7.6万)
 FRESH_CONTEXT = 80_000
 # 新着が無い日に起こされる回数(50分ごと)と、1回あたりの API 呼び出し数

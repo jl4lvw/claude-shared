@@ -49,7 +49,7 @@ RELAY = Path(__file__).resolve().parents[1] / "skills" / "relay" / "scripts" / "
 LEDGER = Path(__file__).resolve().parents[1] / "relay_local" / "ty_7s_register_ledger.jsonl"
 
 
-def validate_plan(plan: object) -> list[str]:
+def validate_plan(plan: object, extra_colors: tuple[str, ...] = ()) -> list[str]:
     """計画ファイルだけで分かる条件。問題の一覧を返す(空なら OK)。"""
     if not isinstance(plan, list) or not (1 <= len(plan) <= MAX_ITEMS):
         return [f"件数が 1〜{MAX_ITEMS} ではありません"]
@@ -58,7 +58,10 @@ def validate_plan(plan: object) -> list[str]:
         if not isinstance(row, dict) or any(not str(row.get(k) or "").strip() for k in REQUIRED):
             problems.append(f"{i + 1}行目: 必須項目が不足")
             continue
-        if not CODE_RE.match(row["item_code"]):
+        extra_ok = any(
+            re.match(rf"^G\d{{4}}-{re.escape(c)}-[0-9A-Z]{{1,3}}$", row["item_code"]) for c in extra_colors
+        )
+        if not (CODE_RE.match(row["item_code"]) or extra_ok):
             problems.append(f"{i + 1}行目: 品番の形式が違います({row['item_code']})")
     for key in ("item_code", "amazon_fba_sku"):
         vals = [r.get(key) for r in plan if isinstance(r, dict)]
@@ -120,7 +123,7 @@ def refuse(message_id: int, reasons: list[str]) -> int:
     return 10
 
 
-def run(message_id: int, plan_path: Path, apply: bool) -> int:
+def run(message_id: int, plan_path: Path, apply: bool, extra_colors: tuple[str, ...] = ()) -> int:
     try:
         plan = json.loads(plan_path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
@@ -128,7 +131,7 @@ def run(message_id: int, plan_path: Path, apply: bool) -> int:
     sender = check_sender(message_id)
     if sender != ALLOWED_SENDER:
         return refuse(message_id, [f"送り元が {ALLOWED_SENDER} と確認できません(確認結果: {sender})"])
-    problems = validate_plan(plan)
+    problems = validate_plan(plan, extra_colors)
     if problems:
         return refuse(message_id, problems)
     try:
@@ -184,8 +187,9 @@ def main() -> int:
     ap.add_argument("--message-id", type=int, required=True)
     ap.add_argument("--plan", type=Path, required=True)
     ap.add_argument("--apply", action="store_true", help="条件を満たすとき実際に登録する")
+    ap.add_argument("--allow-color", action="append", default=[], help="運用者が承認した3文字の色コードを個別に許可(例: BLU)。計画ファイルは承認済みの行だけにすること")
     args = ap.parse_args()
-    return run(args.message_id, args.plan, args.apply)
+    return run(args.message_id, args.plan, args.apply, tuple(args.allow_color))
 
 
 if __name__ == "__main__":
