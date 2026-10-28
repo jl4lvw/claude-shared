@@ -92,6 +92,7 @@ cd C:/ClaudeCode/023.商品マスタDB
 python tools/wear_model_photo.py cutout <作業フォルダ>/final/gray_bg/wear_navy_front.jpg --jpg <作業フォルダ>/cut/wear_navy_front.jpg --png <作業フォルダ>/final/png/wear_navy_front.png
 ```
 - astra の出来上がり(灰色の背景)は `final/gray_bg/` に残す。`--jpg` は白い背景の版、`--png` は透明の版(トップ画像に使う)
+- **背景の明るさの変化が強い(床が明るい)とき・黒いシャツのとき**は `--strong-bg` を付ける(G1690。付けないと灰青が大きく残った)。紺のシャツには付けない(紺の明るい所が消える)
 - 背景は縁の色から場所ごとに推定して消す(グラデーション・むらに合う)。腕と胴の間・脚の間の細いすき間も消し、紺の上のプリント(錨・線)と白い服の影は残す
 - **赤い背景に重ねて確かめる**: 灰色の残り(すき間)・欠け(錨・線の縁・白い服の影)を拡大して見る
 
@@ -273,6 +274,8 @@ codex exec -m gpt-6-astra -c model_reasoning_effort=medium --sandbox workspace-w
 | `top_white.chest` / `chest_circle` | Tシャツの右下の丸に使う胸の寄り。丸の位置は測る(`[cx, cy, r]` で上書き) |
 | `top_wear.dry` / `dry_sub` | 青の「DRY」「吸汗速乾」(既定 true。ドライ生地でなければ false) |
 | `top_wear.name` | 右下の白い明朝。`["護衛艦かが", "IPD2021"]` か `[["護衛艦かが", 92], ["IPD2021", 66]]` |
+| `top_wear.fabric` | シャツの色。既定 `navy`(紺)。黒いシャツは `black`(G1690) |
+| `top_wear.inset_chest` / `chest_circle` | 左下を前の着用画像ではなく**実物の胸の寄りの丸**(「胸元プリント」)にする。着用画像の胸の小さい文字が崩れるとき(G1690 で運用者指示)。丸の位置は `[cx, cy, r]` で詰める |
 | `top_wear.scale` / `offset` / `max_scale` / `inset_side` | 倍率・位置の上書き / 倍率の上限(既定 1.35)/ 前の着用画像を寄せる側(既定 `right`) |
 
 共通の素材(海上自衛隊のマーク)は `023.商品マスタDB/assets/product_photo/jmsdf_mark.png`。
@@ -285,5 +288,6 @@ codex exec -m gpt-6-astra -c model_reasoning_effort=medium --sandbox workspace-w
 - Amazon の画像の差し替え: `022 server/scripts/amazon_photo_replace.py`・`900.ClaudeCode/amazon_photo/cli.py`(見張り役の `amazon_photo`・手順 7)
 - 名前付きモデルの着用画像の切り抜き・切り方・トップ画像(案 D-3 改): `023 tools/wear_model_photo.py`(手順 3b)。モデル帳 `a_browser_data/rakuten_new_item/_models/`
 - 実績: **G1051**(セーラーTシャツ)2026-10-27 みゆきの着用画像 6 枚とトップ画像を作成(差し替えはまだ)
+- 実績: **G1690**(練習艦しまかぜTシャツ Type1ブラック)2026-10-28 だいすけの着用画像 4 枚と G1635 型のトップ画像(左下は胸の寄りの丸・`fabric: black`)
 - 実績: **G1635**(IPD2021 護衛艦かが記念Tシャツ)2026-10-27 差し替え(申請 405・408。楽天 12 枚・本店 9 枚・Yahoo! 9 枚)。道具の倍率は手作業の 1.22 に対し 1.224
 - 旧 `/wear-image`(Gemini を手で操作)は 2026-10-27 に置き換え、`.claude/_retired_skills/wear-image/` へ退避した

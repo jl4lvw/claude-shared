@@ -879,3 +879,38 @@ def test_verify_zaiko_ignores_changed_or_zero_ledger(zdb):
     issues, facts = [], []
     pl._verify_zaiko(_FakeCtx(_zaiko_plan(20)), issues, facts)
     assert issues == [] and "G2225=0" in facts[0]
+
+
+_WALLET = "グッズ:財布・パスケース"
+_IDCASE = "制服:身分証入れ・ネックストラップ"
+
+
+def test_copy_candidates_for_paths_prefers_all_paths_and_similar_name(monkeypatch):
+    # 2026-10-28 受付 #42: 件数の少ない組み合わせ(身分証ケース)も全商品から探し、名前の近い U0129 を先頭にする
+    groups = [
+        {"code": "G0897", "name": "ワッペン 海上自衛隊", "count": 179, "thin_path": False, "paths": [_WALLET, "組織:海上自衛隊"]},
+        {"code": "U0126", "name": "身分証ケース 合皮", "count": 1, "thin_path": False, "paths": ["【ネコポス可】", _WALLET, _IDCASE]},
+        {"code": "U0129", "name": "身分証ケース 3つ折り 海上自衛隊", "count": 2, "thin_path": False,
+         "paths": ["【ネコポス可】", _WALLET, "柄:桜に錨", _IDCASE]},
+        {"code": "G9999", "name": "関係ない", "count": 50, "thin_path": False, "paths": ["グッズ:タオル"]},
+    ]
+    monkeypatch.setattr(pl, "_yahoo_copy_groups", lambda keywords, is_var, exclude: [dict(g) for g in groups])
+    got = pl.yahoo_copy_candidates_for_paths([_WALLET, _IDCASE], False, title="身分証ケース 3つ折り 桜イカリ")
+    assert [c["code"] for c in got] == ["U0129", "U0126", "G0897"]   # 全部持つ→名前が近い順。重ならない G9999 は出ない
+    assert pl.yahoo_copy_candidates_for_paths([], False) == []
+
+
+def test_yahoo_genre_check_reads_category_and_confirms_it(monkeypatch):
+    # 2026-10-28 運用者指示: コピー元の Yahoo! のカテゴリが API で使えることを確かめてから進める
+    monkeypatch.setattr(pl, "_yahoo_appid", lambda: "x")
+    item = {"hits": [{"code": "seifukunofuji_u0129", "genreCategory": {"id": 24098, "name": "パスケース"},
+                      "parentGenreCategories": [{"id": 13457, "name": "ファッション"}]}]}
+    cat_ok = {"ResultSet": {"0": {"Result": {"Categories": {"Current": {"Id": "24098"}}}}}}
+    calls = {pl.YAHOO_ITEM_SEARCH: (200, item), pl.YAHOO_CATEGORY_SEARCH: (200, cat_ok)}
+    monkeypatch.setattr(pl, "_get_json", lambda url, params: calls[url])
+    r = pl.yahoo_genre_check("U0129")
+    assert r["ok"] and r["id"] == "24098" and r["path"] == "ファッション > パスケース"
+    calls[pl.YAHOO_CATEGORY_SEARCH] = (503, None)          # カテゴリが確かめられない → 進めない
+    assert not pl.yahoo_genre_check("U0129")["ok"]
+    calls[pl.YAHOO_CATEGORY_SEARCH] = (200, cat_ok)
+    assert not pl.yahoo_genre_check("U0153")["ok"]          # 商品検索で見つからない → 進めない

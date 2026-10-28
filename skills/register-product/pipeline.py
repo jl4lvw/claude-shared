@@ -34,6 +34,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -293,6 +294,13 @@ def yahoo_copy_candidates(title: str, is_variation: bool, exclude: str = "", lim
     """
     keywords = [k for k in ("ワッペン", "Tシャツ", "コイン", "帽子", "キャップ", "ポロシャツ", "パーカー",
                             "タオル", "ぬいぐるみ", "バッグ", "ステッカー") if k in title]
+    out = _yahoo_copy_groups(keywords, is_variation, exclude)
+    out.sort(key=lambda d: (d["thin_path"], -d["count"], -int(re.sub(r"\D", "", d["code"]) or 0)))
+    return out[:limit]
+
+
+def _yahoo_copy_groups(keywords: list[str], is_variation: bool, exclude: str) -> list[dict]:
+    """Yahoo! の既存商品を「商品カテゴリ+紐付くパスの組み合わせ」ごとにまとめる(並べ替え・件数の打ち切りはしない)。"""
     rows = q_all("SELECT code, name, path, product_category FROM yahoo_snapshot_products")
     variant_codes = {(r["code"] or "").lower() for r in q_all("SELECT DISTINCT code FROM yahoo_snapshot_variants")}
     groups: dict[tuple, dict] = {}
@@ -321,8 +329,99 @@ def yahoo_copy_candidates(title: str, is_variation: bool, exclude: str = "", lim
             "org_paths": [p for p in g["lines"] if p.startswith("組織・キャラ")],
             "paths": g["lines"],
         })
-    out.sort(key=lambda d: (d["thin_path"], -d["count"], -int(re.sub(r"\D", "", d["code"]) or 0)))
-    return out[:limit]
+    return out
+
+
+def _name_tokens(text: str) -> set[str]:
+    """商品名の語(2文字以上)。名前が近いコピー元を選ぶために使う。"""
+    return {t for t in re.split(r"[\s　()（）【】\[\]「」・、,/]+", text or "") if len(t) >= 2}
+
+
+def yahoo_copy_candidates_for_paths(paths: list[str], is_variation: bool, title: str = "",
+                                    exclude: str = "", limit: int = 10) -> list[dict]:
+    """選んだ紐付くパスを持つコピー元を、全商品から探す(件数の上位で打ち切らない・2026-10-28 受付 #42)。
+
+    下見の候補(yahoo_copy_candidates)は件数の多い組み合わせ60件で打ち切るため、身分証ケースのように
+    件数の少ない組み合わせが候補に入らず「指定のパスを持つ既存商品が無い」と誤って止まった(U0153)。
+    並べ方: 選んだパスを全部持つ → 商品名の語が多く重なる → 選んでいないパスが少ない → 件数が多い。
+    """
+    want = {p.strip() for p in paths if p.strip()}
+    if not want:
+        return []
+    title_tokens = _name_tokens(title)
+    scored = []
+    for c in _yahoo_copy_groups([], is_variation, exclude):
+        have = set(c["paths"])
+        overlap = len(want & have)
+        if not overlap:
+            continue
+        name_sim = len(title_tokens & _name_tokens(c["name"]))
+        extra = len((have - want) - THIN_PATHS)
+        scored.append(((not want <= have, -name_sim, -overlap, extra, c["thin_path"], -c["count"]), c))
+    scored.sort(key=lambda x: x[0])
+    return [c for _, c in scored[:limit]]
+
+
+YAHOO_ITEM_SEARCH = "https://shopping.yahooapis.jp/ShoppingWebService/V3/itemSearch"
+YAHOO_CATEGORY_SEARCH = "https://shopping.yahooapis.jp/ShoppingWebService/V1/json/categorySearch"
+YAHOO_SELLER = "seifukunofuji"
+
+
+def _yahoo_appid() -> str:
+    """Yahoo! の公開 API のアプリID(023 の YAHOO_API_CLIENT_ID)。値は表示しない。"""
+    v = os.getenv("YAHOO_API_CLIENT_ID", "")
+    if not v:
+        env = PM_ROOT / ".env"
+        for line in env.read_text(encoding="utf-8").splitlines() if env.is_file() else []:
+            if line.startswith("YAHOO_API_CLIENT_ID="):
+                v = line.split("=", 1)[1].strip().strip('"').strip("'")
+    return v
+
+
+def _get_json(url: str, params: dict) -> tuple[int, Any]:
+    full = url + "?" + urllib.parse.urlencode(params)
+    try:
+        with urllib.request.urlopen(full, timeout=30) as r:
+            return r.status, json.load(r)
+    except urllib.error.HTTPError as e:
+        return e.code, None
+    except (urllib.error.URLError, TimeoutError, ValueError):
+        return 0, None
+
+
+def yahoo_genre_check(code: str) -> dict:
+    """コピー元に Yahoo! が付けているカテゴリ(ジャンル)を API で読み、そのカテゴリが今も使えるかを確かめる(読み取りのみ)。
+
+    店の商品データの product_category(例 40863)は公開 API のカテゴリとは別の番号なので直接は確かめられない。
+    そこで商品検索 API(V3 itemSearch)でコピー元の商品に付いているカテゴリを読み、カテゴリID取得 API(V1 categorySearch)で
+    そのカテゴリが今も有効か(同じ ID が返るか)を確かめる。新しい商品はコピー元の product_category を引き継ぐので、
+    同じカテゴリに入る。2026-10-28 運用者指示「API でそのカテゴリーが使用可能であることを確認してから進める」
+    (U0151 がワッペンのカテゴリに入っていた件)。
+    戻り値: {"ok", "code", "id", "name", "path", "detail"}
+    """
+    appid = _yahoo_appid()
+    if not appid:
+        return {"ok": False, "code": code, "detail": "Yahoo! のアプリIDが読めません"}
+    st, d = _get_json(YAHOO_ITEM_SEARCH, {"appid": appid, "seller_id": YAHOO_SELLER, "query": code, "results": 20})
+    if st != 200 or not isinstance(d, dict):
+        return {"ok": False, "code": code, "detail": f"商品検索 API が読めません(HTTP {st})"}
+    want = f"{YAHOO_SELLER}_{code.lower()}"
+    hit = next((h for h in d.get("hits") or [] if str(h.get("code", "")).lower() == want), None)
+    if hit is None:
+        return {"ok": False, "code": code, "detail": "商品検索 API でコピー元の商品が見つかりません(非公開・在庫切れ等)"}
+    genre = hit.get("genreCategory") or {}
+    gid = str(genre.get("id") or "")
+    if not gid:
+        return {"ok": False, "code": code, "detail": "コピー元にカテゴリが付いていません"}
+    names = [str(x.get("name") or "") for x in hit.get("parentGenreCategories") or []] + [str(genre.get("name") or "")]
+    st2, c = _get_json(YAHOO_CATEGORY_SEARCH, {"appid": appid, "category_id": gid})
+    cur = (((c or {}).get("ResultSet") or {}).get("0") or {}).get("Result", {}).get("Categories", {}).get("Current", {}) \
+        if isinstance(c, dict) else {}
+    if st2 != 200 or str(cur.get("Id") or "") != gid:
+        return {"ok": False, "code": code, "id": gid, "name": genre.get("name"),
+                "detail": f"カテゴリ {gid} がカテゴリID取得 API で確かめられません(HTTP {st2})"}
+    return {"ok": True, "code": code, "id": gid, "name": str(genre.get("name") or ""),
+            "path": " > ".join(n for n in names if n), "detail": ""}
 
 
 def store_path_options() -> list[str]:
