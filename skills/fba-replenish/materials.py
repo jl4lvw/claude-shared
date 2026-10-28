@@ -34,6 +34,28 @@ _SALES_SQL = (
 )
 
 
+# ピッキングで集める単位 (2026-10-28 運用者の指示: ジャンルを混ぜると集めるときに混乱する)。
+# 商品名に含む語で上から順に当てる。どれにも当たらないものは OTHER_GENRE。
+GENRES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("パーカー", ("パーカー",)),
+    ("Tシャツ・ポロ", ("Tシャツ", "ポロシャツ")),
+    ("ワッペン", ("ワッペン",)),
+    ("ステッカー・金蒔絵", ("ステッカー", "金蒔絵")),
+    ("手ぬぐい・タオル", ("手ぬぐい", "タオル")),
+    ("帽子", ("帽子", "キャップ")),
+    ("靴", ("靴",)),
+)
+OTHER_GENRE = "小物"
+GENRE_NAMES: tuple[str, ...] = tuple(g for g, _ in GENRES) + (OTHER_GENRE,)
+
+
+def genre_of(product_name: str) -> str:
+    for g, keys in GENRES:
+        if any(k in product_name for k in keys):
+            return g
+    return OTHER_GENRE
+
+
 @dataclass(frozen=True)
 class Windows:
     """集計の期間 (どれも両端を含む)。today は JST の今日。"""
@@ -168,6 +190,7 @@ def build_rows(res: dict, sales: dict[str, dict[date, int]], w: Windows, lead_da
             guide = min(guide, max(0, r["airlogi"] - keep_7s))
         row = {
             "kind": kind_of(r, near),
+            "genre": genre_of(r.get("product_name", "")),
             "sku": r["sku"],
             "product_name": r.get("product_name", ""),
             "source": r["source"],
@@ -191,7 +214,7 @@ def build_rows(res: dict, sales: dict[str, dict[date, int]], w: Windows, lead_da
         else:
             review.append(row)
     order = {"A": 0, "準A": 1, "B": 2, "送れない": 3}
-    review.sort(key=lambda x: (order[x["kind"]], -x["guide"], x["sku"]))
+    review.sort(key=lambda x: (GENRE_NAMES.index(x["genre"]), order[x["kind"]], -x["guide"], x["sku"]))
     return review, skipped
 
 
@@ -212,8 +235,18 @@ def materials_md(review: list[dict], skipped: list[dict], w: Windows, lead_days:
         "- 昨年この先30日 = 昨年の明日からの 30 日の売上 (季節の手がかり)。"
         f"注文明細は {start.isoformat() if start else '不明'} から。それより前に掛かる期間は — (データなし)",
         "",
+        "## ジャンルごとの候補 (今回ピッキングリストに入れるジャンルを選ぶ材料)",
+        "",
+        "| ジャンル | 件数 | A | 目安の合計 | FBA在庫+入荷中が0 | 30日売上の合計 |",
+        "|---|---|---|---|---|---|",
     ]
-    cols = ["区分", "SKU", "商品名", "元", "在庫+入荷中", "7日", "30日", "90日", "昨年同期30日",
+    for g in GENRE_NAMES:
+        rs = [r for r in review if r["genre"] == g]
+        if rs:
+            head.append(f"| {g} | {len(rs)} | {sum(r['kind'] == 'A' for r in rs)} | {sum(r['guide'] for r in rs)} | "
+                        f"{sum(r['have'] == 0 for r in rs)} | {sum(r['s30'] for r in rs)} |")
+    head += ["", "## 一件ずつの材料 (ジャンル順)", ""]
+    cols = ["ジャンル", "区分", "SKU", "商品名", "元", "在庫+入荷中", "7日", "30日", "90日", "昨年同期30日",
             "昨年この先30日", "もつ日数", "必要数", "機械", "目安", "7S在庫(入荷待ち)", "印"]
     lines = ["| " + " | ".join(cols) + " |", "|" + "|".join(["---"] * len(cols)) + "|"]
     for r in review:
@@ -223,7 +256,7 @@ def materials_md(review: list[dict], skipped: list[dict], w: Windows, lead_days:
         if r["s7"] >= 3 and r["s7"] * 30 >= r["s30"] * 7 * 2:
             marks.append("直近7日が伸びている")
         s7cell = "—" if r["airlogi"] is None else f"{r['airlogi']}({r['inbound_7s'] or 0})"
-        cells = [r["kind"], r["sku"], r["product_name"][:30], "7S" if r["source"] == "7s" else "本店",
+        cells = [r["genre"], r["kind"], r["sku"], r["product_name"][:30], "7S" if r["source"] == "7s" else "本店",
                  f"{r['fba']}+{r['inbound']}", r["s7"], r["s30"], r["s90"], r["ly_same30"], r["ly_next30"],
                  r["cover_days"], r["req_fba"], r["machine"], r["guide"], s7cell, "・".join(marks)]
         lines.append("| " + " | ".join(_cell(c) for c in cells) + " |")

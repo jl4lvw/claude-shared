@@ -63,8 +63,9 @@ python -m lineoa_reserve.cli check <ID> --send-at "YYYY-MM-DD HH:MM" --text-head
 
 ### ④ 申請
 ```
-python -m lineoa_reserve.cli enqueue <ID> --send-at "YYYY-MM-DD HH:MM" --text-head "<本文の先頭>" --purpose "<日付>の楽天LINE(<内容>)を<時刻>に配信予約するため"
+python -m lineoa_reserve.cli enqueue <ID> --send-at "YYYY-MM-DD HH:MM" --text-head "<本文の先頭>" --purpose "<日付>の楽天LINE(<内容>)を<時刻>に配信予約するため" --checks-file "<観点の行を書いたファイル>"
 ```
+- **`--checks-file` は必須**(2026-10-28 運用者指摘: 申請 462 が「どういった観点でチェックしたのかの報告が必要」で差し戻された)。確認した観点と結果を 1 行 1 観点で書いたファイル(UTF-8・20 行まで)を渡すと、承認の画面に「■ 確認した観点(検査の結果)」として出る。書く観点: 配信日時(照合の結果)・配信先・中身(吹き出しの数と種類)・リンク先(ページ名・開けるか)・品切れ・「楽天」の文字の有無(Yahoo!店)・予約後に「配信予約中」の一覧で確かめること。カード型でない下書き(画像にリンクを付けた形など)は `cards` がリンクを拾えないので、配信データを読んでリンクを数え、そう書く。
 - 見張り役が承認の画面で承認を求める。結果は `python -m lineoa_reserve.cli show <申請番号>` が `ok` / `failed` / `mismatch` / `needs_human` / `not_approved` になるまで裏で待つ(30 秒間隔のループを `run_in_background`)。
 - 運用者には「承認の画面で承認してください。結果は自動で見ています」とだけ伝える。
 

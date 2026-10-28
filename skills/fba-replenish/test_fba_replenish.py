@@ -138,7 +138,11 @@ def test_materials_near_and_skipped_b(tmp_path):
     near = next(r for r in m["review"] if r["sku"] == "NEAR")
     assert near["machine"] == 0 and near["guide"] == 5
     assert m["lead_days"] == 7
-    assert "準A" in (tmp_path / "out" / "materials.md").read_text(encoding="utf-8")
+    md = (tmp_path / "out" / "materials.md").read_text(encoding="utf-8")
+    assert "準A" in md
+    assert all(r["genre"] in mt.GENRE_NAMES for r in m["review"] + m["skipped_b"])
+    assert m["genres"] == list(mt.GENRE_NAMES)
+    assert "## ジャンルごとの候補" in md
 
 
 def test_materials_guide_capped_by_7s_stock(tmp_path):
@@ -172,27 +176,70 @@ def test_db_opened_read_only(tmp_path):
 def _mat() -> dict:
     return {"today": "2026-10-28", "lead_days": 7, "keep_7s": 1, "skipped_b": [{"sku": "Z"}],
             "review": [
-                {"kind": "A", "sku": "H", "product_name": "本店の品", "source": "hq", "machine": 5, "airlogi": 3},
-                {"kind": "A", "sku": "S", "product_name": "7Sの品", "source": "7s", "machine": 2, "airlogi": 3},
-                {"kind": "B", "sku": "B", "product_name": "Bの品", "source": "hq", "machine": 4, "airlogi": None},
+                {"kind": "A", "genre": "ワッペン", "sku": "H", "product_name": "ワッペン 本店の品",
+                 "source": "hq", "machine": 5, "airlogi": 3, "have": 0},
+                {"kind": "A", "genre": "パーカー", "sku": "S", "product_name": "パーカー 7Sの品",
+                 "source": "7s", "machine": 2, "airlogi": 3, "have": 1},
+                {"kind": "B", "genre": "Tシャツ・ポロ", "sku": "B", "product_name": "Tシャツ Bの品",
+                 "source": "hq", "machine": 4, "airlogi": None, "have": 2},
+                {"kind": "A", "genre": "Tシャツ・ポロ", "sku": "T", "product_name": "Tシャツ 次回の品",
+                 "source": "hq", "machine": 3, "airlogi": None, "have": 0},
             ]}
 
 
-def test_decide_ok_and_outputs(tmp_path):
+def _write_ok(tmp_path, genres_today=None):
     (tmp_path / "materials.json").write_text(json.dumps(_mat()), encoding="utf-8")
-    (tmp_path / "decisions.json").write_text(json.dumps({"items": [
-        {"sku": "H", "qty": 7, "source": "hq", "reason": "直近7日が伸びている"},
-        {"sku": "S", "qty": 2, "source": "7s"},
-        {"sku": "B", "qty": 0, "reason": "設定数が多すぎる疑い"},
-    ]}), encoding="utf-8")
+    (tmp_path / "decisions.json").write_text(json.dumps({
+        "genres_today": genres_today if genres_today is not None
+        else {"ワッペン": "売れ筋が在庫切れ", "パーカー": "冬に向けて売れる"},
+        "items": [
+            {"sku": "H", "qty": 7, "source": "hq", "reason": "直近7日が伸びている"},
+            {"sku": "S", "qty": 2, "source": "7s"},
+            {"sku": "B", "qty": 0, "reason": "設定数が多すぎる疑い"},
+            {"sku": "T", "qty": 3},
+        ]}), encoding="utf-8")
+
+
+def test_decide_ok_and_outputs(tmp_path):
+    _write_ok(tmp_path)
     assert fd.main(["--dir", str(tmp_path)]) == 0
     cart = json.loads((tmp_path / "cart_import_hq.json").read_text(encoding="utf-8"))
-    assert cart == {"version": 1, "mode": "replace", "items": [{"sku": "H", "qty": 7}]}
+    assert cart == {"version": 1, "mode": "replace", "items": [{"sku": "H", "qty": 7}]}   # T は次回のジャンル
+    cart_all = json.loads((tmp_path / "cart_import_hq_all.json").read_text(encoding="utf-8"))
+    assert [i["sku"] for i in cart_all["items"]] == ["H", "T"]
     rep = (tmp_path / "decision_report.md").read_text(encoding="utf-8")
-    assert "送る: 2 件・9 個" in rep
-    assert "7S から送る (7S カートへ手で入れる) (1 件)" in rep
+    assert "今回ピッキングリストに入れる: パーカー・ワッペン → 2 件・9 個" in rep
+    assert "7S から 1 件・2 個" in rep
+    assert "全ジャンルで送る候補: 3 件・12 個" in rep
+    assert "## ワッペン (今回・1 件・7 個)" in rep
+    assert "## Tシャツ・ポロ (次回に回す・1 件・3 個)" in rep
+    assert rep.index("## パーカー (") < rep.index("## ワッペン (") < rep.index("## Tシャツ・ポロ (次回")
     assert "機械は送る判定だが送らない (1 件)" in rep
     assert "一括で送らない B: 1 件" in rep
+
+
+def test_decide_requires_genres_today(tmp_path):
+    for bad in ({}, {"ぬいぐるみ": "x"}, {"ワッペン": ""}):
+        _write_ok(tmp_path, bad)
+        assert fd.main(["--dir", str(tmp_path)]) == 1
+    _, errors = fd.validate_genres({"ぬいぐるみ": "x", "ワッペン": " "})
+    assert any("知らないジャンル" in e for e in errors)
+    assert any("理由がありません" in e for e in errors)
+    assert fd.validate_genres(None)[1]
+
+
+def test_genre_of():
+    assert mt.genre_of("パーカー さざなみ Type2 炎") == "パーカー"
+    assert mt.genre_of("Tシャツ みやじま(DRY,.,L)") == "Tシャツ・ポロ"
+    assert mt.genre_of("ポロシャツ (デジタル迷彩)") == "Tシャツ・ポロ"
+    assert mt.genre_of("刺繍ワッペン 【自衛艦旗 青】") == "ワッペン"
+    assert mt.genre_of("金蒔絵 (菊花紋) 3枚セット") == "ステッカー・金蒔絵"
+    assert mt.genre_of("スポーツタオル (護衛艦 とね)") == "手ぬぐい・タオル"
+    assert mt.genre_of("自衛隊グッズ 部隊識別帽 帽子 キャップ") == "帽子"
+    assert mt.genre_of("幹部用 短靴 本皮 ( 黒 26.5 cm)") == "靴"
+    assert mt.genre_of("スプーン かが 先割れ") == "小物"
+    # 古い materials.json (genre 列なし) は商品名から振り分ける
+    assert fd.genre_of_row({"product_name": "手ぬぐい (海軍)"}) == "手ぬぐい・タオル"
 
 
 def test_decide_errors():
@@ -207,7 +254,7 @@ def test_decide_errors():
     assert "7S在庫 3 個より多い" in text
     assert "材料に無い SKU" in text
     assert "2 回書かれています" in text
-    assert "決めていない商品が 1 件" in text                       # B が無い
+    assert "決めていない商品が 2 件" in text                       # B・T が無い
 
 
 def test_decide_rejects_bad_qty_and_source():
@@ -222,11 +269,11 @@ def test_decide_rejects_bad_qty_and_source():
 def test_decide_warns_when_7s_emptied_and_source_moved():
     decisions, errors, warns = fd.validate(_mat(), [
         {"sku": "H", "qty": 3, "source": "7s", "reason": "本店に無い"},
-        {"sku": "S", "qty": 2}, {"sku": "B", "qty": 4},
+        {"sku": "S", "qty": 2}, {"sku": "B", "qty": 4}, {"sku": "T", "qty": 3},
     ])
     assert not errors
     assert any("FBM 用が 0 個" in w for w in warns)
-    assert "補充元が「7S専用」の印と違う (1 件)" in fd.build_report(_mat(), decisions, warns)
+    assert "補充元が「7S専用」の印と違う (1 件)" in fd.build_report(_mat(), decisions, warns, {"ワッペン": "x"})
 
 
 def test_decide_stops_without_writing(tmp_path):

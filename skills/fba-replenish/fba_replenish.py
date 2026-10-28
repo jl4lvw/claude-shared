@@ -196,6 +196,7 @@ def write_materials(res: dict, opt: Options) -> None:
         "history_start": start.isoformat() if start else None,
         "lead_days": opt.lead_days,
         "keep_7s": keep,
+        "genres": list(materials.GENRE_NAMES),
         "review": review,
         "skipped_b": skipped,
     }

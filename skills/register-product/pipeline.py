@@ -69,7 +69,7 @@ EXIT_NEEDS_USER = 10
 APPROVAL_TTL = timedelta(hours=24)
 LOCK_STALE = timedelta(hours=2)
 YAHOO_PENDING_ALLOW = 4  # 下見のときの未反映ページ数に、今回の登録分として許す増加数
-G_RE = re.compile(r"^[GU]\d{4}$")
+G_RE = re.compile(r"^[A-Z]\d{4}$")  # 商品番号は英字1文字+4桁(G・U・H・R など 2026-10-28)
 
 
 class StepFail(RuntimeError):
