@@ -1,6 +1,6 @@
 ---
 name: amz-inbound
-description: Amazon FBA 納品（Send to Amazon / STA）を Chrome で自動操作する。PWA の「🚚 Amazon向け予約番号発行・出荷処理」で作った納品ジョブ（予約番号）を進める: TSV を取得 → Seller Central にアップロード → 梱包カテゴリー「梱包不要」を一括設定 → 箱・出荷日を入力して送信の手前まで → 7S（コマースロボ）へ API で出荷指示 → 7S 登録完了を確かめてから、チャットで承認を得て「請求額を承認して出荷通知を送信」→ ラベル PDF を Google ドライブへ保存・7S へ LINE 連絡。ジョブが無い従来の予約番号でも、送信の手前まで進められる。「Amazon納品」「FBA納品」「STA」「予約番号で納品」「/amz-inbound」で使う。
+description: Amazon FBA 納品（Send to Amazon / STA）を Chrome で自動操作する。PWA の「🚚 Amazon向け予約番号発行・出荷処理」で作った納品ジョブ（予約番号）を進める: TSV を取得 → Seller Central にアップロード → 梱包カテゴリー「梱包不要」を一括設定 → 箱・出荷日を入力して送信の手前まで → 7S（コマースロボ）へ API で出荷指示 → 7S 登録完了を確かめてから、チャットで承認を得て「請求額を承認して出荷通知を送信」→ ラベル PDF を Google ドライブへ保存・7S へ LINE 連絡。発送元「本店」のジョブは 7S を通らず、承認後に送信 → ラベルを倉庫 3F のプリンターで印刷・NAS に控える。ジョブが無い従来の予約番号でも、送信の手前まで進められる。「Amazon納品」「FBA納品」「STA」「予約番号で納品」「/amz-inbound」で使う。
 ---
 
 # /amz-inbound — Amazon FBA 納品（出荷通知の送信手前まで）
@@ -40,17 +40,17 @@ description: Amazon FBA 納品（Send to Amazon / STA）を Chrome で自動操�
 
 PWA の「🚚 Amazon向け予約番号発行・出荷処理」で作ったジョブを進める。発送元（セブンエス）・箱サイズ・出荷日は**ジョブに入っているので聞き直さない**。仕様: `022.Amazon在庫PWA/docs/spec_amz_inbound_flow_v1.md`。
 
-API（022・X-API-Key）は `python C:/ClaudeCode/094.Chrome自動操作/amzinv_job.py <コマンド> <予約番号> [...]` で呼ぶ（キーは `~/.amzinv/api_key.txt`。値を表示しない）。
+API（022・X-API-Key）は `python C:/ClaudeCode/094.Chrome自動操作/amzinv_job.py <コマンド> <JOBID> [...]` で呼ぶ（キーは `~/.amzinv/api_key.txt`。値を表示しない）。**状態を変えるコマンドはジョブ ID だけ通る**（予約番号は 422。2026-10-28〜）。**発送元が本店のジョブ（`show` の `ship_from: honten`）は下の「本店発送ジョブ」の表で進める**。次に呼ぶコマンドは `show` の `next_step` にも出る。
 
 | 段階 | やること | コマンド | 次へ進む条件 |
 |---|---|---|---|
 | 0 | ジョブを読む。表示された **`job_id` を控え、以後のコマンドは予約番号ではなく job_id で呼ぶ**（予約番号は 24 時間で再利用されるため） | `show NNN`（この 1 回だけ予約番号） | 状態が `amazon_wait`（`checking`/`stock_ng` なら止めて報告） |
-| 2 | TSV を `amzinv_client.py fetch NNN` で取り、下の「手順」1〜6 を**送信の手前まで**。出荷日はジョブの `ship_date` | `amazon-ok JOBID --fc <FC> --fee 1019 --plan wf… --skus 13 --units 103`／エラーなら `amazon-ng JOBID "理由"`（FC は画面の納品先。例 TYO2・QCB3）。**書き込みが `HTTP 403: Origin not allowed` なら下の「403 の対処」** | `amazon_ready` |
+| 2 | TSV を `amzinv_client.py fetch NNN` で取り、下の「手順」1〜6 を**送信の手前まで**。出荷日はジョブの `ship_date` | `amazon-ok JOBID --ship-from sevens --fc <FC> --fee 1019 --plan wf… --skus 13 --units 103`（`--ship-from` は画面の要約行で確かめた発送元）／エラーなら `amazon-ng JOBID "理由"`（FC は画面の納品先。例 TYO2・QCB3）。**書き込みが `HTTP 403: Origin not allowed` なら下の「403 の対処」** | `amazon_ready` |
 | 3 | 7S へ出荷指示 | `cmr JOBID --amazon-ship-date YYYY-MM-DD`（いま Amazon に入っている出荷日） | 409 `ship_date_shifted` が返ったら、**Amazon のステップ2の出荷日を返ってきた日に直して**（入力＋カレンダー）もう一度 `cmr`。`cmr_sent` になったら `cmr-status JOBID` を 30〜60 秒おきに（最大 10 分）見て `cmr_done` を待つ。`cmr_ng` なら止めて報告（Amazon は送らない） |
 | 4 | 承認の表を出す（発送元・FC・箱・出荷日〔ずらしたら「10/20→10/21（14:30 超）」〕・SKU/個数・費用・7S 注文番号）。**チャットで「送信して」と言われたら**、押す直前に `sending` で確保 → 押す → 納品番号を読む。押さずにやめたら `sending-release`（押したか分からないときは解除せず画面で確かめる）。**運用者が先に自分で押していたら**（画面が `print_labels_step`・納品番号が出ている）、Claude は押さず、7S が `cmr_done` であることを確かめてから、承認文に運用者の実際の発言をそのまま書いて `sending` → `sent` を記録する（偽の「送信して」を書かない） | `sending JOBID --approval "送信して" --fee 1019` → `sent JOBID --fba FBA… --fc <FC> --fee 1019` | `amazon_sending` → `amazon_sent`（`sending` は `cmr_done` のときだけ通る＝7S 完了の機械的な確認。確保中は取り消せない） |
 | 5 | ラベル: 印刷画面（`print_labels_step`）で、選べる唯一の「A4（カラー印刷）」を選んで「印刷」を押す。PDF が Downloads に `FBA…-<数字>.pdf` で落ちる（ダウンロードは許可を取る。取れたら中身で納品番号・納品先・箱数を確かめる。**ファイル名は変えない**）→ **コマースロボの出荷管理番号（= 7S の注文番号。`show` の `cmr.order_no`。例 `FUJI-20261021_094938-R26`）を名前にしたフォルダを、ドライブ共有フォルダ `https://drive.google.com/drive/folders/1_yIT0K1gOYRWnhxPXGxaLlBjxWvyuJ2q` の直下に作り、その中にラベル PDF を置く**（PDF は共有フォルダの直下には置かない。同名フォルダがあれば作らず止める。方法は下の「ドライブへのアップロード」）→ フォルダ内の一覧で名前と大きさを確かめる → LINE で 7S へ連絡（下の「7S への LINE 連絡」） | `done JOBID --drive <注文番号>/<PDF名> --line <メッセージID>` | `done` |
 
-- **取り消し**: Amazon を送らないと決めたら、チャットで承認を得て `cancel NNN`（7S に登録済みなら 042 経由でコマースロボの注文もキャンセル）。「更新不可」で取り消せなかったら、7S の注文番号を伝えて人が 7S に連絡する。Amazon 送信後は取り消せない（Amazon 側はヤマトなら 3 時間以内に人が判断）
+- **取り消し**: Amazon を送らないと決めたら、チャットで承認を得て `cancel JOBID`（7S に登録済みなら 042 経由でコマースロボの注文もキャンセル）。「更新不可」で取り消せなかったら、7S の注文番号を伝えて人が 7S に連絡する。Amazon 送信後は取り消せない（Amazon 側はヤマトなら 3 時間以内に人が判断）
 - `cmr` が 409 を返す主な理由: `ship_date_shifted`（14:30 超で出荷日をずらした。Amazon を直して再実行）／`ship_date_mismatch`（Amazon の出荷日とジョブが違う）／`stock_short`（送る直前の 7S 在庫不足。止めて報告）／`csv_downloaded`（PWA で手動用 CSV が取られた。二重登録防止のため API では送らない。手動でアップロード済みか人に確かめる）／`fba_*`（FBA 状態）
 - `cmr_ng` でも 7S に注文が入っている場合（未引当など）は `cmr-status` で再照会できる（在庫が戻れば `cmr_done` になる）。**再送はしない**
 - `cmr` を 2 回呼んでも 7S に二重には入らない（ジョブ ID が冪等キー）。`cmr_sent` のまま応答が来ない・タイムアウトでも**送り直さない**（`cmr-status` で確かめる）
@@ -61,6 +61,20 @@ API（022・X-API-Key）は `python C:/ClaudeCode/094.Chrome自動操作/amzinv_
   - **purpose(目的)は必須。何のための操作か(誰に何を知らせる・何を補充する等)を 6〜120 字で書く。承認の画面・LINE WORKS・電話の音声案内で運用者に示す。電話の文は外部の音声サービス(Microsoft)へ送るので、人名・住所・電話番号・メールアドレス・お客様名は書かない**(2026-10-21 運用者決定。`request-approval --purpose` が無い・短い・長いと承認を求めずに止まる)
 - **夜間（19:00〜翌 9:00）は翌朝まで待つ**（運用者決定 2026-10-21）: `request-approval` が終了コード 20（キューに積んだ）なら、ドライブへの保存までを済ませて止まり、「夜間なのでキューに積みました（#番号）。LINE が送られたら `done` にします」と報告する。`done` は翌朝 LINE が送られてメッセージ ID が分かってから実行する（ID なしで `done` にしない。`line_notify.py queue-list` で送信済みを確かめる）
 - ジョブの 7S CSV は `GET /amz-inbound-jobs/<job_id>/csv`（PWA の「⬇ 7S CSV (控え)」）。API が使えないときだけ人が手動アップロードに使う
+
+## 本店発送ジョブ（2026-10-28〜・FJ・`ship_from: honten`）
+
+PWA の「🚚 Amazon向け予約番号発行・出荷処理」で発送元「本店」を選んで作ったジョブ。仕様: `022.Amazon在庫PWA/docs/spec_amz_inbound_honten_v1.md`。**7S は使わない**（7S 品番・7S CSV・7S 在庫・コマースロボへの出荷指示は無い。`cmr` は 409 `not_sevens`）。運用者決定（2026-10-28）: **締めは 16:00**／**本店の在庫・現物はジョブでも Claude も確かめない**（承認の表で聞かない）／**ラベルは「[倉庫3F]P450ヤマト運輸」で印刷し、NAS（999.一時ファイル）にも控える**（ドライブ・7S への LINE はしない）。
+
+| 段階 | やること | コマンド | 次へ進む条件 |
+|---|---|---|---|
+| 0 | `show NNN` で読み、`job_id` を控える | `show NNN` | `amazon_wait`（`stock_ng` は FBA・発送元の制限で止まった。止めて報告） |
+| 2 | 7S と同じ「手順」1〜6。**発送元は「寺下貴之（呉市中通）」**を選び、要約行で確かめる | `amazon-ok JOBID --ship-from honten --fc <FC> --fee <円> --plan wf… --skus N --units N` | `amazon_ready`（`next_step: sending`） |
+| 4 | 承認の表を出す（発送元=本店・FC・箱・出荷日・SKU/個数・費用。7S 注文番号の行は無い）。**チャットで「送信して」と言われたら** `sending`（FBA を再確認するので最大 2 分）→ 押す → 納品番号を読む → `sent`。押さずにやめたら `sending-release`（`amazon_ready` に戻る） | `sending JOBID --approval "送信して" --fee <円> --amazon-ship-date YYYY-MM-DD` → `sent JOBID --fba FBA… --fc <FC> --fee <円>` | 409 `ship_date_shifted`（16:00 を過ぎた）なら、**Amazon の出荷日を返ってきた日に直し、承認の表を出し直して承認を取り直してから**もう一度 `sending`。`ship_date_mismatch` は Amazon の出荷日を確かめ直す。`fba_*` は止めて報告 |
+| 5 | ラベル: 7S と同じく印刷画面で PDF を取る（ダウンロードは許可を取る・中身で納品番号・箱数を確かめる）→ `python C:/ClaudeCode/094.Chrome自動操作/amzinv_label.py "<Downloads の PDF>"`（NAS に写して中身を確かめ、プリンターへ送る。最後の行の JSON の `label_file` と `printer` を使う。終了コード 3 = NAS に同じ名前の別ファイル → 止めて報告、4 = プリンター無し・印刷失敗） | `done JOBID --label "<label_file>" --printer "<printer>"` | `done` |
+
+- 印刷は運用者の決定で自動（承認は要らない）。用紙・向きが合わなかったと言われたら、`amzinv_label.py` を直す（PDF は NAS の控えから刷り直せる）
+- 取り消し: 7S と同じく `cancel JOBID`（7S は呼ばない）。送信中・送信後は取り消せない
 
 ## 事前に聞くこと（最初にまとめて）
 

@@ -2,7 +2,7 @@
 name: cr
 description: Codex 自動点検（codex-review）の指摘を一覧・確認し、採用／却下を判定表へ記録する。「/cr」「点検の指摘」「Codex の指摘を見せて」「指摘一覧」で使う。Claude は報告の本文を読まず、findings.py の出力をそのまま伝える。
 ---
-<!-- SKILL_VERSION: 2026-10-26_073000 -->
+<!-- SKILL_VERSION: 2026-10-28_185000 -->
 
 # cr — Codex 自動点検の指摘を見る・判定する
 
@@ -21,6 +21,7 @@ description: Codex 自動点検（codex-review）の指摘を一覧・確認し�
 | `/cr 記録` / `/cr 記録 <フォルダ番号 or YYYYMMDD>` | `python C:/ClaudeCode/.codex-review/findings.py record [<対象>]` |
 | `/cr 評価` / `/cr 評価 先週` | `python C:/ClaudeCode/.codex-review/findings.py evaluate [先週]` |
 | `/cr 内訳` / `/cr 内訳 先週` / `/cr 内訳 全期間` | `python C:/ClaudeCode/.codex-review/findings.py 内訳 [先週 または 全期間]`（トークンの使い道を ①採用・②不採用・③有用・④無駄・判定待ちに分けた棒グラフ。設計書 §19） |
+| `/cr 観点` | `python C:/ClaudeCode/.codex-review/findings.py 観点`（観点の配分＝CPU・メモリの過剰消費の洗い出しに回したトークンの実績と目標。設計書 §20） |
 | `/cr 見逃し <フォルダ> <内容>` | `python C:/ClaudeCode/.codex-review/findings.py miss <フォルダ> "<内容>"` |
 
 - ID は `1025-011-001` の形（一覧の ID 列）。行番号ではない
