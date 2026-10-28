@@ -275,7 +275,7 @@ codex exec -m gpt-6-astra -c model_reasoning_effort=medium --sandbox workspace-w
 | `top_wear.dry` / `dry_sub` | 青の「DRY」「吸汗速乾」(既定 true。ドライ生地でなければ false) |
 | `top_wear.name` | 右下の白い明朝。`["護衛艦かが", "IPD2021"]` か `[["護衛艦かが", 92], ["IPD2021", 66]]` |
 | `top_wear.fabric` | シャツの色。既定 `navy`(紺)。黒いシャツは `black`(G1690) |
-| `top_wear.inset_chest` / `chest_circle` | 左下を前の着用画像ではなく**実物の胸の寄りの丸**(「胸元プリント」)にする。着用画像の胸の小さい文字が崩れるとき(G1690 で運用者指示)。丸の位置は `[cx, cy, r]` で詰める |
+| `top_wear.inset_chest` / `chest_circle` | 左下を前の着用画像ではなく**実物の胸の寄りの丸**(「胸元プリント」)にする。着用画像の胸の小さい文字が崩れるとき(G1690 で運用者指示)。丸の位置は `[cx, cy, r]` で詰める。**寄りの写真は正面から撮ったものに限る**(斜めは運用者に差し戻された)。斜めしか無ければ `product_photo.py front-circle IN OUT` で正面の形に直し(黄色い輪に楕円を当てて円に戻す)、出力の `chest_circle` を使う |
 | `top_wear.scale` / `offset` / `max_scale` / `inset_side` | 倍率・位置の上書き / 倍率の上限(既定 1.35)/ 前の着用画像を寄せる側(既定 `right`) |
 
 共通の素材(海上自衛隊のマーク)は `023.商品マスタDB/assets/product_photo/jmsdf_mark.png`。
