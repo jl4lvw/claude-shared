@@ -30,7 +30,7 @@ TOMS の注文は、**端末 A の Playwright スクリプト `C:\ClaudeCode\900
    - `expect` は、CSV から数えた行数・合計枚数・合計金額（税抜・割引前）。
 3. TOMS 用 CSV ができたら、端末 A で `cd /d C:\ClaudeCode\900.ClaudeCode && python -m toms_order.cli enqueue 申請.json --csv <CSV のフルパス>` を実行する（**Claude はここまで。run は実行しない**）。見張り役が LINE WORKS で承認を求め、運用者が「実行」を 1 回押すと、照合と DeepSeek がすべて合えば「注文確定」を 1 回だけ押して確定まで進む（2 回目の承認は無い。2026-10-20〜）。**積んだら運用者の返事を待たずに**、終了を `a_browser_data\watch.log` の`toms id=N 実行終了` で裏で待ち、`python -m toms_order.cli show N` で結果（受注番号・出荷予定日・金額）を読む。needs_human なら再申請せず運用者に聞く（`resolve` は人の窓で）。申請 JSON（`mode` は不要）・status・上限などの詳細は toms_order/README.md。
 4. 結果が `confirmed` なら確定・照合一致。注文詳細の全文は NAS `999.一時ファイル\toms-result_YYYYMMDD_HHMM.txt`。
-5. **納品先がセブンエスの無地T（ECM 依頼）なら、確定後に入荷登録の申請**（下の「入荷登録の申請」）。
+5. **納品先がセブンエスの無地T（ECM 依頼）なら、同じ承認で入荷登録（CMR）まで自動で進む**（2026-10-29〜。下の「入荷登録の申請」）。Claude は `show N` の `arrival.line` を読んで結果を報告するだけ。
 
 **Claude は「注文確定」を押さない**（A のスクリプトの確定関数だけが、運用者の LINE WORKS 承認 1 回の後、照合が合えば押す）。
 **失敗したとき**: `cart_not_empty` は TOMS のカートを空にしてから再申請（取り込みはカートを全消去する）。`failed`／`needs_human` は再申請せず、理由を報告してユーザーに聞く。前回の途中状態が残ったカートは、納品先の欄が出ず failed になる。
@@ -198,22 +198,21 @@ TOMS の注文は、**端末 A の Playwright スクリプト `C:\ClaudeCode\900
 
 ECM「Tシャツ注文」から出た依頼（7S＝セブンエス宛て・CMR の入荷予定の登録が要るもの）は、注文確定・検証のあとに、**ECM の受付口へ「登録の申請」を出す**。**CMR の API や ECM の既存の登録 API（貼り付けルート。LAN は PIN 不要）は直接叩かない**（A 端末の方針。誤登録の取り消しが CMR 管理画面での人の操作になるため）。
 
-**2026-10-26〜 人の貼り付けは不要。toms_order が申請まで行う**（運用者の操作は ECM 画面での PIN 承認 1 回だけ）。
+**2026-10-29〜 承認は注文の 1 回で入荷まで（運用者決定）。** 運用者が承認の画面（パスキー）で TOMS 注文を承認すると、
+toms_order の run が「注文確定 → 確定後の照合 → ECM へ申請 → ECM が承認の記録を確かめて CMR へ登録 → 確認を最大 10 分待つ」まで進む。
+**ECM 画面の PIN 承認は不要**（登録できなかったときの予備として残る）。仕組みの詳細は toms_order/README.md「入荷登録（セブンエス宛て）」。
 
-1. toms_order の申請 N が `confirmed` になったら、続けて実行する:
-   ```bash
-   cd C:\ClaudeCode\900.ClaudeCode\toms_order
-   python cli.py arrival N
-   ```
-   - 申請の**前に**照合する: 状態 confirmed／納品先（申請の destination と確定画面の納品先名が「セブンエス」「セブンエス株式会社」）／確定後の照合 OK／原本は申請 N の記録（verify.files の先頭・data/results の中）だけ／原本の受注番号が確定した番号と一致／明細の合計枚数と行数が依頼（expect）・確定画面と一致。1 つでも合わなければ申請しない（status `not_submitted` と理由）。
-   - 送ったあと、ECM の解析結果（受注番号・合計枚数・行数）と注文を突き合わせ、違えば**自動で取り下げて、取り下げ後の状態まで確かめる**（`mismatch_cancelled`）。
-   - 申請番号は toms_order の記録（arrivals 表）に残る。**2 回目は送らずに状態を返す**（`already_submitted`）。
-   - 通信エラーは同じ原本（同じ Idempotency-Key）で 1 回だけ送り直す。それでも分からなければ `unknown`（**未申請と扱わない**。ECM の一覧を受注番号で探した結果を添えて運用者に確認する）。
-   - 申請元（source）は `A` で記録される。
-2. 結果を表で報告する: 受注番号・ECM の request_id・status・解析結果（明細・合計・入荷予定日）・警告。
-   - `rejected`／`server_refused`（409 登録済み など）は、理由をそのまま伝えて止まる。**勝手に再申請・別経路での登録をしない。**
-3. 運用者への案内は「貼り付け不要・申請まで自動・入荷確定は ECM で PIN 承認 1 回」。**承認は運用者が ECM 画面（無地T在庫管理 → Tシャツ注文 →「📨 AIからの入荷登録申請」）で、原本と見比べて PIN を入れて行う。Claude は承認できない。**
-4. 裏で待つ: `python cli.py arrival N --wait`（既定 120 分まで。`--max-wait-min` で変更）。registered かつ verified、または rejected／cancelled／failed で終わる。時間内に終わらなければ、その時点の状態を報告する（72 時間の期限はサーバーが管理）。
+1. **Claude がすることは、結果を読んで報告するだけ。** `python -m toms_order.cli show N` の `result.arrival`（`line`・`ok`・`submit`・`approve`・`wait`）と、
+   見張り役の LINE WORKS の 1 通（入荷登録の 1 行が載る）。報告は表で: 受注番号・ECM の request_id・status・明細・合計・入荷予定日・確認（verified）。
+   - `ok: true` … CMR へ登録し、確認も取れた。
+   - `submit.status` が `not_submitted`／`mismatch_cancelled`／`rejected`／`server_refused` … 申請の前後の照合で止まった。理由をそのまま伝えて止まる。
+   - `approve.status` が `approval_refused`（ECM が承認の記録で確かめられなかった）／`approval_unknown`（届いたか分からない） …
+     ECM の申請は**承認待ちのまま**。運用者に「ECM 画面『📨 AIからの入荷登録申請』の PIN 承認で続けられます」と伝える。**送り直さない。**
+   - 「登録の確認はまだです」… CMR へは送った。`python -m toms_order.cli arrival N --wait` で裏で確かめる。
+   - **勝手に再申請・別経路での登録（貼り付けルート・CMR の API）をしない。** 承認の表・toms_order の DB に書き込まない。
+2. 申請の照合（自動の手順の中身・変えていない）: 状態 confirmed／納品先（申請の destination と確定画面の納品先名が「セブンエス」「セブンエス株式会社」）／確定後の照合 OK／原本は申請 N の記録（verify.files の先頭・data/results の中）だけ／原本の受注番号が確定した番号と一致／明細の合計枚数と行数が依頼（expect）・確定画面と一致。送ったあと ECM の解析結果と違えば自動で取り下げる。申請番号は arrivals 表に残り、2 回目は送らない。
+3. 手で申請し直すとき（自動の手順の前に止まった後など）: `cd C:\ClaudeCode\900.ClaudeCode\toms_order` → `python cli.py arrival N`（申請だけ）。この経路の承認は **ECM 画面の PIN 承認**（Claude は承認できない）。
+4. 裏で待つ: `python cli.py arrival N --wait`（既定 120 分まで。`--max-wait-min` で変更）。registered かつ verified、または rejected／cancelled／failed で終わる。
 5. 手動の部品（`094.Chrome自動操作\ecm_arrival_client.py submit | show | cancel`）は、下の「明細を限定して登録する」ときと調査用に残す。
 - **明細を限定して登録する（2026-10-18 追加）**: 同じ入荷予定日に、別の受注番号が同じ品番を登録済みで、ECM が却下したとき（例: #56149955 の BK-3L・BK-L が #56146432 と重複）、重複する明細だけを運用者が CMR 管理画面で既存の指示へ加算し、**残りだけを ECM に申請する**。
   `python ...\ecm_arrival_client.py submit <toms-result_….txt> --only-items 300ACT-NV-M 300ACT-NV-S --note "BK-3L/BK-Lは運用者がCMRで加算"`（除外で書くなら `--exclude-items ...`）。
