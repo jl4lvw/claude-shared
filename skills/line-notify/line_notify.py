@@ -31,13 +31,24 @@ LINE で承認する送り方も残してあり、900.ClaudeCode/a_browser_commo
   python line_notify.py queue-cancel 番号          溜まっている報告を取り消す(送らない)
   python line_notify.py flush                      朝のまとめ送り(普段はタスクが起動する)
   python line_notify.py install-flush-task         毎朝 9:00 のタスクを登録 / uninstall-flush-task で外す
+
+2026-10-30 運用者決定(Amazon FBA 納品の全自動): 7S への LINE は「送信の承認」にまとめる。承認の画面で承認された
+amz_inbound の申請(承認の表に「承認後に 7S へ送る文」を載せたもの)から来た文だけを、次の入口で送る(amz_inbound.cli run が呼ぶ):
+  python line_notify.py send-approved --request-id N --approval コード --text-file 本文.txt --fba FBA… --folder-url https://drive.google.com/drive/folders/…
+  確かめること: 申請が amz_inbound の実行中 / 見張り役の承認の表(watch.sqlite3)と 090 の承認の表(line_approvals)で、
+  その申請番号・承認コード・中身のハッシュが一致し、承認が使用済み(実行役が使った)/ 申請の中身のハッシュ(expect+line)が一致 /
+  送る文が、申請のテンプレートの置き場所 {fba}・{folder_url} に形を確かめた値を入れた文と一字一句同じ / まだ使っていない(1 回だけ)。
+  夜間は既存の決まりのとおりキューに積み(承認コードは渡さない = 朝に承認を求め直す)、終了コード 20。送れたら 0、断ったら 1。
+  最後の行に JSON 1 行(status: sent / queued / rejected / failed / unknown)。
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import re
 import secrets
+import sqlite3
 import shutil
 import subprocess
 import sys
@@ -45,6 +56,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from contextlib import closing
 from pathlib import Path
 
 if sys.stdout is not None:  # pythonw(朝のまとめ送りのタスク)では標準出力が無い
@@ -57,6 +69,7 @@ PUBLIC = ROOT / "900.ClaudeCode" / "public-share"
 if str(ROOT / "900.ClaudeCode") not in sys.path:  # 承認の出し先の切り替えと LINE WORKS の送り方(a_browser_common)
     sys.path.insert(0, str(ROOT / "900.ClaudeCode"))
 from a_browser_common import approval_channel, approval_purpose, approval_text, lineworks, phone_text  # noqa: E402
+from a_browser_common import approval_gate, config as abc_config  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import notify_queue  # noqa: E402
 QUEUE_DB = AGENT / "data" / "line_notify_queue.sqlite3"
@@ -531,6 +544,159 @@ def cmd_uninstall_flush_task(_a: argparse.Namespace) -> None:
     print("外しました" if cp.returncode == 0 else f"外せません: {(cp.stdout + cp.stderr).decode('cp932', 'replace').strip()}")
 
 
+# ---------------------------------------------------------------- amz_inbound の承認済みの申請から来た文(2026-10-30)
+AMZ_SITE = "amz_inbound"
+AMZ_GROUP = "セブンエス"
+AMZ_USED_DB = AGENT / "data" / "line_notify_amz_inbound.sqlite3"
+AMZ_FBA_RE = re.compile(r"FBA[0-9A-Z]{9,10}")
+AMZ_FOLDER_RE = re.compile(r"https://drive\.google\.com/drive/folders/[A-Za-z0-9_-]+")
+
+
+class AmzRefused(RuntimeError):
+    """承認済みの申請の文として確かめられない(送らない)。"""
+
+
+def amz_fill(template: str, fba: str, folder: str) -> str:
+    """置き場所 {fba}・{folder_url} に形を確かめた値を入れる(amz_inbound.cli.fill_line と同じ決まりを、ここでも確かめ直す)。"""
+    if template.count("{folder_url}") != 1 or template.count("{fba}") > 1:
+        raise AmzRefused("テンプレートの置き場所の数が違います")
+    rest = template.replace("{fba}", "").replace("{folder_url}", "")
+    if "{" in rest or "}" in rest:
+        raise AmzRefused("テンプレートに決まった 2 つ以外の置き場所があります")
+    if not AMZ_FBA_RE.fullmatch(fba or ""):
+        raise AmzRefused(f"納品番号の形が違います: {fba!r}")
+    if not AMZ_FOLDER_RE.fullmatch(folder or ""):
+        raise AmzRefused(f"フォルダの URL の形が違います: {folder!r}")
+    return template.replace("{fba}", fba).replace("{folder_url}", folder)
+
+
+def amz_payload_sha(payload: dict) -> str:
+    """amz_inbound.cli.payload_sha(LINE の文がある申請)と同じ計算。"""
+    body = {"expect": payload.get("expect"), "line": payload.get("line")}
+    return hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _one_row(db: Path, sql: str, args: tuple) -> dict | None:
+    if not db.exists():
+        raise AmzRefused(f"表が見つかりません: {db.name}")
+    with closing(sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(sql, args).fetchone()
+    return dict(row) if row is not None else None
+
+
+def amz_check(request_id: int, code: str, text: str, fba: str, folder: str, *, queue_db: Path, watch_db: Path,
+              agent_db: Path) -> tuple[dict, dict]:
+    """承認済みの amz_inbound の申請から来た文かを確かめる。(申請の中身, 090 の承認の行)。合わなければ AmzRefused。"""
+    if not code or not code.isalnum():
+        raise AmzRefused("承認コードがありません")
+    req = _one_row(queue_db, "SELECT * FROM requests WHERE id=?", (request_id,))
+    if req is None or req["site"] != AMZ_SITE:
+        raise AmzRefused(f"申請 {request_id} は amz_inbound のキューにありません")
+    if req["status"] != "running":
+        raise AmzRefused(f"申請 {request_id} は実行中ではありません({req['status']})")
+    payload_text = str(req["payload"])
+    payload = json.loads(payload_text)
+    line = payload.get("line")
+    if not isinstance(line, dict) or line.get("group") != AMZ_GROUP or not isinstance(line.get("template"), str):
+        raise AmzRefused("申請に 7S へ送る文(line)がありません")
+    if amz_payload_sha(payload) != payload.get("sha"):
+        raise AmzRefused("申請の中身のハッシュが合いません")
+    want = approval_gate.sha(AMZ_SITE, request_id, payload_text)
+    w = _one_row(watch_db, "SELECT * FROM approvals WHERE target=? AND request_id=?", (AMZ_SITE, request_id))
+    if w is None or str(w["code"]).upper() != code.upper():
+        raise AmzRefused("見張り役の承認の表に、この申請と承認コードの組がありません")
+    if w["status"] not in ("launching", "ran") or w["sha"] != want:
+        raise AmzRefused(f"見張り役の承認の表の状態・ハッシュが合いません({w['status']})")
+    a = _one_row(agent_db, "SELECT * FROM line_approvals WHERE code=? COLLATE NOCASE", (code,))
+    if a is None or a["target_name"] != approval_gate.target_name(AMZ_SITE, request_id) or a["sha"] != want:
+        raise AmzRefused("承認の表(line_approvals)の申請・ハッシュが合いません")
+    if a["status"] != "used":
+        raise AmzRefused(f"承認が実行役に使われていません({a['status']})")
+    if text != amz_fill(line["template"], fba, folder):
+        raise AmzRefused("送る文が、承認された文(テンプレートに置き場所の 2 つを入れたもの)と一字一句同じではありません")
+    return payload, a
+
+
+class AmzUsed:
+    """同じ申請の文を 2 回送らない印(申請番号ごとに 1 行)。"""
+
+    def __init__(self, path: Path = AMZ_USED_DB) -> None:
+        self.path = path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(path, timeout=30)) as c, c:
+            c.execute("CREATE TABLE IF NOT EXISTS used (request_id INTEGER PRIMARY KEY, code TEXT NOT NULL, sha TEXT NOT NULL,"
+                      " status TEXT NOT NULL, ids TEXT, item_id INTEGER, at TEXT NOT NULL)")
+
+    def claim(self, request_id: int, code: str, sha: str) -> bool:
+        with closing(sqlite3.connect(self.path, timeout=30)) as c, c:
+            return c.execute("INSERT OR IGNORE INTO used VALUES (?,?,?,?,?,?,?)",
+                             (request_id, code, sha, "sending", None, None, time.strftime("%Y-%m-%d %H:%M:%S"))).rowcount == 1
+
+    def set(self, request_id: int, status: str, ids: list[str] | None = None, item_id: int | None = None) -> None:
+        with closing(sqlite3.connect(self.path, timeout=30)) as c, c:
+            c.execute("UPDATE used SET status=?, ids=?, item_id=? WHERE request_id=?",
+                      (status, json.dumps(ids or []), item_id, request_id))
+
+    def release(self, request_id: int) -> None:
+        """送れなかった(LINE が HTTP エラーを返した = 届いていない)ときだけ印を外す。"""
+        with closing(sqlite3.connect(self.path, timeout=30)) as c, c:
+            c.execute("DELETE FROM used WHERE request_id=? AND status='sending'", (request_id,))
+
+
+def _amz_push(group_id: str, text: str) -> list[str]:
+    agent_env()
+    return push_messages(group_id, [text_message(text)])
+
+
+def send_approved(request_id: int, code: str, text: str, fba: str, folder: str, *, queue_db: Path | None = None,
+                  watch_db: Path | None = None, agent_db: Path | None = None, used: AmzUsed | None = None,
+                  groups: dict[str, str] | None = None, push=None, store=None) -> dict:
+    """承認済みの amz_inbound の申請の文を LINE「セブンエス」へ 1 回だけ送る。夜間はキューに積む(朝に承認を求め直す)。"""
+    try:
+        payload, ap_row = amz_check(request_id, code, text, fba, folder,
+                                    queue_db=queue_db or abc_config.DATA_DIR / "queue.sqlite3",
+                                    watch_db=watch_db or abc_config.DATA_DIR / "watch.sqlite3",
+                                    agent_db=agent_db or approval_gate.AGENT_DB)
+    except (AmzRefused, ValueError, KeyError) as exc:
+        return {"status": "rejected", "problem": str(exc)}
+    groups = load_groups() if groups is None else groups
+    if AMZ_GROUP not in groups:
+        return {"status": "rejected", "problem": f"グループ「{AMZ_GROUP}」は未登録です"}
+    if len(text) > MAX_LEN:
+        return {"status": "rejected", "problem": f"本文が長すぎます({len(text)}字)"}
+    sha = sha_of(AMZ_GROUP, text)
+    used = used or AmzUsed()
+    if not used.claim(request_id, code, sha):
+        return {"status": "rejected", "problem": f"申請 {request_id} の文はすでに使いました(二度は送りません)"}
+    if approved_in_quiet(AMZ_GROUP, ap_row):  # 19:00 以降の承認 → 既存の決まりのとおり朝に回す(承認を求め直す)
+        purpose = f"Amazon FBA 納品(承認済みの申請 {request_id})のラベルの置き場を 7S に知らせるため"
+        item_id, _new = (store or queue_store()).enqueue(AMZ_GROUP, text, "", "", sha, None, purpose=purpose)
+        used.set(request_id, "queued", item_id=item_id)
+        return {"status": "queued", "item_id": item_id, "sha": sha}
+    try:
+        ids = (push or _amz_push)(groups[AMZ_GROUP], text)
+    except SystemExit as exc:  # LINE が HTTP エラーを返した = 届いていない。印を外す(人が確かめて送り直せる)
+        used.release(request_id)
+        return {"status": "failed", "problem": str(exc)[:300]}
+    except Exception as exc:  # noqa: BLE001  通信の途中で切れた = 届いたか分からない。印は残す(二度送らない)
+        used.set(request_id, "unknown")
+        return {"status": "unknown", "problem": f"届いたか分かりません: {type(exc).__name__}: {str(exc)[:200]}"}
+    used.set(request_id, "sent", ids=ids)
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    with LOG.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"at": time.strftime("%Y-%m-%d %H:%M:%S"), "group": AMZ_GROUP, "sha": sha,
+                            "approval": f"{AMZ_SITE}#{request_id}:{code}", "ids": ids}, ensure_ascii=False) + "\n")
+    return {"status": "sent", "ids": ids, "sha": sha}
+
+
+def cmd_send_approved(a: argparse.Namespace) -> None:
+    text = Path(a.text_file).read_bytes().decode("utf-8")
+    out = send_approved(a.request_id, a.approval, text, a.fba, a.folder_url)
+    print(json.dumps(out, ensure_ascii=False))
+    sys.exit({"sent": 0, "queued": EXIT["queued"]}.get(out["status"], 1))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -571,6 +737,13 @@ def main() -> None:
     qc.add_argument("id", type=int)
     qc.set_defaults(fn=cmd_queue_cancel)
     sub.add_parser("flush").set_defaults(fn=cmd_flush)
+    sa = sub.add_parser("send-approved", help="amz_inbound の承認済みの申請の文を LINE「セブンエス」へ送る(amz_inbound.cli run が呼ぶ)")
+    sa.add_argument("--request-id", type=int, required=True)
+    sa.add_argument("--approval", required=True)
+    sa.add_argument("--text-file", required=True)
+    sa.add_argument("--fba", required=True)
+    sa.add_argument("--folder-url", required=True)
+    sa.set_defaults(fn=cmd_send_approved)
     sub.add_parser("install-flush-task").set_defaults(fn=cmd_install_flush_task)
     sub.add_parser("uninstall-flush-task").set_defaults(fn=cmd_uninstall_flush_task)
     a = ap.parse_args()
