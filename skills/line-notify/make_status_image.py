@@ -18,7 +18,7 @@ spec.json の形:
   }
 mark は "del"(赤枠)/ "keep"(緑枠)/ 省略(枠なし)。
 grid(表): {"heading": ..., "grid": {"header": [...], "widths": [...], "rows": [[...]], "stop_rows": [赤くする行], "ok_col": 結果の列番号}}
-  ok_col を指定すると、その列の「OK」で始まる文字を緑の太字にする(配信報告の観点表・カード表。2026-10-24)。内容が1ページに収まらないときは例外で止まる(小さくせず、項目を減らす)。
+  bold_first=false で左の列を太字にしない(左右に同じ種類が並ぶ表。2026-10-30)。ok_col を指定すると、その列の「OK」で始まる文字を緑の太字にする(配信報告の観点表・カード表。2026-10-24)。内容が1ページに収まらないときは例外で止まる(小さくせず、項目を減らす)。
 """
 from __future__ import annotations
 
@@ -110,7 +110,7 @@ def render(spec: dict, out: Path) -> None:
                     color = RED if i in stop and j == len(row) - 1 else INK
                     if g.get("ok_col") == j and str(cell).startswith("OK") and i not in stop:
                         color = GRN  # 結果の列の「OK」は緑(2026-10-24 配信報告の形)
-                    d.text((xs[j] + 12, ry + 9), str(cell), font=font(24, j == 0 or color == GRN), fill=color)
+                    d.text((xs[j] + 12, ry + 9), str(cell), font=font(24, (j == 0 and g.get("bold_first", True)) or color == GRN), fill=color)
             y += block + 28
         if "before" in sec:
             need(160)
