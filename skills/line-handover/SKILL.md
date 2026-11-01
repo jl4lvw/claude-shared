@@ -50,11 +50,13 @@ python scripts/claude_handover.py take <受付番号> --note "<何をするか 1
 
 | 依頼 | 手順 |
 |---|---|
-| LINE の配信予約(メルマガと混在・両店同時・下書きが無い・ログイン切れ で 090 が止めた) | `/rakuten-line-reserve` / `/yahoo-line-reserve` |
+| LINE の配信予約(両店同時・下書きが無い・ログイン切れ で 090 が止めた) | `/rakuten-line-reserve` / `/yahoo-line-reserve` |
+| メルマガと LINE が混ざった依頼(#51 の形)。票に「LINE の配信予約は済みました。メルマガの手配はまだです」 | LINE は 090 が予約済み(票の予約 ID を確かめるだけ)。メルマガを `/rakuten-merumaga-flow` → `/rakuten-merumaga-reserve` |
 | 楽天メルマガの手配 | `/rakuten-merumaga-flow`(下書きまで)→ 運用者の「送信手続き」で `/rakuten-merumaga-reserve` |
 | 無地Tシャツの手配(ステッチハウス) | `/stitchhouse-tee` → `/toms-web` |
-| Tシャツ・ポロ・パーカーの注文の実行(090 は確認まで) | `/tshirt-order` |
+| Tシャツ・ポロ・パーカーの注文の実行(090 は確認まで。票の「090 が止まった理由」に確認表=業者・素材・枚数・納期・TOMS 出荷日が入っている) | `/tshirt-order`(確認表の内容で進め、聞き直さない) |
 | バリエーション(色・サイズ)の追加 | `/mall-product-update` |
+| 価格の変更・改定 | `/mall-price-revision`(税込でそろえる) |
 | 在庫変更で 092 に無い SKU・読めない SKU | 092(自社の在庫管理)の画面で SKU を台帳に載せてから、承認の画面で「補足して調べ直す」(090 の set_stock で続く) |
 | 案内が無いもの | 依頼の内容から手順を選ぶ。無ければ運用者に相談(勝手に断らない) |
 
