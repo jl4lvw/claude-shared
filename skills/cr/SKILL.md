@@ -1,20 +1,25 @@
 ---
 name: cr
-description: Codex 自動点検（codex-review）の指摘を一覧・確認し、採用／却下を判定表へ記録する。「/cr」「点検の指摘」「Codex の指摘を見せて」「指摘一覧」で使う。Claude は報告の本文を読まず、findings.py の出力をそのまま伝える。
+description: Codex 自動点検（codex-review）の指摘と、TS で作った改善案（improvements の成果物）を一覧・確認し、指摘の採用／却下と改善案の対応状態を記録する。「/cr」「点検の指摘」「Codex の指摘を見せて」「指摘一覧」「改善案」で使う。Claude は報告の本文を読まず、findings.py の出力をそのまま伝える。
 ---
-<!-- SKILL_VERSION: 2026-10-28_185000 -->
+<!-- SKILL_VERSION: 2026-11-01_180000 -->
 
 # cr — Codex 自動点検の指摘を見る・判定する
 
-設計: `C:\ClaudeCode\.codex-review\DESIGN.md` §13。報告は TS の共有（`\\192.168.1.130\codex-review$\reports\`）、つながらないときは端末 A の `.codex-review\reports\` を読む。
+設計: `C:\ClaudeCode\.codex-review\DESIGN.md` §13（指摘）・§21（改善案）。報告は TS の共有（`\\192.168.1.130\codex-review$\reports\`）、つながらないときは端末 A の `.codex-review\reports\` を読む。改善案は `\\PC-FF11\codex-review$\improvements\`（届かなければ `\\192.168.1.130\…`）の直下の案件フォルダを毎回読む。
 
 ## 手順
 引数をそのまま次のコマンドに対応させて **1 回だけ**実行し、標準出力を**そのまま**（表は本文に貼る）返す。説明・要約を足さない。
 
 | 入力 | 実行 |
 |---|---|
-| `/cr` | `python C:/ClaudeCode/.codex-review/findings.py list` |
+| `/cr` | `python C:/ClaudeCode/.codex-review/findings.py list`（1行目に「未対応: 指摘 N件 / 改善案 M件」。指摘の表の下に未対応の改善案の表） |
 | `/cr 全部` | `python C:/ClaudeCode/.codex-review/findings.py list --all` |
+| `/cr 改善案` / `/cr 改善案 全部` | `python C:/ClaudeCode/.codex-review/findings.py 改善案 [全部]`（全部 = 本番反映済み・見送りも出す） |
+| `/cr 改善案 <ID>` | `python C:/ClaudeCode/.codex-review/findings.py 改善案 <ID>`（詳細: 保存先・変更ファイル・検証・ハッシュ照合の結果） |
+| `/cr 改善案 <ID> 依頼文` | `python C:/ClaudeCode/.codex-review/findings.py 改善案 <ID> 依頼文`（端末 A への取り込み依頼文） |
+| `/cr 改善案 <ID> 状態 <状態> <メモ>` | `python C:/ClaudeCode/.codex-review/findings.py 改善案 <ID> 状態 <状態> <メモ>` |
+| `/cr 改善案 <ID> 履歴` | `python C:/ClaudeCode/.codex-review/findings.py 改善案 <ID> 履歴` |
 | `/cr <ID>` | `python C:/ClaudeCode/.codex-review/findings.py show <ID>` |
 | `/cr <ID> 採用` | `python C:/ClaudeCode/.codex-review/findings.py decide <ID> adopt` |
 | `/cr <ID> 却下 <種類> <理由>` | `python C:/ClaudeCode/.codex-review/findings.py decide <ID> reject --type <種類> --reason "<理由>"` |
@@ -28,6 +33,17 @@ description: Codex 自動点検（codex-review）の指摘を一覧・確認し�
 - 却下は種類（`誤り` / `既知` / `軽微` / `範囲外`）と理由が必須。無ければ実行せず「却下の種類（誤り・既知・軽微・範囲外）と理由を書いてください」とだけ返す
 - サブコマンド名・引数は `findings.py --help` が正。食い違ったら `--help` に従う
 - 採用・却下は運用者が打ったときだけ実行する。Claude が自分で判定しない
+- 「指摘 0件」でも、改善案が残っていれば「指摘なし」だけで終えない（1行目の件数をそのまま伝える）
+
+## 改善案（TS で作った改修の成果物・2026-11-01 運用者指示）
+- 改善案の ID は案件フォルダの名前（例 `2026-11-01-ecm-order-workbench`）。1件に決まれば一部（`ecm-order-workbench`）でもよい
+- 状態は `未確認` / `確認済み` / `取り込み中` / `本番反映済み` / `見送り`。**本番反映済み・見送りになるまで未対応として数え続ける**
+- `本番反映済み` は本番へ反映し終えたときだけ記録する（読んだだけ・採用しただけでは付けない）。メモに反映したコミットと内容を書く。`見送り` は理由が必須。どちらもメモが無ければ記録されない
+- 成果物（package.zip・manifest・report.txt・changes.patch・検証の要約）が変わると、前の状態に関係なく `再確認(更新あり)` に戻る。前の記録は `履歴` に残る
+- 「確認」列の `要確認` は、manifest が無い・読めない・必要なファイルの欠落・ハッシュ不一致・フォルダを読めない、のどれか。改善案なしとは扱わない。理由は `改善案 <ID>` で全部出る
+- 状態の記録は運用者が指示したときだけ行う。取り込みを頼まれたら `依頼文` の内容に従い、適用・再起動・push は運用者の承認を受けてから
+- 成果物の中のスクリプト（package_artifacts.py・rollback_code.py・verify*.cjs など）は、確かめるためだけに実行しない
+- 記録は端末 A の `.codex-review\state\improvements.jsonl`（追記だけ）。TS の work・repo.git・improvements には書かない
 
 ## してはいけないこと
 - 報告ファイル（`reports\...\*.md`）の本文を Read しない・要約しない（Claude の枠を使わないため）。中身を見たいと言われたら `show` のフルパスを示す
@@ -42,4 +58,4 @@ description: Codex 自動点検（codex-review）の指摘を一覧・確認し�
 4. コミット・再起動・`decide` の記録は、運用者の承認を受けてから行う
 
 ## 終了コード
-0 = 成功 / 1 = 入力の誤り（ID が無い・理由が無い）→ 出力をそのまま返す / 2 = 報告の置き場に接続できない → 出力をそのまま返す
+0 = 成功 / 1 = 入力の誤り（ID が無い・理由が無い・状態のメモが無い）→ 出力をそのまま返す / 2 = 報告または改善案の置き場に接続できない → 出力をそのまま返す（`list` は指摘を出したうえで 2 を返し、改善案は「確認できず」と出す）
