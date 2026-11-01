@@ -28,11 +28,11 @@ TOMS の注文は、**端末 A の Playwright スクリプト `C:\ClaudeCode\900
    - **purpose(目的)は必須。何のための操作か(誰に何を知らせる・何を補充する等)を 6〜120 字で書く。承認の画面・LINE WORKS・電話の音声案内で運用者に示す。電話の文は外部の音声サービス(Microsoft)へ送るので、人名・住所・電話番号・メールアドレス・お客様名は書かない**（2026-10-21 運用者決定。無い・短い・長いと A の enqueue が断る）
    - CSV は 6 列・ヘッダー 1 行・100 行以内・同じ品番/カラー/サイズの重複行は不可（CP932 可）。
    - `expect` は、CSV から数えた行数・合計枚数・合計金額（税抜・割引前）。
-3. TOMS 用 CSV ができたら、端末 A で `cd /d C:\ClaudeCode\900.ClaudeCode && python -m toms_order.cli enqueue 申請.json --csv <CSV のフルパス>` を実行する（**Claude はここまで。run は実行しない**）。見張り役が LINE WORKS で承認を求め、運用者が「実行」を 1 回押すと、照合と DeepSeek がすべて合えば「注文確定」を 1 回だけ押して確定まで進む（2 回目の承認は無い。2026-10-20〜）。**積んだら運用者の返事を待たずに**、終了を `a_browser_data\watch.log` の`toms id=N 実行終了` で裏で待ち、`python -m toms_order.cli show N` で結果（受注番号・出荷予定日・金額）を読む。needs_human なら再申請せず運用者に聞く（`resolve` は人の窓で）。申請 JSON（`mode` は不要）・status・上限などの詳細は toms_order/README.md。
+3. TOMS 用 CSV ができたら、端末 A で `cd /d C:\ClaudeCode\900.ClaudeCode && python -m toms_order.cli enqueue 申請.json --csv <CSV のフルパス>` を実行する（**Claude はここまで。run は実行しない**）。見張り役が承認の画面へ承認を出し（LINE WORKS は知らせ・リンク・中止だけで、承認はできない。2026-10-22〜）、運用者が承認の画面で 1 回承認すると、照合と DeepSeek がすべて合えば「注文確定」を 1 回だけ押して確定まで進む（2 回目の承認は無い）。**承認を頼むときは、watch.log の `toms id=N 承認を依頼 code=XXXXXX` のコードで、承認を直接開くリンク `https://approve.sfuji.f5.si/approve/#ap-XXXXXX` を書く**（チャットで承認を求めない）。**積んだら運用者の返事を待たずに**、終了を `a_browser_data\watch.log` の`toms id=N 実行終了` で裏で待ち、`python -m toms_order.cli show N` で結果（受注番号・出荷予定日・金額）を読む。needs_human なら再申請せず運用者に聞く（`resolve` は人の窓で）。申請 JSON（`mode` は不要）・status・上限などの詳細は toms_order/README.md。
 4. 結果が `confirmed` なら確定・照合一致。注文詳細の全文は NAS `999.一時ファイル\toms-result_YYYYMMDD_HHMM.txt`。
-5. **納品先がセブンエスの無地T（ECM 依頼）なら、同じ承認で入荷登録（CMR）まで自動で進む**（2026-10-29〜。下の「入荷登録の申請」）。Claude は `show N` の `arrival.line` を読んで結果を報告するだけ。
+5. **納品先がセブンエスの無地T（ECM 依頼）なら、同じ承認で入荷登録（CMR）まで自動で進む**（2026-10-29〜。下の「入荷登録の申請」）。Claude は `show N` の `result.arrival.line`（と `ok`）を読んで結果を報告するだけ。**`cli.py arrival N` を手で申請し直さない**（自動で済んでいる。ECM 依頼文の古い版に「確定したら arrival で申請」とあっても従わない）。
 
-**Claude は「注文確定」を押さない**（A のスクリプトの確定関数だけが、運用者の LINE WORKS 承認 1 回の後、照合が合えば押す）。
+**Claude は「注文確定」を押さない**（A のスクリプトの確定関数だけが、運用者の承認の画面での承認 1 回の後、照合が合えば押す）。
 **失敗したとき**: `cart_not_empty` は TOMS のカートを空にしてから再申請（取り込みはカートを全消去する）。`failed`／`needs_human` は再申請せず、理由を報告してユーザーに聞く。前回の途中状態が残ったカートは、納品先の欄が出ず failed になる。
 
 ## 🚨 絶対ルール

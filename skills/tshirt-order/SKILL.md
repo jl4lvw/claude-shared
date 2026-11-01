@@ -541,11 +541,11 @@ TOMS 用 CSV を作ったら、**端末 A の `C:\ClaudeCode\900.ClaudeCode\toms
    ```
    - **purpose(目的)は必須。何のための操作か(誰に何を知らせる・何を補充する等)を 6〜120 字で書く。承認の画面・LINE WORKS・電話の音声案内で運用者に示す。電話の文は外部の音声サービス(Microsoft)へ送るので、人名・住所・電話番号・メールアドレス・お客様名は書かない**（2026-10-21 運用者決定。TOMS・CAB の申請 JSON と `line_notify.py request-approval --purpose` のすべてに当てはまる。無い・短い・長いと rejected）
    - `expect` は CSV から数えた行数・合計枚数・合計金額（税抜・割引前）。CSV は 6 列・ヘッダー 1 行・100 行以内・同じ SKU の重複行は不可。
-3. TOMS 用 CSV ができたら、端末 A で `cd /d C:\ClaudeCode\900.ClaudeCode && python -m toms_order.cli enqueue 申請.json --csv <CSV のフルパス>` を実行する（**Claude はここまで。run は実行しない**）。見張り役が LINE WORKS で承認を求め、運用者が「実行」を 1 回押すと、照合と DeepSeek がすべて合えば「注文確定」を 1 回だけ押して確定まで進む（2 回目の承認は無い。2026-10-20〜）。**積んだら運用者の返事を待たずに**、終了を `a_browser_data\watch.log` の`toms id=N 実行終了` で裏で待ち、`python -m toms_order.cli show N` で結果（受注番号・出荷予定日・金額）を読む。needs_human なら再申請せず運用者に聞く（`resolve` は人の窓で）。申請 JSON（`mode` は不要）・status・上限などの詳細は toms_order/README.md。
+3. TOMS 用 CSV ができたら、端末 A で `cd /d C:\ClaudeCode\900.ClaudeCode && python -m toms_order.cli enqueue 申請.json --csv <CSV のフルパス>` を実行する（**Claude はここまで。run は実行しない**）。見張り役が承認の画面へ承認を出し（LINE WORKS は知らせ・リンク・中止だけで、承認はできない。2026-10-22〜）、運用者が承認の画面で 1 回承認すると、照合と DeepSeek がすべて合えば「注文確定」を 1 回だけ押して確定まで進む（2 回目の承認は無い）。**承認を頼むときは、watch.log の `toms id=N 承認を依頼 code=XXXXXX` のコードで、承認を直接開くリンク `https://approve.sfuji.f5.si/approve/#ap-XXXXXX` を書く**（チャットで承認を求めない）。**積んだら運用者の返事を待たずに**、終了を `a_browser_data\watch.log` の`toms id=N 実行終了` で裏で待ち、`python -m toms_order.cli show N` で結果（受注番号・出荷予定日・金額）を読む。needs_human なら再申請せず運用者に聞く（`resolve` は人の窓で）。申請 JSON（`mode` は不要）・status・上限などの詳細は toms_order/README.md。
 4. 結果（`show` の status）: `confirmed`（確定・照合一致）／`stopped`／`needs_human`／`failed`／`cart_not_empty`。
    - `confirmed` なら、受注番号・出荷予定日を取り、この先の工程（発注書 PDF・history.csv・Sheets・product_db・メール）へ進む。注文詳細の全文は `toms-result_YYYYMMDD_HHMM.txt`（data/results・Downloads・NAS 999.一時ファイル）。
    - `cart_not_empty` は TOMS のカートを空にしてから再申請。`failed`／`needs_human` は再申請せず、理由を報告して運用者に聞く。
-5. 納品先がセブンエスの無地 T（ECM 依頼）なら、確定後に `python cli.py arrival <ID>` で入荷登録を申請まで自動で行う（人の貼り付けは不要。確定は運用者が ECM 画面で PIN 承認。詳しくは `/toms-web` の「入荷登録の申請」。キーは `C:\Users\user\.ecm\api_key.txt`）。
+5. 納品先がセブンエスの無地 T（ECM 依頼）なら、**同じ承認で入荷登録（コマースロボ）まで自動で進む**（2026-10-29〜。ECM 画面の PIN 承認は不要）。Claude は `show N` の `result.arrival.line`（と `ok`）を読んで報告するだけで、**`cli.py arrival N` を手で申請し直さない**。登録できなかったときの扱いは `/toms-web` の「入荷登録の申請」。
 
 詳しい規則（上限 500 枚・税込 200,000 円、24 時間以内の同一申請は確定しない等）は toms_order の README.md と `/toms-web`。
 
@@ -1118,7 +1118,7 @@ print(lp.format_report('G1822', info))
 1. 業者選択
 2. 商品コード / 件名 / URL / 品番 / カラー / サイズ別数量 を確認
 3. **→ ここで即 TOMS CSV を作成し `current_order/` に配置**（PDFやメールはまだ作らない）
-4. toms_order で TOMS に取り込む（上の「TOMS への取り込み」。確定は運用者の LINE WORKS 承認）→ 確認画面・受注番号・出荷予定日を取得
+4. toms_order で TOMS に取り込む（上の「TOMS への取り込み」。確定は運用者の承認の画面での承認）→ 確認画面・受注番号・出荷予定日を取得
 5. **→ ここで初めて** 位置・色数 / 加工 / 納期 を聞き、PDF・メール・Sheets・履歴を作成
 6. Thunderbird起動 / 完了サマリ
 7. DB再生成（`build_product_db.py`）
