@@ -106,13 +106,16 @@ _BRACKET_HEAD = re.compile(r"^(?:\s*【[^】]*】)+")
 
 
 def _plain(text: str) -> str:
-    """表に出す名前。画像の字体に無い文字(絵文字など BMP の外)を外し、頭の【…】(早期特典などの飾り)も外す
+    """画像の字体に無い文字(絵文字など BMP の外)を外す。"""
+    return "".join(ch for ch in text if ord(ch) <= 0xFFFF).strip()
+
+
+def _name(text: str) -> str:
+    """表に出す商品名。頭の【…】(早期特典などの飾り・複数可)を外してから _plain
     (2026-11-01 受付 #51: 4 商品とも「【早期特典★1部購入ごとに部隊ピ」で始まり、16 文字に切ると見分けられなかった)。
-    【…】だけの名前は、そのまま残す。"""
-    body = _BRACKET_HEAD.sub("", text)
-    if not body.strip():
-        body = text
-    return "".join(ch for ch in body if ord(ch) <= 0xFFFF).strip()
+    外すと空になる名前(【…】だけ・【…】+絵文字だけ)は、【…】を残した _plain を返す。
+    同じ関数が 900.ClaudeCode/lineoa_reserve/report.py にもある(台本から 900 を import しない方針)。直すときは両方を同じにする。"""
+    return _plain(_BRACKET_HEAD.sub("", text)) or _plain(text)
 
 
 def _link_rows(findings: list[dict], accept: frozenset[str] = frozenset()) -> tuple[list[list[str]], list[int], dict]:
@@ -127,7 +130,7 @@ def _link_rows(findings: list[dict], accept: frozenset[str] = frozenset()) -> tu
         reviewed = f.get("level") != "ok" and f.get("url") in accept
         ok = f.get("level") == "ok" or reviewed
         if reviewed:
-            rows.append([str(len(rows) + 1), _plain(f.get("name") or "")[:16],
+            rows.append([str(len(rows) + 1), _name(f.get("name") or "")[:16],
                          m.group(1).upper() if m else "リンク", "―", "OK(確認済)"])
             items["n" if m else "other"] += 1
             items["ok" if m else "other_ok"] += 1
@@ -142,7 +145,7 @@ def _link_rows(findings: list[dict], accept: frozenset[str] = frozenset()) -> tu
             stock = s.group(1) if s else ("一部" if partial else ("0" if "欠品" in msg else "あり"))
             items["stock_ok"] += stock not in ("0", "一部") and "欠品" not in msg
             items["partial"] = items.get("partial", 0) + partial
-            rows.append([str(len(rows) + 1), _plain(f.get("name") or "")[:16], m.group(1).upper(), stock,
+            rows.append([str(len(rows) + 1), _name(f.get("name") or "")[:16], m.group(1).upper(), stock,
                          "OK" if ok else ("一部品切れ" if partial else "要確認")])
         else:
             items["other"] += 1
@@ -150,7 +153,7 @@ def _link_rows(findings: list[dict], accept: frozenset[str] = frozenset()) -> tu
             if ok:
                 others_ok += 1
                 continue
-            rows.append([str(len(rows) + 1), _plain(f.get("name") or "")[:16], "リンク", "―", "要確認"])
+            rows.append([str(len(rows) + 1), _name(f.get("name") or "")[:16], "リンク", "―", "要確認"])
         if not ok:
             stop.append(len(rows) - 1)
     if len(rows) > MAX_LINK_ROWS:
@@ -199,7 +202,7 @@ def build_spec(rs: list[Reservation], findings: list[dict] | None = None,
             m, p = ITEM_RE.search(f.get("url", "")), PARTIAL_RE.search(f.get("message", ""))
             if m and p and f.get("url") not in accept:
                 kinds = "、".join(x.strip().split("-", 1)[-1] for x in p.group(1).split(","))
-                remarks.append(f"・{m.group(1).upper()}({_plain(f.get('name') or '')[:20]}): 在庫 0 の種類 {kinds}")
+                remarks.append(f"・{m.group(1).upper()}({_name(f.get('name') or '')[:20]}): 在庫 0 の種類 {kinds}")
         if remarks:
             sections.append({"heading": "気づいた点", "lines": remarks})
     view_stop = [i for i, v in enumerate(view) if v[1] != "OK"]

@@ -4,7 +4,7 @@ description: Thunderbirdローカルmbox(terashita@等の既知4アカウント)
 trigger: 過去にやり取りしたメールを探したいとき、特定の相手先からのメールや添付ファイルを探して何かに使いたいとき
 ---
 
-<!-- SKILL_VERSION: 2026-09-11_104106 -->
+<!-- SKILL_VERSION: 2026-11-01_125547 -->
 
 # mail-search — Thunderbirdメール横断検索
 
@@ -179,17 +179,36 @@ terashitaのメインINBOXは960MB規模(7,948通、2026-09-04時点)。`mbox_re
 誤ラベルすることがあるため)`gb18030`として読み替える。`mbox_reader.py`の
 `normalize_charset()`/`decode_mime_header()`が対応済み。
 
+**5. 索引の到着時刻と任意の保守コマンド(2026-11-01追加)**
+
+索引(`~/.mail-search-index/`)には `arrived_utc`(mbox に置かれた時刻＝区切り行 `From - ...` の日時)
+の列がある。**前回チェック以降に索引へ入ったメールは、`Date` が古くても候補に出る**
+(以前は Date が起点の 3 日より古いと遅れて届いたメールが落ちていた。同期が止まって再開した
+場合も、その間に届いた分は落ちない)。既存行の `arrived_utc` は NULL のままで、埋めるのは任意:
+
+```bash
+cd "C:/ClaudeCode/900.ClaudeCode/mail-search/scripts" && python build_index.py --backfill-arrived   # 既存行の到着時刻を埋める(全行を読むので重い)
+python build_index.py --reextract-html --days 30                                                     # HTML 本文を CSS 抜きで再抽出(古い行の冒頭が CSS で埋まっているとき)
+```
+
+索引同期は `~/.mail-search-index/index.lock` で排他する。20 分ごとの `MailSearchIndexSync` と
+`mailcheck.py` が重なっても、後から来た方は同期を飛ばす(MC は前回の索引で表示、タスクは静かに終了)。
+最後の同期成功は索引 DB の `meta.last_sync_at` に書かれ、鮮度の判定(`index_health.py`)はこれを見る。
+
 ---
 
 ## テスト
 
-`900.ClaudeCode/mail-search/tests/`に合成データでのテストがある(pytest)。
+`900.ClaudeCode/mail-search/tests/`に合成データでのテストがある(pytest、2026-11-01 時点 299 件)。
 `folders.py`の`.sbd`探索・装飾名フォールバックは特に壊れやすい箇所なので、
 このロジックを変更したら必ずテストを通してから使うこと:
 
 ```bash
-cd "C:/ClaudeCode/900.ClaudeCode/mail-search" && python -m pytest tests/ -q
+cd "C:/ClaudeCode/900.ClaudeCode/mail-search" && python -m pytest tests -q --timeout=300
 ```
+
+本番の除外ルール・返信の型・設定(`exclude_rules.json` / `reply_templates.json` / `inbox_config.json`)
+の整合は `tests/test_config_integrity.py` が固定している。
 
 062.委託販売精算側にも、実データ(しのびやフォルダ)に対する回帰テストが1件ある
 (`062.委託販売精算/tests/test_thunderbird_mail.py::test_find_folder_resolves_decorated_shinobiya_folder`)。
@@ -232,6 +251,8 @@ python scripts/fba_mcf_ship.py --order CONSUMER-... --goq 112-034 --csv  # CSV�
 - `scripts/folders.py` — IMAP Modified UTF-7デコード・フォルダ探索(`.sbd`罠+装飾名対応)
 - `scripts/attachments.py` — 添付ファイルのサニタイズ・保存
 - `scripts/search.py` — アカウント×フォルダ横断検索の本体
+- `scripts/mail_index.py` / `scripts/build_index.py` — FTS5 索引と差分更新(`--backfill-arrived` / `--reextract-html` は任意の保守)
+- `scripts/index_health.py` — 索引の鮮度(`meta.last_sync_at`)と Thunderbird 稼働の検査
 - `scripts/fba_mcf_ship.py` — FBAマルチチャネル出荷通知→送り状番号→GoQ登録用CSV
 - `MAIL_SEND_WORKFLOW.md` — メール送信(Thunderbird・EML方式)の標準手順。検索は本スキルの
   範囲だが、見つけたメールに**返信・新規メールを送る**場合はこちらを参照([[mail-send]]/

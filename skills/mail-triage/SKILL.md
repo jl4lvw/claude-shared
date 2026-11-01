@@ -4,7 +4,7 @@ description: 期間内の受信メールを全件列挙し、除外ルール(exc
 trigger: 「返信が必要なメールはないか」「対応漏れ・見落としがないか」「ここ数日のメールを確認して」のように、特定のメールを探すのではなく網羅的に確認したいとき
 ---
 
-<!-- SKILL_VERSION: 2026-09-09_065236 -->
+<!-- SKILL_VERSION: 2026-11-01_125547 -->
 
 # mail-triage — 受信メールのトリアージ(除外方式)
 
@@ -71,7 +71,8 @@ Claude が判断してよいのは**ここだけ**:
 - 内容の要約と、次に取るべきアクションの提示
 
 件名だけで判断せず、`body_head` を読む。HTML メールは本文冒頭が CSS で埋まることが
-あるので、その場合は件名と差出人で判断する。
+あるので、その場合は件名と差出人で判断する(2026-11-01 以降に索引した行は CSS を除いて
+抽出している。古い行の取り直しは `/mail-search` の `--reextract-html`)。
 
 ### 4. ルールを育てる
 
@@ -93,6 +94,56 @@ Claude が判断してよいのは**ここだけ**:
 - キー名を間違えたルールは起動時に「使えていないルール」として警告される。
   `tests/test_triage.py::test_production_rules_are_all_usable` でも落ちる
 
+## 毎回の確認は MC(`mailcheck.py`)と台帳(`inbox_ledger.db`)で(2026-11-01 統合)
+
+`triage.py` が期間で切って全件を見るのに対し、**MC は前回チェック以降の新着だけ**を見る。
+2026-11-01 から MC と台帳・毎時タスクは同じ仕組みで動く:
+
+```bash
+cd "C:/ClaudeCode/900.ClaudeCode/mail-search/scripts" && python mailcheck.py
+python mailcheck.py --days 3 / --since 2026-10-30   # 範囲を明示(次回の起点は進めない)
+python mailcheck.py --no-mark                       # 下読み(時刻も記録せず、台帳にも追記しない)
+```
+
+- MC は実行すると**台帳へも追記**し、各候補の先頭に `#番号 状態`(未対応/完了/不要)と
+  採点の理由(`採点: NN点 …`)を出す
+- 「次回はここから」は台帳の meta `last_scan` が正。毎時タスク `InboxLedgerHourly` と共通なので、
+  どちらで見ても取りこぼしが出ない。旧 `last_check.json` は読むだけ
+- 索引同期中(排他ロック)は「同期中のためスキップ(前回の索引で表示)」と出し、前回の索引で表示する
+
+### 台帳の操作
+
+```bash
+python inbox_ledger.py show                      # 優先順に表示
+python inbox_ledger.py done 12 [13 ...]          # 完了にする
+python inbox_ledger.py done 12 --related         # 同じアドレス・±3日の未対応を一覧(完了は 12 だけ)
+python inbox_ledger.py done 12 --related --yes   # 一覧したものも同時に完了
+python inbox_ledger.py skip 12                   # 対応不要
+python inbox_ledger.py reopen 12                 # 完了/不要を未対応に戻す
+```
+
+- 「同じ相手」は差出人**アドレス全体**で見る(ドメインではない。gmail.com 等で別人を巻き込まない)
+- 同じ相手から後続の完了通知(「完了」「受付ました」等)が来た件は印が付いて末尾に回る。**自動では閉じない**
+- 別件名での返信は「別件名で返信 MM/DD」として表示し −20 点。自動完了はしない
+
+### 毎時タスク(`inbox_hourly.py`・`InboxLedgerHourly`)
+
+- 06:30〜21:30 の毎時 30 分。走査→台帳追記→返信済みの自動完了→報告 HTML→点の高い新着だけ運用者本人の LINE WORKS へ
+- 索引の最後の同期成功(`meta.last_sync_at`)が **2 時間以上前**、または Thunderbird が動いていないと、
+  LINE WORKS へ **1 日 1 回**警告する(2 つは別の文言)
+- 06〜09 時台の回で 1 回、**3 日以上の未対応**の件数と上位 3 件を知らせる(06:30 に送れなくても当日中に再送)
+- 異常終了は `logs/inbox_hourly.log` に traceback、終了コード 1
+
+### 採点(`inbox_score.py`・ルールだけ、外部 AI には送らない)
+
+- 件名が「お知らせ/ご案内/発行通知/完了いたしました/掲載/規約改定/請求書送付」などの**お知らせ系**は、
+  フォーム・保護対象・優先通知でなければ「人の対応が必要」にしない(2026-11-01、JCB・ヤマト請求書等 5 例が
+  2 日以上残った対策)
+- **強い自動配信**(noreply / do-not-reply / newsletter 等)だけが「人の対応が必要」を打ち消す。
+  `info@` などの弱い語は減点のみ
+- 本文の「ください」単独は依頼にしない。「お願いします/ご回答/ご返信/いただけますか」等は依頼
+- Amazon「注文キャンセルリクエスト」は優先通知(差出人が返信不可でも人が見る)
+
 ## 返信済みの自動クローズ
 
 送信箱を突き合わせ、**同じ相手・同じ件名(Re: 等を剥がしたもの)へ、そのメールより後に
@@ -103,7 +154,7 @@ Claude が判断してよいのは**ここだけ**:
 | 状況 | 扱い |
 |---|---|
 | 返信した**後**に相手から追いメールが来た | **残す**(この仕組みで最も重要。落とすと急ぎの用件が消える) |
-| 同じ相手だが**別件名** | 残す。`ℹ この相手には MM/DD に返信あり（別件名）`と付記だけ |
+| 同じ相手だが**別件名** | 残す。`ℹ この相手には MM/DD に返信あり（別件名）`と付記だけ(台帳では「別件名で返信 MM/DD」の印と −20 点) |
 | 問い合わせフォーム経由 | **本文のアドレスで閉じる**（`webform.py` が抽出）。この系統だけ件名一致を求めない — 返信時に件名を付け直すのが普通なため |
 | `Date` が壊れて受信時刻が不明 / 件名が空 | 残す |
 | Cc だけで返信した | 残す(索引は `To` しか持っていない) |
@@ -130,7 +181,7 @@ Claude が判断してよいのは**ここだけ**:
 `tests/test_reply_state.py` がこの境界を固定している。3種のミューテーション
 (時系列ガード除去 / 件名なしガード除去 / アドレス一致だけで閉じる)で赤くなることを確認済み。
 
-## ホームページの問い合わせフォーム（2系統）
+## ホームページの問い合わせフォーム（3系統）
 
 **タイトルに `AskFromWebpage` が付くものはホームページからの問い合わせなので必ず見る。**
 ただし営業・スパムの主要な流入口でもある（2024-11以降447件中、独自ドメインが336件）。
@@ -138,10 +189,13 @@ Claude が判断してよいのは**ここだけ**:
 | 系統 | 差出人ヘッダ | 件名 |
 |---|---|---|
 | コーポレートサイト | `wordpress@seifukunofuji.co.jp` | `AskFromWebpage株式会社 制服のフジ "題名"` |
-| WEBショップ | `shopmaster@seifukunofuji.com` | `ホームページからのお問い合せ` / `【お問い合わせ】 <商品コード>` |
+| WEBショップ | `shopmaster@seifukunofuji.com` | `ホームページからのお問い合せ` / `【お問い合わせ】 <商品コード>`（本文は `[ お名前 ]` 形式のラベル） |
+| 新ホームページ（2026-10〜） | `制服のフジ ホームページ <jl4lvw@gmail.com>` | `【ホームページのお問い合わせ】<題名>`（本文は `■ 氏名` 形式のラベル） |
 
-**どちらも差出人が自社になる。** 本文に書かれた本人を `scripts/webform.py` が取り出し、
+**いずれも差出人が自社になる。** 本文に書かれた本人を `scripts/webform.py` が取り出し、
 候補一覧では `【HPフォーム】名前 <アドレス>` の形で表示する。ルールからも使える。
+本文の先頭 600 字で本人アドレス・題名・名前が揃わないときは全文を読み直す（2026-11-01。
+以前は 600 字で切れて保護も返信済み判定も効かないことがあった）。
 
 | ルールのキー | 中身 |
 |---|---|
@@ -260,15 +314,21 @@ API が落ちているときに「対応不要」側へ倒すと、補充漏れ�
 ## テスト
 
 ```bash
-cd "C:/ClaudeCode/900.ClaudeCode/mail-search" && python -m pytest tests/ -q
+cd "C:/ClaudeCode/900.ClaudeCode/mail-search" && python -m pytest tests -q --timeout=300
 ```
 
-`tests/test_triage.py` はルール評価(AND条件・大文字小文字・不正キー検出)と、
-本番 `exclude_rules.json` の妥当性を固定している。ルールを追加したらここを通すこと。
+2026-11-01 時点 299 件。`tests/test_triage.py` はルール評価(AND条件・大文字小文字・不正キー検出)と、
+本番 `exclude_rules.json` の妥当性を固定している。本番の除外ルール・返信の型・設定の整合
+(必ず残す実例・必ず落ちる実例)は `tests/test_config_integrity.py`。ルールを追加したらここを通すこと。
 
 ## 関連ファイル
 
 - `900.ClaudeCode/mail-search/scripts/triage.py` — 本体
+- `900.ClaudeCode/mail-search/scripts/mailcheck.py` — MC(前回以降の新着・台帳へ追記)
+- `900.ClaudeCode/mail-search/scripts/inbox_ledger.py` — 台帳(show/done/skip/reopen)
+- `900.ClaudeCode/mail-search/scripts/inbox_hourly.py` — 毎時タスク(鮮度警告・朝のダイジェスト)
+- `900.ClaudeCode/mail-search/scripts/inbox_score.py` — 採点(ルールだけ)
+- `900.ClaudeCode/mail-search/scripts/index_health.py` — 索引の鮮度・Thunderbird 稼働(MC と毎時の共通部品)
 - `900.ClaudeCode/mail-search/scripts/reply_state.py` — 返信済み判定
 - `900.ClaudeCode/mail-search/scripts/webform.py` — 問い合わせフォームの本文パーサ
 - `900.ClaudeCode/mail-search/scripts/stock_notices.py` — 在庫通知の集約(在庫切れ/売り越し)

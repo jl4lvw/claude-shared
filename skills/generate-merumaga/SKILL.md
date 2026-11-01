@@ -1,10 +1,12 @@
 ---
 name: generate-merumaga
-description: 楽天市場メールマガジンを自衛隊テーマで自動生成するスキル
-trigger: ユーザーが楽天メルマガの作成を依頼したとき、または /generate-merumaga を実行したとき
+description: 【旧手順・2026-11-01 退避】楽天メルマガの原稿作りは /rakuten-merumaga-flow(リンク検査→原稿→RMS 下書き登録)で行う。これは 2026-08 までの自動生成の手順で、記録として残す
+trigger: (退避・呼ばない。メルマガは /rakuten-merumaga-flow)
 ---
 
 # 楽天メルマガ生成スキル
+
+> **旧手順(2026-11-01 退避)**: いまのメルマガ作業は `/rakuten-merumaga-flow`(検査→原稿→RMS の下書き登録→予約受付メール→LINE の知らせ)と `/rakuten-merumaga-reserve`(配信予約)。この文書は 2026-08 までの自動生成の手順で、新しい作業には使わない。
 
 ## 概要
 楽天市場「制服のフジ」のメールマガジンHTMLを生成するスキル。
