@@ -102,9 +102,17 @@ def build_body(rs: list[Reservation], checked: bool = False, partial: bool = Fal
     return "\n".join(lines) + "\n"
 
 
+_BRACKET_HEAD = re.compile(r"^(?:\s*【[^】]*】)+")
+
+
 def _plain(text: str) -> str:
-    """画像の字体に無い文字(絵文字など BMP の外)を外す。"""
-    return "".join(ch for ch in text if ord(ch) <= 0xFFFF).strip()
+    """表に出す名前。画像の字体に無い文字(絵文字など BMP の外)を外し、頭の【…】(早期特典などの飾り)も外す
+    (2026-11-01 受付 #51: 4 商品とも「【早期特典★1部購入ごとに部隊ピ」で始まり、16 文字に切ると見分けられなかった)。
+    【…】だけの名前は、そのまま残す。"""
+    body = _BRACKET_HEAD.sub("", text)
+    if not body.strip():
+        body = text
+    return "".join(ch for ch in body if ord(ch) <= 0xFFFF).strip()
 
 
 def _link_rows(findings: list[dict], accept: frozenset[str] = frozenset()) -> tuple[list[list[str]], list[int], dict]:

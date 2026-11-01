@@ -76,7 +76,7 @@ python ".claude/skills/rakuten-merumaga-flow/scripts/build_draft_request.py" --t
 - 検査（違反は終了コード 2・保存しない）: HTML 100 KB 以下／件名 255 バイト以下（半角換算）／携帯用テキスト **5,000 文字以内**（改行を 2 文字と数えた値）。
 - 携帯用テキストが超過したら、止めて報告（超過量・URL が占める分・商品点数）。削り方は、ユーザーに相談する。
 - モバイルの件名は A が固定値（『【制服のフジ楽天市場店通信】』）を持つ。申請では指定しない。
-- 携帯用テキストとテキスト版は、**Downloads と NAS の両方**にも置く（テキスト成果物のルール。ファイル名 `merumaga_mobile_YYYYMMDD.txt`）。
+- 携帯用テキストとテキスト版は、**Downloads と NAS の両方**にも置く（テキスト成果物のルール。ファイル名 `merumaga_mobile_YYYYMMDD.txt`）。道具は置かない（手で写す）。NAS（`\\192.168.1.50\共有スペース\寺下\999.一時ファイル`）へは Python の `write_text` が失敗することがあるので、Git Bash の `cp` で写す（2026-11-01 実例）。
 
 ### ④ 申請を出す
 
@@ -86,7 +86,7 @@ cd C:\ClaudeCode\900.ClaudeCode\rakuten_login
 python -m mail_draft.cli enqueue "..\000.tmp\draft_request_<日時>.json"
 ```
 - あとは見張り役が承認の画面へ承認を求め、承認されると実行する。結果は `python -m mail_draft.cli show <id>` が `done` / `failed` / `needs_human` になるまで、裏で待つ（30 秒間隔のループを `run_in_background`）。
-- **出し直すとき**: 同じ JSON は既存の申請（失敗のまま）を返すだけ。種類を絞る（`--kinds mobile_text` など。できた方を入れると二重になる）か、`source` を変えて新しい申請にする。
+- **出し直すとき**: 同じ JSON は既存の申請（失敗のまま）を返すだけ。種類を絞る（`build_draft_request.py --kinds mobile_text` で申請 JSON を作り直す。`mail_draft.cli enqueue` に `--kinds` は無い。できた方を入れると二重になる）か、`source` を変えて新しい申請にする。
 
 **TK で作業しているとき**: A へ relay で送る。
 ```
@@ -126,7 +126,7 @@ python ".claude/skills/rakuten-merumaga-flow/scripts/reserve_notice.py" wait --i
 1. **確認した観点**（観点｜結果）… PC 用・携帯用の配信予約（日時・人数）／件名／商品リンクが正しい（n 点）／品切れでない（n 点）／そのほかのリンクが開ける（m 本）。OK は緑、要確認は赤い行
 2. **リンクごとの確認**（No｜リンク｜リンク先（G番号）｜在庫｜結果）… 商品は 1 行ずつ、問題のあったリンクも 1 行ずつ、OK のそのほかのリンクは「そのほかのリンク N 本」の 1 行にまとめる（1 枚に収めるため 14 行まで）
 - ②の検査結果を `--check` で渡す（渡さないと①の表だけ）。人が確かめて問題なしとした警告（案内文と名前が合わないだけ等）は `--accept <URL>` で「OK(確認済)」にする。**確かめていない警告に `--accept` を付けない**。
-- 絵文字は画像の字体に無いので、名前から自動で外す。
+- 絵文字は画像の字体に無いので、名前から自動で外す。商品名の頭の【早期特典★…】のような括弧書きも外してから 16 文字に切る（2026-11-01: 4 商品とも「【早期特典★1部購入ごとに部隊ピ」になり見分けられず、spec を手で直した）。
 - 種類ごとに配信時刻が違うときは、本文に種類ごとの時刻を並べる。
 - 画像は `spec.json` から `make_status_image.py` で作る → `line_notify.py publish` → `request-approval --group 楽天メルマガ配信 --purpose "<日付>の楽天メルマガの配信予約が済んだことを担当者に知らせるため"` → `wait-approval`（裏で）→ 承認後に `send --send`。
 - 19:00〜翌 9:00 は道具がキューに積む（終了コード 20）。その場合も「翌朝 9:00 に送ります」と書いてスキルは完了扱い。

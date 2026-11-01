@@ -34,10 +34,14 @@ description: 楽天LINE(LINE 公式アカウント「制服のフジ楽天市場
 (`090.LINE業務指示エージェント/data/line_agent.db` の `line_messages`。グループ ID は会話に書かない。`received_at` はミリ秒)。
 配信希望の日時(例「本日19時30分配信希望」)を控える。【Yahoo! LINE】は別アカウントなので対象外。
 
-### ② 下書きを読む(Claude in Chrome・読むだけ)
-`https://manager.line.biz/account/@072pxwvf/broadcast` →「下書き」→ 依頼の時刻ごろに更新された行(更新者は詳細画面の「最終更新者」)。
-詳細画面 `…/broadcast/<ID>` で ステータス(下書き)・配信日時・ターゲット を、編集画面 `…/broadcast/edit/<ID>` で本文(テキストの吹き出し)を読む。**編集画面では何も押さない**(開いただけでは保存されない)。
-- 本文の先頭(text_head)は、**絵文字を含まない 10 文字以上**を選ぶ(絵文字は画像で表示され、照合で見つからないことがある)。
+### ② 下書きを読む(台本・読むだけ)
+```
+cd C:\ClaudeCode\900.ClaudeCode
+python ..\.claude\skills\rakuten-line-reserve\scripts\list_drafts.py
+```
+専用ブラウザ(ヘッドレス)で、下書き・配信予約中・配信済みの一覧を ID・配信日時・届いた人数・吹き出しの種類つきで出す。依頼の時刻ごろに更新された下書きを選ぶ。専用ブラウザのログインが切れていたら `python -m lineoa_reserve.cli login` を裏で起動し、運用者にログインを頼む(15 分以内)。
+**Claude in Chrome は使わない**(2026-11-01 整理。許可ダイアログを出さない決まり。11/1 受付 #51 もこの台本だけで進んだ)。画面の細部をどうしても見たいときは運用者に断ってから。編集画面では何も押さない(「下書き保存」を押すと予約が下書きに戻る)。
+- 本文の先頭(text_head)は、**お知らせの文(カードの altText。編集画面では「197/500」の欄)**から、**絵文字を含まない 10 文字以上**を選ぶ。吹き出しのテキスト(「本日20時～スタート!!…」)やカードの文字を使うと照合で見つからないことがある(2026-11-01 受付 #51 で不一致 → altText で通った)。altText は `cli cards` が `--out` に保存する配信データにある。
 - 配信日時が依頼の希望と違う・空(今すぐ配信)なら、止めて担当者に確認(直さない)。
 - 今月の無料メッセージ数(一覧の上)も控える。友だち数(約 406 人)を足して 5,000 を超えるなら報告する。
 
@@ -72,7 +76,7 @@ python -m lineoa_reserve.cli enqueue <ID> --send-at "YYYY-MM-DD HH:MM" --text-he
 ### ⑤ 結果の確認
 - `ok`: 押した後に詳細画面を読み直し、ステータスに「予約」が入り、配信日時が申請どおり。`shot` に画面の写し。
 - `failed`: `detail` と `guard`(止めた・通した通信)をそのまま報告。**初回の実行で、画面の読み込みに必要な書き込みを止めて失敗した可能性がある**ときは、`guard` の block を見て運用者に相談する(勝手に許可を広げない)。
-- 実行の後、Chrome で「配信予約中」の一覧も読んで、その ID・日時があることを確かめる(読むだけ)。
+- 実行の後、`scripts/list_drafts.py`(②と同じ)の「配信予約中」に、その ID・日時で載っていることを読んで確かめる(Chrome は使わない)。
 - **ログイン**(初回・切れたとき): `python -m lineoa_reserve.cli login` で専用ブラウザ(`a_browser_data\.profile_lineoa`)が開く。運用者が LINE ヤフー Business ID でログインし、アカウントリストが出たら自動で閉じる(15 分待つ)。ふだんの Chrome のログインとは別。
 
 ### ⑥ LINE で知らせる(`/line-notify` の手順 1〜4)
@@ -95,15 +99,19 @@ python -m lineoa_reserve.cli enqueue <ID> --send-at "YYYY-MM-DD HH:MM" --text-he
 
 ## 2026-10-26 受付 #32 で分かったこと(日時が空の下書き・画像だけの下書き・日時の変更)
 
-- **090 が断った依頼もこのスキルで受ける。** 090 は「楽天LINEを確認して配信して」を一斉配信として断って終わる(受付 #32「未完終了」)。運用者に「対応して」と言われたら、ここの手順で予約まで進める。
-- **一覧は台本で読める**(Chrome のログインが切れていても、専用ブラウザで読める): `python ..\.claude\skills\rakuten-line-reserve\scripts\list_drafts.py`(900.ClaudeCode で)。下書き・配信予約中・配信済みの最新 1 件を、ID・配信日時・届いた人数・吹き出しの種類つきで出す。専用ブラウザもログインが切れていたら `cli login` を裏で起動し、運用者にログインを頼む。
+- **090 との役割分担(2026-10-30〜・受付 #50 で変更)**: LINE の配信予約の依頼は **090 が自動で進める**(`lineoa_reserve.task090 inspect` → 承認の画面で受付 1 件につき 1 回の承認 → `task090 run`)。AI には回さない(以前は「一斉配信」とみなして断っていた #30・#32・#35・#50。その頃の「090 が断った依頼もこのスキルで受ける」は古い)。**このスキルを Claude が手で進めるのは次のとき**:
+  - 受付が **メルマガと LINE の混在**(例 #51「11/1 配信のメルマガと楽天LINE」)。090 の判定(`line_reserve.detect`)は「メルマガ」を含む依頼を外すので、受付は **要対応**で止まる。運用者に「対応して」と言われたら、メルマガは `/rakuten-merumaga-reserve`、LINE はここの手順で進める
+  - 090 が要対応で止まった(照合違い・「楽天」・リンク切れ・ログイン切れ)あと、運用者が直接頼んだ
+  - 終わったら **090 の受付を対応済みにする**(放置すると要対応のまま残る。#51 の型):
+    `python` で `090.LINE業務指示エージェント` を `sys.path` に足し、`from api import db, line_tasks` → `with db.write_tx() as conn: line_tasks.operator_set_status(conn, <受付番号>, "manual", "<何をしたか。承認コード・配信日時・ID・確認した観点・気づいた点>", actor="claude")`。LINE WORKS へ知らせが出る
+- **一覧の台本は ② のとおり**(`scripts/list_drafts.py`。2026-10-26 追加)。
 - **配信日時が空(今すぐ配信)の下書き**: 止めて運用者に聞く。候補の時刻は**これまでの配信時刻から Claude が出す**(10 月は 18:30 が多い)。運用者が「Claude が入れる」を選んだときだけ、`scripts/set_schedule.py <ID> YYYY/MM/DD HH:MM` で入れて確かめ(保存しない)、`--save` で「下書き保存」だけ押す。台本は「予約・すべての友だち・日時・UTC +9:00」が画面で合わないと保存しない。承認は台帳(ctx)に `OK` で残す。
 - **予約の日時を変えるとき**: 配信予約中の配信に `set_schedule.py --save` を使うと下書きに戻る(=前の予約は消える)。そのあと ③照合 → ④申請(目的の文を変えて新しい申請にする)→ 承認でやり直す。古い日時の知らせを申請済みなら、承認の画面で中止してもらい、文と画像を作り直して申請し直す。
 - **カードでなく画像 1 枚(RICH・imagemap)の下書き**: `cli cards` は空を返す。リンクは配信のデータの `balloons[].messageObject.actions[].linkUri` にある。`cards.json` を `[{"no":1,"texts":["<altText>"],"uris":["<リンク>"]}]` の形で書き、`cards_tag.txt` を作って `check_mail_links.py` に通す。照合の本文の先頭(text_head)は、その `altText`(例「東京・神楽坂「MADE IN KURE」出店のお知らせ」)でよかった。
 - 知らせの表は、カードが無いときは「商品リンク(0点)」の行を消し、「画像のリンク先(○○)が開ける」にする。日時を Claude が入れたときは、本文にその理由を 1 行書く(「下書きに配信日時が入っていなかったため、本日 18:30 で予約しました。」)。実例: `900.ClaudeCode/000.tmp/lineoa_20261026/report/`。
 
 ## 道具
-- `900.ClaudeCode/lineoa_reserve/`(config・models(照合)・guard(通信の見張り)・page(画面操作)・cli)。テスト `lineoa_reserve/tests`。
+- `900.ClaudeCode/lineoa_reserve/`(config・models(照合)・guard(通信の見張り)・page(画面操作)・cli・report(知らせの本文と画像の仕様。楽天・Yahoo!店共通・`--accept`)・yahoo_check(Yahoo!店のカード検査)・task090(090 から呼ばれる inspect / run・2026-10-30))。テスト `lineoa_reserve/tests`。
 - `scripts/list_drafts.py`(一覧を読むだけ)・`scripts/set_schedule.py`(日時を入れて下書き保存。運用者の指示があるときだけ)。2026-10-26 追加。
 - 見張り役の対象 `lineoa`(`a_browser_watch/targets.py` の `_lineoa_summary`)。対象を足したら見張り役の再起動が要る。
 

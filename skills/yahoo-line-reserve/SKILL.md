@@ -30,9 +30,14 @@ description: Yahoo!店 LINE(LINE 公式アカウント「制服のフジ Yahoo!�
 ### ① 依頼を読む
 090 の受信記録を**読み取り専用**で開き、「楽天メルマガ配信」グループの直近の【Yahoo! LINE】の依頼を探す(`090.LINE業務指示エージェント/data/line_agent.db` の `line_messages`。グループ ID は会話に書かない)。配信希望の日時を控える。
 
-### ② 下書きを読む(Claude in Chrome・読むだけ)
-`https://manager.line.biz/account/@718yuycx/broadcast` →「下書き」タブ → 依頼の時刻ごろに更新された行。詳細画面 `…/broadcast/<ID>` で配信日時・ターゲット、一覧の上で友だち数と今月の無料メッセージ数(スタンダード 30,000 通)を控える。
-- 本文の先頭(text_head)は、編集画面の「お知らせの文」(カードの altText。例「＼新商品／護衛艦ちょうかい＆水中処分隊Tシャツ・…」)から**絵文字を含まない 10 文字以上**。
+### ② 下書きを読む(台本・読むだけ)
+```
+cd C:\ClaudeCode\900.ClaudeCode
+python ..\.claude\skills\rakuten-line-reserve\scripts\list_drafts.py --account @718yuycx
+```
+専用ブラウザ(ヘッドレス・楽天と共通のログイン)で、下書き・配信予約中・配信済みの一覧を ID・配信日時・届いた人数・吹き出しの種類つきで出す。依頼の時刻ごろに更新された下書きを選ぶ。ログインが切れていたら `python -m lineoa_reserve.cli login` を裏で起動し、運用者にログインを頼む(15 分以内)。
+**Claude in Chrome は使わない**(2026-11-01 整理。許可ダイアログを出さない決まり。10/31 の「Yahoo!店の依頼は無いか」もこの台本で確かめた: 下書き 0 件・予約中 1 件)。友だち数・今月の無料メッセージ数(スタンダード 30,000 通)は、一覧の出力に無ければ報告では省く。
+- 本文の先頭(text_head)は、「お知らせの文」(カードの altText。例「＼新商品／護衛艦ちょうかい＆水中処分隊Tシャツ・…」)から**絵文字を含まない 10 文字以上**。altText は `cli cards` が `--out` に保存する配信データにある。カードの文字や吹き出しのテキストを使うと照合で見つからないことがある(11/1 楽天で実例)。
 
 ### ②' カードの検査(必須)
 ```
@@ -55,17 +60,23 @@ python -m lineoa_reserve.cli show <申請番号>
 ```
 - **`--checks-file` は必須**(2026-10-28 運用者指摘: 申請 462 が「どういった観点でチェックしたのかの報告が必要」で差し戻された)。確認した観点と結果を 1 行 1 観点で書いたファイル(UTF-8・20 行まで)を渡すと、承認の画面に「■ 確認した観点(検査の結果)」として出る。書く観点: 配信日時(照合の結果)・配信先・中身(吹き出しの数と種類)・リンク先(ページ名・開けるか)・品切れ・「楽天」の文字の有無(Yahoo!店)・予約後に「配信予約中」の一覧で確かめること。カード型でない下書き(画像にリンクを付けた形など)は `cards` がリンクを拾えないので、配信データを読んでリンクを数え、そう書く。
 - 結果は `show` が `ok` / `failed` / `mismatch` / `needs_human` / `not_approved` になるまで裏で待つ(30 秒間隔のループを `run_in_background`)。
-- `ok` のあと、Chrome で `…/@718yuycx/broadcast` の「配信予約中」に、その ID・日時で載っていることを読んで確かめる(読むだけ)。
+- `ok` のあと、`list_drafts.py --account @718yuycx`(②と同じ)の「配信予約中」に、その ID・日時で載っていることを読んで確かめる(Chrome は使わない)。
 
 ### ⑥ LINE で知らせる
 ```
-python -m lineoa_reserve.report --store yahoo --cards "000.tmp\lineoa_yahoo_<日付>\cards.json" --check "000.tmp\lineoa_yahoo_<日付>\cards_check.json" --send-at "YYYY-MM-DD HH:MM" --friends <友だち数> --reserved --out "000.tmp\lineoa_yahoo_<日付>\report"
+python -m lineoa_reserve.report --store yahoo --cards "000.tmp\lineoa_yahoo_<日付>\cards.json" --check "000.tmp\lineoa_yahoo_<日付>\cards_check.json" --send-at "YYYY-MM-DD HH:MM" --friends <友だち数> --reserved --out "000.tmp\lineoa_yahoo_<日付>\report" [--accept <確かめて問題なしとした警告の URL> ...]
 ```
+- `--accept <URL>` は、人が確かめて問題なしとした警告(案内文と名前が合わないだけ等)を「OK(確認済)」にする。**確かめていない警告に付けない**。警告が多いと「気づいた点」が増えて画像が 1 ページに収まらず道具が止まるので、確かめた分だけ `--accept` にして行を減らす(11/1 楽天の報告で実例)。
 - 本文(`body.txt`)は短く「詳しくは画像をご確認ください」。画像(`spec.json` → `make_status_image.py`)は ① 確認した観点(配信日時・配信先・商品リンク・品切れ・そのほかのリンク・**「楽天」の文字が無い**・予約中の一覧)② カードごとの確認(No・カード・リンク先(G番号)・在庫・結果)③ 気づいた点(一部品切れの種類など)。楽天の `/rakuten-line-reserve` と同じ形(楽天は `--store rakuten` で、「楽天」の行は出ない)。
 - `line_notify.py publish` → `request-approval --group 楽天メルマガ配信 --purpose "<日付>のYahoo!店LINEの配信予約と確認結果を担当者に知らせるため"` → `wait-approval`(裏で)→ `send --send`。19:00〜翌 9:00 は道具がキューに積む(終了コード 20)= 翌朝 9:00 に送る。
 
+## 090 との役割分担(2026-10-30〜)
+- 【Yahoo! LINE】の配信予約の依頼は **090 が自動で進める**(`lineoa_reserve.task090 inspect` → 承認の画面で受付 1 件につき 1 回の承認 → `task090 run` → 予約中の確認)。AI には回さない(以前は「一斉配信」とみなして断っていた)。
+- Claude がこのスキルを手で進めるのは、受付が **メルマガと LINE の混在**(090 の判定は「メルマガ」を含む依頼を外し、要対応で止まる)か、090 が要対応で止まった(照合違い・「楽天」・リンク切れ・ログイン切れ)あとに運用者が直接頼んだとき。
+- 手で終えたら **090 の受付を対応済みにする**: `line_tasks.operator_set_status(conn, <受付番号>, "manual", "<何をしたか>", actor="claude")`(`db.write_tx()` の中で。手順の詳細は `/rakuten-line-reserve` の同じ節)。
+
 ## 道具
-- `900.ClaudeCode/lineoa_reserve/`: cli(login / check / enqueue / run / show / cards)・yahoo_check(Yahoo! のカード検査)・report(知らせの本文と画像の仕様・楽天と共通)。テスト `lineoa_reserve/tests`。
+- `900.ClaudeCode/lineoa_reserve/`: cli(login / check / enqueue / run / show / cards)・yahoo_check(Yahoo! のカード検査)・report(知らせの本文と画像の仕様・楽天と共通・`--accept`)・task090(090 から呼ばれる inspect / run)。一覧は `.claude/skills/rakuten-line-reserve/scripts/list_drafts.py --account @718yuycx`。テスト `lineoa_reserve/tests`。
 - 見張り役の対象 `lineoa`(楽天・Yahoo!店共通。`a_browser_watch/targets.py` の `LINEOA_ACCOUNTS`)。アカウントを足したら見張り役の再起動が要る。
 
 ## 観察記録(2026-10-24)
