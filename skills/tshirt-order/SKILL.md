@@ -1477,7 +1477,7 @@ xlsx, info = oo.generate_order_xlsx(
 # CAB（C.A.B. Web）への素材注文（端末 A の cab_order・2026-10-20 以降）
 
 パーカー等（521xxx）の素材は **`C:\ClaudeCode\900.ClaudeCode\cab_order\`** で注文する（README.md・docs/cab_screens.md）。
-承認は見張り役（a_browser_watch）経由の LINE WORKS「実行」1 回で、照合がすべて合えば**注文確定まで進む**。
+承認は見張り役（a_browser_watch）が承認の画面へ出し、運用者が承認の画面で 1 回承認すると、照合がすべて合えば**注文確定まで進む**（LINE WORKS は知らせ・リンク・中止だけ。2026-10-22〜）。承認を頼むときは、watch.log の `cab id=N 承認を依頼 code=XXXXXX` のコードで、承認を直接開くリンク `https://approve.sfuji.f5.si/approve/#ap-XXXXXX` を書く（チャットで承認を求めない）。
 Claude はログインも確定ボタンも押さない（申請を積んで結果を読むだけ）。初回実績: G1004 150 枚 → 受注No.72291189。
 
 1. 色・サイズ・数量を確認表で承認 → CAB CSV を作る（`cab_csv/YYYYMMDD_CAB発注_<G番号><件名>.csv`。cp932・CRLF・
