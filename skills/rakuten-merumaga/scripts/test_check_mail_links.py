@@ -152,3 +152,18 @@ def test_no_item_links_is_not_an_error():
     html = '<p>店</p><a href="https://www.rakuten.ne.jp/gold/x/"><img></a>'
     f, s = c.run(html, rms=FakeRms({}, {}), get=lambda u, timeout=30.0: (200, u, "<title>店</title>"))
     assert s["items"] == 0 and not s["all_items_unsellable"] and not msgs(f, "error")
+
+
+def test_image_link_is_not_compared_with_previous_sentence():
+    # 11/4 受付 #52: バナー画像のリンクの直前の文「お買い求めくださいね」を説明とみなして警告していた
+    html = ('<p>お得なこの機会にぜひお買い求めくださいね</p>'
+            '<a href="https://www.rakuten.co.jp/x/contents/2027calendar/"><img src="b.jpg" width="850" /></a>')
+    f, _ = c.run(html, rms=FakeRms({}, {}), get=lambda u, timeout=30.0: (200, u, "<title>2027年カレンダー</title>"))
+    assert not msgs(f, "warn") and f[0].name == "(バナー画像)"
+
+
+def test_text_link_is_still_compared():
+    html = '<a href="https://www.rakuten.co.jp/x/a/">呉海自カレー</a>'
+    f, _ = c.run(html, rms=FakeRms({}, {}), get=lambda u, timeout=30.0: (200, u, "<title>安全靴</title>"))
+    assert any("合いません" in x for x in msgs(f, "warn"))
+    assert c.image_links('<a href="https://x/?a=1&amp;b=2"><img alt="特集"></a>') == {"https://x/?a=1&b=2": "特集"}

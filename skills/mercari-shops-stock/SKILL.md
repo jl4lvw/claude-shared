@@ -4,7 +4,7 @@ description: メルカリShops(制服のフジ)の在庫を、基準の在庫(E�
 trigger: 「メルカリの在庫を更新」「メルカリShopsの在庫をEストアにそろえて」「メルカリ在庫同期」「/mercari-shops-stock」。メルカリShopsの在庫を変える話が出たとき
 ---
 
-<!-- SKILL_VERSION: 2026-10-23_1700 -->
+<!-- SKILL_VERSION: 2026-11-04_0955 -->
 
 # mercari-shops-stock — メルカリShops 在庫同期
 
@@ -59,7 +59,7 @@ cd "C:/ClaudeCode/029.メルカリショップス登録" && python scripts/stock
 5. 「一括で変更する」→ ダイアログの「一括で変更する」を押す。「商品を一括変更しました」の表示で成功。**押したあとは取り消せない**(戻すときは巻き戻し用CSVを同じ手順でアップロードする)。
 
 ### 6. 照合
-手順2をもう一度行い(控える時刻も取り直す)、取り直したCSVを作業フォルダへ `--name product_after.csv` で写す。
+**一括変更は裏で順に反映され、約2分かかる**(2026-11-04: 491商品で、直後の取り直しは254/885件だけ目標・2分半後は885/885)。押してから2分ほど待ってから、手順2をもう一度行い(控える時刻も取り直す)、取り直したCSVを作業フォルダへ `--name product_after.csv` で写す。
 ```bash
 cd "C:/ClaudeCode/029.メルカリショップス登録" && python scripts/stock_sync_cli.py verify --store fuji --before "$RUN/product_before.csv" --after "$RUN/product_after.csv" --update-csv "$RUN/stock_update_日付.csv"
 ```

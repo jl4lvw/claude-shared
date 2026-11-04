@@ -105,3 +105,14 @@ def test_item_link_without_trailing_slash_and_partial_remarks():
     assert spec["sections"][2]["lines"] == ["・G1997(フライトジャケット): 在庫 0 の種類 BK-LL、BK-S、BK-3L"]
     assert rn.has_partial(f) and not rn.has_partial(f, frozenset({f[0]["url"]}))
     assert "一部品切れの商品があります。" in rn.build_body([rn.parse(SAMPLE)], True, True)
+
+
+def test_item_code_other_than_g_number_is_counted_as_item():
+    # 11/4 受付 #52: U0151(身分証ケース)が商品として数えられず、「そのほかのリンク」に入った
+    f = [{"level": "ok", "url": "https://item.rakuten.co.jp/seifukunofuji/U0151", "name": "身分証ケース 2つ折り",
+          "message": "OK(在庫 計97・1バリエーション・2,420円〜）"},
+         {"level": "ok", "url": "https://item.rakuten.co.jp/seifukunofuji/c/0000000339/", "name": "", "message": "到達OK"}]
+    spec = rn.build_spec([rn.parse(SAMPLE)], f)
+    view, links = dict(spec["sections"][0]["grid"]["rows"]), spec["sections"][1]["grid"]["rows"]
+    assert view["商品リンクが正しい商品につながる(1点)"] == "OK" and view["そのほかのリンクが開ける(1本)"] == "OK"
+    assert links[0] == ["1", "身分証ケース 2つ折り", "U0151", "97", "OK"]

@@ -17,6 +17,7 @@ RMS の認証情報は 040.RakutenOkaimonoMarathon\\.env(環境変数 RMS_API_DI
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import re
@@ -51,6 +52,12 @@ class Link:
     name: str  # URL の直前の行(商品名・リンク名)
     context: list[str] = field(default_factory=list)  # 直前の数行
     price: int | None = None  # メルマガ上の価格(円)
+    image: bool = False  # 画像だけのリンク(バナー)。直前の行は説明ではないので照合しない
+
+    @property
+    def label(self) -> str:
+        """照合に使うリンクの説明。画像だけのリンクは説明が無い(空)。"""
+        return "" if self.image else self.name
 
     @property
     def manage_number(self) -> str | None:
@@ -58,8 +65,30 @@ class Link:
         return mt.group(1).lower() if mt else None
 
 
+ANCHOR_RE = re.compile(r"<a\b[^>]*?href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a\s*>", re.I | re.S)
+ALT_RE = re.compile(r"<img\b[^>]*?alt=[\"']([^\"']*)[\"']", re.I)
+
+
+def image_links(source: str) -> dict[str, str]:
+    """画像だけのリンク(文字が無く <img> を含む)の URL → 画像の alt(商品以外のバナーに使う)。同じ URL に文字のリンクもあれば除く。
+    直前の段落の文(「お買い求めくださいね」など)を説明とみなして食い違いの警告を出さないため(2026-11-04 受付 #52)。"""
+    found: dict[str, str] = {}
+    texted: set[str] = set()
+    for href, inner in ANCHOR_RE.findall(source):
+        url = html.unescape(href).strip()
+        text = re.sub(r"<[^>]+>|&nbsp;|\s", "", inner)
+        if text or not re.search(r"<img\b", inner, re.I):
+            texted.add(url)
+        else:
+            alt = ALT_RE.search(inner)
+            found.setdefault(url, alt.group(1).strip() if alt else "")
+    return {u: a for u, a in found.items() if u not in texted}
+
+
 def extract_links(html: str) -> list[Link]:
-    """変換済みの行から、URL ごとに「直前の行(名前)」と価格を取り出す。同じ URL は 1 つにまとめる。"""
+    """変換済みの行から、URL ごとに「直前の行(名前)」と価格を取り出す。同じ URL は 1 つにまとめる。
+    画像だけのリンクは、名前を画像の alt(無ければ「(バナー画像)」)にし、説明との照合をしない。"""
+    images = image_links(html)
     lines = m.html_to_lines(html)
     links: dict[str, Link] = {}
     for i, ln in enumerate(lines):
@@ -78,7 +107,11 @@ def extract_links(html: str) -> list[Link]:
                 price = int(pm.group(1).replace(",", ""))
             else:
                 names.append(b)
-        if ln not in links:
+        if ln in links:
+            continue
+        if ln in images and not ITEM_RE.match(ln):  # 商品の写真のリンクは、直前の行が商品名なので従来どおり照合する
+            links[ln] = Link(url=ln, name=images[ln] or "(バナー画像)", context=block, image=True)
+        else:
             links[ln] = Link(url=ln, name=names[-1] if names else "", context=block, price=price)
     return list(links.values())
 
@@ -165,7 +198,7 @@ def check_web_link(link: Link, get=fetch) -> list[Finding]:
         elif not f:
             f.append(Finding("ok", "info", link.url, link.name, f"検索ページに到達({title[:40]})"))
     else:
-        label = re.sub(r"^[＞>\s]+", "", link.name)
+        label = re.sub(r"^[＞>\s]+", "", link.label)
         if label and not GENERIC_LABEL.search(label) and name_score(label, title) < NAME_NG and "http" not in label:
             f.append(Finding("warn", "name", link.url, link.name, f"リンクの説明「{label[:30]}」と、ページ名「{title[:40]}」が合いません"))
         elif not f:
@@ -213,7 +246,7 @@ def check_item(link: Link, item: dict | None, stock: dict[tuple[str, str], int])
     variants: dict[str, dict] = item.get("variants") or {}
     visible = {vid: v for vid, v in variants.items() if not v.get("hidden")}
     title = item.get("title") or ""
-    sc = name_score(link.name, title)
+    sc = name_score(link.label, title)
     if sc < NAME_NG:
         f.append(Finding("warn", "name", link.url, link.name, f"説明と違う商品の疑い(一致度 {sc:.0%}): RMS 上の商品名「{title[:36]}」"))
     elif sc < NAME_OK:

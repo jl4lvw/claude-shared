@@ -79,7 +79,7 @@ def when(send_at: str) -> str:
 
 
 # 末尾の「/」が無い商品リンクもある(10/26 受付 30 番の g1997・g1892 が「リンク・要確認」になった)
-ITEM_RE = re.compile(r"item\.rakuten\.co\.jp/seifukunofuji/(g\d{4}[a-z]?)(?=[/?#]|$)", re.I)
+ITEM_RE = re.compile(r"item\.rakuten\.co\.jp/seifukunofuji/([a-z]\d{4}[a-z]?)(?=[/?#]|$)", re.I)
 PARTIAL_RE = re.compile(r"一部欠品[^(]*\(([^)]*)\)")
 STOCK_RE = re.compile(r"在庫 計(\d+)")
 MAX_LINK_ROWS = 14  # 1 枚に収める(A4 縦)ための上限。超えた分は「ほか N 本」にまとめる

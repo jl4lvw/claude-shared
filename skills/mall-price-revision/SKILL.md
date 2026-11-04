@@ -148,3 +148,15 @@ python .claude/skills/line-notify/make_status_image.py <spec.json> <out.png>    
 
 - **検証済み**: 10/20 の実データでの一巡。`mall_price_plan.py` は更新後の状態で「全て済」と判定することを確認。純粋関数は pytest(`023.商品マスタDB/tests/test_mall_price_plan.py`)
 - **未検証**: ①Yahoo! の子コードに個別価格がある商品(`subcode_price` 方式・事前チェックで止まる)②セール価格が設定された商品(止まる)③`--allow-hidden` を楽天側にも必要とする商品 ④Amazon・メルカリなど3モール以外の価格(対象外)⑤Eストア登録済みで variation-attributes の価格が行ごとに違う商品(plan は `row_prices` を持つが、グルーピングは基本価格基準)
+
+## 価格の最終確認(必須・2026-11-04 追加)
+
+Eストアの価格は、お客様に見える**税込価格そのもの**(税抜ではない)。税込9,999円のつもりで 9,090円を入れる事故が繰り返されたため、
+**登録・価格変更の最後に必ず次を実行し、OK を見てから完了と報告する**(NG なら直して再実行):
+
+```
+python C:/ClaudeCode/023.商品マスタDB/tools/estore_price_check.py <SKU> --expect-incl-tax <お客様に見せる税込価格>
+```
+
+- 運用者が言った金額を、そのまま `--expect-incl-tax` に入れる(÷1.1 も ×1.1 もしない)。「税込か税抜か」が曖昧なときは、書く前に聞く
+- 楽天・Yahoo! はこの 1.1 倍(別の価格)。Eストアにだけ登録する商品は 1.1 倍を作らない
