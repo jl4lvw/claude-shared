@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>持ち戻し依頼 指示書</title>
+<style>
+  @page { size: A4; margin: 0; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #fff; color: #1d1d1b; }
+  body { font: 14px/1.6 "Yu Gothic UI", "Meiryo", sans-serif; }
+  .page { width: 210mm; height: 296mm; padding: 11mm 15mm; overflow: hidden; }
+  h1 { font-size: 26px; margin: 0; letter-spacing: .12em; }
+  .head { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 3px solid #1d1d1b; padding-bottom: 8px; }
+  .head .meta { font-size: 12px; color: #5d5a53; text-align: right; line-height: 1.5; }
+  .lead { margin: 10px 0 4px; font-size: 15px; }
+  .lead b, .warn { color: #b3261e; }
+  h2 { font-size: 15px; margin: 14px 0 5px; padding: 3px 10px; background: #1d1d1b; color: #fff; letter-spacing: .08em; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { border: 1px solid #1d1d1b; padding: 5px 10px; vertical-align: top; text-align: left; }
+  th { width: 150px; background: #f4f1ea; font-weight: 600; white-space: nowrap; }
+  .big { font-size: 20px; font-weight: 700; letter-spacing: .05em; }
+  .say { border: 2px solid #1d1d1b; padding: 10px 14px; background: #f4f1ea; line-height: 1.8; }
+  .rec th { width: 120px; }
+  .box { height: 28px; }
+  .foot { margin-top: 10px; font-size: 11px; color: #5d5a53; display: flex; justify-content: space-between; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="head">
+    <h1>持ち戻し依頼 指示書</h1>
+    <div class="meta">作成日 {{created}}<br>{{company}} 発送担当</div>
+  </div>
+
+  <p class="lead">下記のゆうパックは、お届け先のお客様が<b>受取を拒否</b>されました(ご不在のため持ち戻り)。<br>
+  <b>{{request_office}}へ電話</b>し、配達を中止して<b>当社へ返送</b>してもらってください。</p>
+
+  <h2>1. 対象のゆうパック</h2>
+  <table>
+    <tr><th>お問い合わせ番号</th><td class="big">{{inquiry_no}}</td></tr>
+    <tr><th>注文番号</th><td>{{order_no}}</td></tr>
+    <tr><th>差出日</th><td>{{ship_date}}</td></tr>
+    <tr><th>お届け先</th><td>{{to_name}} 様<br>{{to_addr}}</td></tr>
+    <tr><th>商品種別</th><td>{{product_type}}</td></tr>
+    <tr><th>現在の状況</th><td>{{status}}</td></tr>
+  </table>
+
+  <h2>2. 電話をかける先</h2>
+  <table>
+    <tr><th>電話する先</th><td><span class="big">{{request_office}}(差し出した局)</span><br><span class="big">TEL {{request_tel}}</span></td></tr>
+    <tr><th>荷物がある局</th><td>{{holding_office}}{{holding_note}}</td></tr>
+    <tr><th>返送先(当社)</th><td>{{return_addr}}<br>TEL {{company_tel}}</td></tr>
+  </table>
+
+  <h2>3. 電話で伝えること(読み上げ用)</h2>
+  <div class="say">
+    「{{company}}です。{{ship_date_short}}に差し出したゆうパックの件でお電話しました。
+    お問い合わせ番号は {{inquiry_no}} です。お届け先のお客様が受取を拒否されました。
+    <b>配達を中止してください。中止して、当社へ返送してください。</b>」
+  </div>
+{{record_block}}
+  <div class="foot"><span>※お客様の個人情報を含みます。用が済んだら適切に処分してください。</span><span>{{company}}</span></div>
+</div>
+</body>
+</html>

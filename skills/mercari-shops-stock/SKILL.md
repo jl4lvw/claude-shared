@@ -11,6 +11,12 @@ trigger: 「メルカリの在庫を更新」「メルカリShopsの在庫をE�
 対象: **制服のフジ メルカリ店**(`--store fuji`)。基準の在庫は Eストア(管理APIの読み取りのみ)。
 コードは `029.メルカリショップス登録/stock_sync/`、店舗の設定と確定した対応表は `stores/fuji/`。
 
+## ふだんは毎朝の自動(2026-11-05〜)
+
+毎朝 6:00 にタスク `MercariStockDaily` が `900.ClaudeCode/mercari_stock` で同じことを自動で行う(減らす分は承認なし・増やす分は承認の画面へ申請・止まった日だけ LINE WORKS で知らせる)。
+結果は `python -m mercari_stock.cli last`(`C:\ClaudeCode\900.ClaudeCode` で)。「ログインが切れています」と知らせが来たら、運用者に
+`Set-Location C:\ClaudeCode\900.ClaudeCode; python -m mercari_stock.cli login` を頼む。この手作業の手順は、自動が使えないときと対応先の整理に使う。
+
 ## 絶対に守ること
 
 1. **承認の前にアップロードしない。** 承認の取り方は「承認用の一覧(アーティファクト)を見せ、チャットで『アップロードして』と返事をもらう」(2026-10-23 運用者決定)。
