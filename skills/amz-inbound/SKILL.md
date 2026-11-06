@@ -16,7 +16,7 @@ description: Amazon FBA 納品（Send to Amazon / STA）の納品ジョブを扱
 | `cmr`（7S） | 見回り役 → 022 | 7S へ出荷指示。14:30 を過ぎて 022 が出荷日をずらしたら（409 `ship_date_shifted`）、次の回に Amazon の出荷日を直してから送る |
 | `cmr-status`（7S） | 見回り役 | 7S の登録完了を待つ（15 分で止める） |
 | `sending` | 見回り役 → `amz_inbound.cli enqueue` | 承認の画面へ申請（画面写真付き）。承認を直接開くリンクを PWA のジョブに出す。**7S は承認の表に「承認後に 7S へ送る文」が載る**（決定②） |
-| 承認後 | 見張り役 → 実行役（`cli run`） | 画面と承認の値をすべて照合して一致したときだけ送信 → 納品番号 → ラベル PDF。本店: 倉庫3F で印刷・NAS に控えて `done`。7S: ドライブの共有フォルダに `<出荷管理番号>` フォルダを作って PDF を置き（`amzinv_drive.py`・決定①）→ 承認された文に納品番号とフォルダの URL を入れて LINE「セブンエス」へ（`line_notify.py send-approved`）→ `done` |
+| 承認後 | 見張り役 → 実行役（`cli run`） | 画面と承認の値をすべて照合して一致したときだけ送信 → 納品番号 → ラベル PDF。本店: 倉庫3F で印刷・NAS に控えて `done`。7S: 右下に本店と同じ品名表を印字し（`Downloads/7s_slot/` に同じ名前で作る。印字できなければ元の PDF で進め、結果の `slot.reason` に理由）、ドライブの共有フォルダに `<出荷管理番号>` フォルダを作って PDF を置き（`amzinv_drive.py`・決定①）→ 承認された文に納品番号とフォルダの URL を入れて LINE「セブンエス」へ（`line_notify.py send-approved`）→ `done` |
 | 夜 19:00〜朝 9:00 に承認されたとき（7S） | 実行役 → line_notify のキュー | LINE は朝 9:00 のまとめ送りに回る（その時に LINE WORKS でもう一度承認を求める）。送られたら見回り役が `done` を付ける |
 
 - 見回り役: `900.ClaudeCode/amz_inbound/auto.py`（タスク `AmzInboundAutoPatrol` が 1 分おきに `once`）。記録 `900.ClaudeCode/a_browser_data/amz_inbound_auto.log`・覚え書き `amz_inbound_auto.sqlite3`
@@ -28,7 +28,7 @@ description: Amazon FBA 納品（Send to Amazon / STA）の納品ジョブを扱
 運用者に、A 端末の PowerShell の窓で次を 1 行ずつ実行してもらう（パスワード・2段階認証は運用者が入力する）:
 
 1. Amazon の専用ブラウザ: `Set-Location C:\ClaudeCode\900.ClaudeCode; python -m a_browser_common.login_check amazon`（追加認証が出たら入力し「このブラウザでは次回から確認しない」。`ok` で済み）
-2. Google ドライブの専用ブラウザ: `python C:\ClaudeCode\094.Chrome自動操作\amzinv_drive.py login`（開いた窓で Google にログイン。共有フォルダが開けたら `ok`。最大 300 秒待つ）。Google が「このブラウザは安全でない」と出してログインできないときは Claude に伝えてもらう（置き場の見直しが要る）
+2. Google ドライブの受け口: 準備済み（2026-11-06）。専用ブラウザは Google に拒まれるので使わず、GAS の受け口 `094.Chrome自動操作/gas_drive/`（`jl4lvw@gmail.com`・設定 `~/.amzinv/drive_gas.json`）へ送る。確かめは `python C:\ClaudeCode\094.Chrome自動操作\amzinv_drive.py check`（何も作らない。`--test` で試験用フォルダ）
 3. 見回り役のタスク: `powershell -NoProfile -ExecutionPolicy Bypass -File C:\ClaudeCode\900.ClaudeCode\amz_inbound\register_task.ps1`（管理者権限は不要。止めるときは `Disable-ScheduledTask -TaskName AmzInboundAutoPatrol`）
 4. 最初の実ジョブは、ステップ2 の読み取り（出荷日の欄・カレンダー・ヤマトの印・ドライブの一覧の大きさ）が DOM 未確認なので、止まったら下の表で対処し、`amzinv_send.py` / `amzinv_drive.py` の探し方を直す
 
@@ -49,12 +49,14 @@ description: Amazon FBA 納品（Send to Amazon / STA）の納品ジョブを扱
 | 7S へ出荷指示を送れません（stock_short・csv_downloaded・fba_*）/ 7S の登録で止まりました / 15 分たっても完了しません | `show` の `detail.cmr`・`cmr-status JOBID`。**再送しない** | 在庫不足などは運用者に報告。`cmr-status` で `cmr_done` になれば `auto-note clear`。やめるなら `cancel` |
 | 承認の申請を積めません | `cli enqueue` の理由（状態・締め） | 理由を直して `auto-note clear` |
 | 承認の申請 N が rejected / needs_human / cancelled で終わりました | `cli show N` の `result.detail`・`body.diffs`・`problem` | 押していない（rejected・終了）なら原因を直して `auto-note clear`（新しく申請される）。**「押したか分かりません」はもう一度申請しない**（運用者に Seller Central を見てもらい、送信済みなら Claude が `sent JOBID --fba … --fc … --fee …` を記録） |
+| ドライブの受け口へ届きません / 応答を受け取れません / 受け付けません | `amzinv_drive.py check`。403 は許可の取り消し・デプロイの不備。応答が切れたときは共有フォルダに `<出荷管理番号>` ができていないか先に見る | 直らなければ下の「7S の後始末（手作業）」。ドライブは運用者の Chrome で置く（`feedback_amz_inbound_drive_label_auto` の手順）|
 | 送信とラベル PDF は済みました。ドライブに置けません / LINE を送れません | `body.drive`・`body.line`・Downloads の PDF | 下の「7S の後始末（手作業）」で残りを行い `done` |
 | 夜間に積んだ 7S への LINE が送られていません | `python C:/ClaudeCode/.claude/skills/line-notify/line_notify.py queue-list --all` | 中止・修正の依頼なら運用者に聞いて `/line-notify` で送り直し → `done JOBID --drive … --line <ID>` |
 | Amazon は送信済みですが、ドライブ・LINE・done が自動で済んでいません | 旧い申請（10/30 以前）の分 | 下の「7S の後始末（手作業）」 |
 
 - 取り消し: `cancel JOBID`（7S に登録済みなら 042 経由で 7S もキャンセル）。送信後は取り消せない（ヤマトは送信後 3 時間以内に人が判断）
-- 7S の後始末（手作業）: ドライブ = `python C:/ClaudeCode/094.Chrome自動操作/amzinv_drive.py upload --order-no <cmr.order_no> --pdf "<Downloads のラベル PDF>"`（同名フォルダがあれば止まる）。LINE = 承認の表に載せた文に納品番号とフォルダの URL を入れて `/line-notify`（`request-approval` → 承認 → `send --send`）。最後に `amzinv_job.py done JOBID --drive <注文番号>/<PDF名> --line <メッセージID>`（夜間はメッセージ ID が分かってから）
+- 受け口の合言葉を換える: `~/.amzinv/drive_gas.json` の token を新しい乱数にし、その SHA-256 を `gas_drive/Code.gs` の `TOKEN_SHA256` へ書いて `clasp push --force` → 同じデプロイ ID へ `clasp deploy -i <ID>`（値を表示しない）
+- 7S の後始末（手作業）: ドライブ = `python C:/ClaudeCode/094.Chrome自動操作/amzinv_drive.py upload --order-no <cmr.order_no> --pdf "<結果の pdf。ふつうは Downloads/7s_slot のラベル PDF>"`（同名フォルダがあれば止まる）。LINE = 承認の表に載せた文に納品番号とフォルダの URL を入れて `/line-notify`（`request-approval` → 承認 → `send --send`）。最後に `amzinv_job.py done JOBID --drive <注文番号>/<PDF名> --line <メッセージID>`（夜間はメッセージ ID が分かってから）
 
 ## 🚨 絶対ルール（2026-10-15〜・全自動でも同じ）
 
