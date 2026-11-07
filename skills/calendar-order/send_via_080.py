@@ -7,6 +7,7 @@
     python send_via_080.py wait <job_id> [--minutes 30]
 
 承認は運用者本人だけが行う(Claude は承認しない)。添付のあるメールは「承認の画面」でだけ承認できる。
+添付は PDF と ZIP(中身の一覧が画像で出る。実行ファイル・パスワード付き・入れ子は不可)。
 添付なしは --chat で、運用者がチャットで「OK」と返事をすれば送れる(chat 承認・080 で有効なときだけ)。
 """
 
@@ -61,6 +62,29 @@ def build_job(eml: bytes, purpose: str, four_at: str, ds_at: str) -> tuple[str, 
     return job_id, buf.getvalue()
 
 
+def check_zip_attachments(paths: list[str]) -> bool:
+    """ZIP 添付を 080 と同じ検査(autosend.zip_inspect)に事前に通す。受け付けない ZIP は提出前に理由を出して止める。
+    承認の画面には中身の一覧が画像で出る(2026-11-07)。080 側でも取り込み時に必ず再検査される。"""
+    zips = [Path(x) for x in paths if str(x).lower().endswith(".zip")]
+    if not zips:
+        return True
+    sys.path.insert(0, str(CLI_080.parent))
+    from autosend import zip_inspect
+
+    ok = True
+    for z in zips:
+        try:
+            m = zip_inspect.inspect_zip(z.read_bytes(), z.name)
+        except zip_inspect.InspectError as exc:
+            print(f"[NG] ZIP 添付を 080 が受け付けません({z.name}): {exc}")
+            ok = False
+            continue
+        print(f"[OK] ZIP 添付 {z.name}: {m.summary_line()}")
+        for w in m.warnings:
+            print(f"  {w}")
+    return ok
+
+
 def cmd_submit(args: argparse.Namespace) -> int:
     work = Path(args.work_dir)
     work.mkdir(parents=True, exist_ok=True)
@@ -77,6 +101,8 @@ def cmd_submit(args: argparse.Namespace) -> int:
     print(r.stdout.strip())
     if r.returncode != 0 or "[OK] 検証通過" not in r.stdout:
         print(r.stderr.strip())
+        return 1
+    if not check_zip_attachments(args.attach):
         return 1
     job_id, data = build_job(eml_path.read_bytes(), args.purpose, args.four_stage_at, args.deepseek_at)
     zip_path = work / f"{job_id}.zip"
