@@ -89,7 +89,7 @@ Claude が判断してよいのは**ここだけ**:
 ```
 
 - `match` 内は AND、ルール同士は OR。値は小文字化した部分一致
-- 使えるキー: `from_` `to_` `subject_` `body_` `folder_` `account_` × `_contains` / `_equals`
+- 使えるキー: `from_` `to_` `subject_` `body_` `folder_` `account_` × `_contains` / `_equals` / `_regex`(正規表現・大小文字無視。例 `subject_regex: "ウェビナー.+無料.+案内"`。不正な式は起動時に警告)
 - 追加したら**必ず除外内訳を確認**する。1ルールで全体の50%以上を消すと警告が出る
 - キー名を間違えたルールは起動時に「使えていないルール」として警告される。
   `tests/test_triage.py::test_production_rules_are_all_usable` でも落ちる
