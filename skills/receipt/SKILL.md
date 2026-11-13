@@ -4,12 +4,12 @@ description: 「領収書発行」「領収書を発行して」「領収書を�
 trigger: 領収書の発行・再発行・発行予約の実行を依頼されたとき(「領収書発行」「領収書」「receipt」)
 ---
 
-<!-- SKILL_VERSION: 2026-10-14_235900 -->
+<!-- SKILL_VERSION: 2026-11-13_123000 -->
 
 # receipt — 領収書発行
 
 作業フォルダ: `C:\ClaudeCode\091.領収書発行`(コマンドは絶対パスで実行する)。
-発行者(株式会社制服のフジ)・角印・紙面は `issuer.json` / `kaku.png` / `receipt_template.html` に固定済み。**紙面は最終デザインで確定済み**(詳細は同フォルダの `DESIGN.md`)。
+発行者(株式会社制服のフジ)・角印・紙面は `issuer.json` / `kaku.png` / `receipt_template.html` に固定済み。**紙面は 2026-11-13 に改定: A4 の上 2/3 が明細書、切り取り線、下 1/3 が領収書**(詳細は同フォルダの `DESIGN.md`)。
 
 ## 0. 最初にやること(省略禁止)
 
@@ -22,7 +22,7 @@ trigger: 領収書の発行・再発行・発行予約の実行を依頼され�
 
 | 項目 | 内容 |
 |---|---|
-| 紙面 | **最終デザイン確定**(案A-3)。A4縦1枚・金額は白地・備考欄あり・宛名は中央で敬称は右端・会社名ブロックは備考欄の直下・角印は幅24mmで上端を会社名の行の上端に揃え、会社名には重ねず住所行の右端に18px重ねる。寸法・位置の全体は `DESIGN.md` |
+| 紙面 | **上下分割(2026-11-13 ユーザー決定)**。A4縦1枚の上 2/3 に「明細書」(品番・品名・単価・数量・金額・送料・値引き・合計)、切り取り線、下 1/3 に領収書(金額は白地・備考欄あり・角印は幅24mmで会社名に重ねず住所行の右端に18px)。**いつも上下分割**(明細が無ければ上は空行)。明細の合計が領収金額と合わない・紙面からはみ出す場合は発行しない。寸法・位置の全体は `DESIGN.md` |
 | 金額 | **すべて税込で指定**。10%対象と8%対象を別々に指定し、紙面には両方の行(税込・税抜・消費税)を常に出す。消費税は税率ごとに切り捨て |
 | 敬称 | 既定は御中(法人・団体・官公庁)。個人宛は様(`--honorific 様`)。再発行は元の敬称を引き継ぐ |
 | 発行番号 | `R-YYYYMMDD-連番`(台帳 `ledger/receipts.json` で管理) |
@@ -50,12 +50,15 @@ GoQ に REST API は無く、042 の DB には新しい受注が入っていな�
 - 金額は**請求金額**(値引き後に実際に払う額)。送料を含む。但し書きは基本の「商品代として」のまま(送料の文言は入れない)
 - 税率は10%に仮置き。8%(軽減)の商品を含む注文は、商品ごとに分けて `--amount8` を指定する(GoQ の項目だけでは判定できない)
 - `bundled: true`(同梱で複数の受注番号が1つの管理番号)は、合計と備考(受注番号をすべて記載)が正しいかをユーザーに確認する
-- 備考には**受注番号を必ず入れる**(ユーザー指示)。取得した CSV は個人情報を含むので、用が済んだら scratchpad から消す
+- 備考には**受注番号を必ず入れる**(ユーザー指示)。取得した CSV は個人情報を含むので、`issue` が済んだら scratchpad から消す
 
 ### 2. プレビュー(台帳は変わらない)
 ```
-python C:/ClaudeCode/091.領収書発行/issue_receipt.py preview --to "宛名" --amount10 33000 --amount8 0 --for "商品代として" --memo "備考" --out <scratchpad>/receipt_preview.html --page <scratchpad>/receipt_page.html --note "宛名の根拠: ..." --note "金額の出所: ..."
+python C:/ClaudeCode/091.領収書発行/issue_receipt.py preview --to "宛名" --amount10 33000 --amount8 0 --for "商品代として" --memo "備考" --goq-csv <scratchpad>/goq.csv --goq-key 20-10034546 --out <scratchpad>/receipt_preview.html --page <scratchpad>/receipt_page.html --note "宛名の根拠: ..." --note "金額の出所: ..."
 ```
+- **明細(上の明細書)**: GoQ の注文は `--goq-csv` と `--goq-key` で明細・送料・値引きを取り込む(手数料は請求金額から逆算)。GoQ 以外は `--items-json`(`{items:[{code,name,option,unit,qty,subtotal}], shipping, fee, discount}`・金額は税込)。どちらも無ければ上は空行の表になる。CSV は `issue` まで消さない(発行でも同じ明細を読む)
+- `preview` は紙面を描画して、はみ出しがあればエラーにする(品名が 2 行の明細で約 9 行まで)
+
 最終行の JSON に `no_planned`(予定の発行番号)・`total`・`stamp`(印紙欄の有無)が出る。
 **`Artifact` ツールで `receipt_page.html`(承認用ページ。紙面は発行用テンプレートそのもの・左に内容一覧と `--note` の根拠)を公開し、内容(宛名・金額・内訳・番号・印紙欄の有無)を示して承認を得る。** 承認前に `issue` を実行しない(台帳に記録が残り、番号が進むため)。
 再発行は `--reissue-of R-20261014-001`(枝番でも可)を付けて同様にプレビューする。
@@ -63,7 +66,7 @@ python C:/ClaudeCode/091.領収書発行/issue_receipt.py preview --to "宛名" 
 ### 3. 承認後に発行
 プレビューと同じ引数で `preview` を `issue` に替えて実行する(`--out` `--page` `--note` は不要)。
 ```
-python C:/ClaudeCode/091.領収書発行/issue_receipt.py issue --to "宛名" --amount10 33000 --amount8 0 --for "商品代として" --memo "備考"
+python C:/ClaudeCode/091.領収書発行/issue_receipt.py issue --to "宛名" --amount10 33000 --amount8 0 --for "商品代として" --memo "備考" --goq-csv <scratchpad>/goq.csv --goq-key 20-10034546
 python C:/ClaudeCode/091.領収書発行/issue_receipt.py issue --reissue-of R-20261014-001
 ```
 - 内部で「採番 → PDF作成 → 1ページか確認 → 台帳に追記 → NASへコピーして照合」を行う。PDF作成に失敗した場合は台帳に何も残らない
